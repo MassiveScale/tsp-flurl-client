@@ -53,9 +53,9 @@ export const internalAccessLeakRule = createRule({
   severity: "warning",
   description:
     "A public operation or model must not reference an @access(Access.internal) type; the generated C# would fail to compile.",
-  url: "https://github.com/massivescale/typespec/blob/main/tsp-flurl-client/README.md#internal-access-leak",
+  url: "https://github.com/MassiveScale/tsp-flurl-client#internal-access-leak",
   messages: {
-    default: paramMessage`"${"referencingName"}" is public but its ${"kind"} type "${"internalTypeName"}" is marked @access(Access.internal); the generated C# will fail to compile (CS0053: inconsistent accessibility). Mark "${"internalTypeName"}" @access(Access.public), or mark "${"referencingName"}" @access(Access.internal) as well.`,
+    default: paramMessage`"${"referencingName"}" is public but its ${"kind"} type "${"internalTypeName"}" is marked @access(Access.internal); the generated C# will fail to compile (CS0053: inconsistent accessibility). Mark "${"internalTypeName"}" @access(Access.public), or mark the ${"container"} that declares "${"referencingName"}" @access(Access.internal) as well.`,
   },
   create(context) {
     function checkReferencedTypes(
@@ -71,6 +71,9 @@ export const internalAccessLeakRule = createRule({
             format: {
               referencingName,
               kind,
+              // An operation's access is ignored (C# interface members are always
+              // public), so the fix is on the interface, or on the model for a property.
+              container: kind === "property" ? "model" : "interface",
               internalTypeName: named.name!,
             },
           });
@@ -83,10 +86,10 @@ export const internalAccessLeakRule = createRule({
         const containerAccess = getAccess(context.program, iface) ?? "public";
         if (containerAccess === "internal") return;
 
+        // An operation marked @access(Access.internal) is still checked: the emitter
+        // ignores operation access because C# interface methods cannot carry an
+        // access modifier, so such a method is public in the generated interface.
         for (const op of iface.operations.values()) {
-          const opAccess = getAccess(context.program, op) ?? "public";
-          if (opAccess === "internal") continue;
-
           for (const prop of op.parameters.properties.values()) {
             checkReferencedTypes(prop.type, op.name, "parameter", prop);
           }

@@ -1,5 +1,11 @@
 {{!--
-  enum.hbs — rendered once per TypeSpec enum as a C# `public enum`.
+  enum.hbs — rendered once per TypeSpec enum as a C# `public enum` plus the
+  internal JSON converter that reads and writes it.
+
+  The converter is generated per enum because `JsonStringEnumConverter` does not
+  honour `[EnumMember]`: it would write the C# member name (`Blue`) where the API
+  declared a different wire value (`blue`). The converter maps each member to its
+  declared value, and rejects values it does not know instead of guessing.
 
   Override via tspconfig.yaml:
     options:
@@ -17,6 +23,7 @@
     .doc          —   optional XML <summary> text (pre-escaped; may be falsy)
     .name         —   PascalCase member name, e.g. "Pending"
     .memberValue  —   wire string for [EnumMember(Value = "...")], e.g. "pending"
+                      (already escaped for a C# string literal)
 
   ── Built-in helpers ────────────────────────────────────────────────────────
 
@@ -27,7 +34,7 @@
 /// <summary>
 {{#if doc}}/// {{docLines doc "/// "}}
 {{/if}}/// </summary>
-[JsonConverter(typeof(JsonStringEnumConverter))]
+[JsonConverter(typeof({{enumName}}JsonConverter))]
 {{access}} enum {{enumName}}
 {
 {{#each members}}{{#if doc}}    /// <summary>
@@ -37,4 +44,36 @@
     {{name}},
 
 {{/each}}
+}
+
+/// <summary>
+/// Reads and writes <see cref="{{enumName}}"/> as the values the API declares for its members.
+/// </summary>
+internal sealed class {{enumName}}JsonConverter : JsonConverter<{{enumName}}>
+{
+    /// <inheritdoc />
+    public override {{enumName}} Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+    {
+        if (reader.TokenType != JsonTokenType.String)
+        {
+            throw new JsonException($"Expected a string for {{enumName}} but found {reader.TokenType}.");
+        }
+
+        var value = reader.GetString();
+        return value switch
+        {
+{{#each members}}            "{{memberValue}}" => {{../enumName}}.{{name}},
+{{/each}}            _ => throw new JsonException($"'{value}' is not a known {{enumName}} value."),
+        };
+    }
+
+    /// <inheritdoc />
+    public override void Write(Utf8JsonWriter writer, {{enumName}} value, JsonSerializerOptions options)
+    {
+        writer.WriteStringValue(value switch
+        {
+{{#each members}}            {{../enumName}}.{{name}} => "{{memberValue}}",
+{{/each}}            _ => throw new JsonException($"{value} is not a known {{enumName}} value."),
+        });
+    }
 }

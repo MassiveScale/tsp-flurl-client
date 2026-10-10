@@ -413,9 +413,11 @@ async function emitService(
       if (vOps.length === 0) continue;
       const interfaceName = `I${name}`;
       const endpointClientName = `${name}Client`;
+      const access = getAccess(program, container) ?? "public";
       endpointNames.push({
         interfaceName,
         clientName: endpointClientName,
+        access,
       });
       const sources = buildEndpoint(
         interfaceName,
@@ -423,7 +425,7 @@ async function emitService(
         ns,
         vOps,
         getDoc(program, container),
-        getAccess(program, container) ?? "public",
+        access,
         program,
         models,
         enums,
@@ -446,6 +448,21 @@ async function emitService(
       );
     }
     for (const [, rt] of requestTypes) {
+      // In single-version mode request records share Models/ with the user's
+      // models, so a model with the same name must be reported, not overwritten.
+      // Per-version folders keep their records apart from the models.
+      if (
+        !useVersionedFolders &&
+        !tryReserveModelOutputName(
+          program,
+          modelOutputOwners,
+          rt.name,
+          `the ${rt.name} request type`,
+          NoTarget,
+        )
+      ) {
+        continue;
+      }
       const content = buildFilteredRecord(
         rt.name,
         rt.doc,

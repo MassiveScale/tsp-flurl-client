@@ -309,13 +309,15 @@ function builtinScalarName(scalar: Scalar): string {
 
 /**
  * Turns an API version value into a C# namespace segment, e.g. `v2.0` → `V2_0`
- * (strips a leading `v`/`V`, prefixes `V`, and replaces dots with underscores).
+ * (strips a leading `v`/`V`, prefixes `V`, and replaces every character that is
+ * not a letter, digit, or underscore with an underscore, so `sprint-42` becomes
+ * `Vsprint_42`).
  *
  * @param version - The raw TypeSpec version value.
  * @returns A namespace-safe version segment.
  */
 export function sanitizeVersionForNs(version: string): string {
-  return "V" + version.replace(/^v/i, "").replace(/\./g, "_");
+  return "V" + version.replace(/^v/i, "").replace(/[^A-Za-z0-9_]/g, "_");
 }
 
 /**
@@ -496,6 +498,23 @@ const CS_KEYWORDS = new Set([
   "volatile",
   "while",
 ]);
+
+/**
+ * Escapes text for use between the quotes of an ordinary C# string literal, so a
+ * wire name or discriminator value containing a quote, backslash, or line break
+ * cannot end the literal early or change the surrounding code.
+ *
+ * @param text - The raw text.
+ * @returns The text, safe to place inside `"..."`.
+ */
+export function escapeCsString(text: string): string {
+  return text
+    .replace(/\\/g, "\\\\")
+    .replace(/"/g, '\\"')
+    .replace(/\r/g, "\\r")
+    .replace(/\n/g, "\\n")
+    .replace(/\t/g, "\\t");
+}
 
 /**
  * Prefixes a C# identifier with `@` when it collides with a reserved keyword, so a

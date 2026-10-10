@@ -5,6 +5,18 @@
 import { Version } from "@typespec/versioning";
 import { Renderer, CsprojView } from "./renderer.js";
 import { EmitterOptions } from "./lib.js";
+import { escapeXml } from "./utils.js";
+
+/**
+ * XML-escapes an optional value for an MSBuild element, so `A & B` or text
+ * containing `<` cannot malform the project file or inject extra elements.
+ *
+ * @param value - The raw value, or `undefined` when the element is omitted.
+ * @returns The escaped value, or `undefined`.
+ */
+function xml(value: string | undefined): string | undefined {
+  return value === undefined ? undefined : escapeXml(value);
+}
 
 /**
  * Renders the generated `.csproj` file for the client package.
@@ -32,16 +44,18 @@ export function buildCsproj(
   options: EmitterOptions,
   renderer: Renderer,
 ): string {
+  // Every value is written into XML element text, and the template does not
+  // escape, so all of them are escaped here.
   const view: CsprojView = {
-    rootNamespace: rootNs,
-    netVersion,
+    rootNamespace: escapeXml(rootNs),
+    netVersion: escapeXml(netVersion),
     isMultiTarget,
-    nugetDescription,
-    nugetTitle,
-    nugetPackageId: options["nuget-package-id"],
-    nugetVersion,
-    nugetAuthors: options["nuget-authors"],
-    nugetTags: options["nuget-tags"],
+    nugetDescription: escapeXml(nugetDescription),
+    nugetTitle: xml(nugetTitle),
+    nugetPackageId: xml(options["nuget-package-id"]),
+    nugetVersion: escapeXml(nugetVersion),
+    nugetAuthors: xml(options["nuget-authors"]),
+    nugetTags: xml(options["nuget-tags"]),
   };
   return renderer.renderCsproj(view);
 }

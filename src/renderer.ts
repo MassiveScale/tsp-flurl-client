@@ -12,6 +12,7 @@ import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import Handlebars from "handlebars";
+import { escapeCsString } from "./utils.js";
 
 /** Absolute path to the bundled default templates directory. */
 const TEMPLATES_DIR = resolve(
@@ -235,6 +236,8 @@ export interface InterfaceEntry {
   propertyName: string;
   /** Constructor parameter name, e.g. `"stores"`. */
   paramName: string;
+  /** C# access modifier of the property: the interface's own, `"public"` or `"internal"`. */
+  access: string;
 }
 
 /** View model for the generated aggregate client class and DI registration extension class. */
@@ -247,6 +250,8 @@ export interface ExtensionsView {
   clientClassName: string;
   /** Name used to register the underlying named `HttpClient`; unique per namespace and client. */
   httpClientName: string;
+  /** C# access modifier of the aggregate client's constructor; `"internal"` when any endpoint is internal. */
+  constructorAccess: string;
   /** Ordered list of endpoint entries. */
   interfaces: InterfaceEntry[];
 }
@@ -435,12 +440,12 @@ function renderRequestBody(m: MethodView, responseType: string): string[] {
   ];
   for (const q of m.queryParams) {
     lines.push(
-      `${pad}flurlRequest.SetQueryParam("${q.name}", ClientRuntime.ToQueryValue(${q.variable}));`,
+      `${pad}flurlRequest.SetQueryParam("${escapeCsString(q.name)}", ClientRuntime.ToQueryValue(${q.variable}));`,
     );
   }
   for (const h of m.headerParams) {
     lines.push(
-      `${pad}if (${h.variable} is not null) flurlRequest.WithHeader("${h.name}", ClientRuntime.ToWireString(${h.variable}));`,
+      `${pad}if (${h.variable} is not null) flurlRequest.WithHeader("${escapeCsString(h.name)}", ClientRuntime.ToWireString(${h.variable}));`,
     );
   }
   lines.push(
@@ -454,9 +459,9 @@ function renderRequestBody(m: MethodView, responseType: string): string[] {
   } else if (m.body.kind === "json") {
     send = `await flurlRequest.SendJsonAsync(${verb}, ${m.body.variable}, cancellationToken: cancellationToken)`;
   } else if (m.body.kind === "bytes") {
-    send = `await flurlRequest.SendAsync(${verb}, ClientRuntime.BytesContent(${m.body.variable}, "${m.body.contentType}"), cancellationToken: cancellationToken)`;
+    send = `await flurlRequest.SendAsync(${verb}, ClientRuntime.BytesContent(${m.body.variable}, "${escapeCsString(m.body.contentType)}"), cancellationToken: cancellationToken)`;
   } else {
-    send = `await flurlRequest.SendAsync(${verb}, ClientRuntime.TextContent(${m.body.variable}, "${m.body.contentType}"), cancellationToken: cancellationToken)`;
+    send = `await flurlRequest.SendAsync(${verb}, ClientRuntime.TextContent(${m.body.variable}, "${escapeCsString(m.body.contentType)}"), cancellationToken: cancellationToken)`;
   }
   lines.push(`${pad}using var flurlResponse = ${send}.ConfigureAwait(false);`);
 

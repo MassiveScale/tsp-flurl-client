@@ -248,7 +248,8 @@ export const $lib = createTypeSpecLibrary({
     "invalid-client-name": {
       severity: "error",
       messages: {
-        default: "@clientName(name) requires a non-empty, non-whitespace name.",
+        default:
+          "@clientName(name) requires a valid C# identifier: letters, digits and underscores, not starting with a digit.",
       },
     },
     "invalid-access-modifier": {

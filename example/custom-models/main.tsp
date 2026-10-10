@@ -1,6 +1,8 @@
 import "@typespec/http";
+import "@massivescale/tsp-flurl-client";
 
 using Http;
+using MassiveScale.TspFlurlClient;
 
 /**
  * Exercises every place a caller can swap in a custom model: responses, list items,
@@ -25,6 +27,19 @@ model Widget {
 model WidgetPage {
   items: Widget[];
   featured?: Widget;
+}
+
+model Owner {
+  name: string;
+}
+
+/** Has required properties of every reference type, none of which can be left unset. */
+model Gadget {
+  id: string;
+  owner: Owner;
+  tags: Record<string>;
+  raw: unknown;
+  bytes: bytes;
 }
 
 @discriminator("kind")
@@ -81,4 +96,15 @@ interface Files {
     @header contentType: "application/octet-stream";
     @body body: bytes;
   };
+}
+
+@route("/gadgets")
+interface Gadgets {
+  @get read(@path id: string): Gadget;
+}
+
+@access(Access.internal)
+@route("/admin")
+interface Admin {
+  @post reindex(): void;
 }

@@ -30,6 +30,7 @@ import {
   escapeXml,
   sortUsings,
   toCsPropName,
+  escapeCsString,
   type UsedHelpers,
 } from "./utils.js";
 
@@ -57,12 +58,14 @@ function buildPropertyViews(
     const csType = mapPropertyType(prop, program, models, enums, usedHelpers);
     const nullable = prop.optional ? "?" : "";
     const propName = toCsPropName(getClientName(program, prop) ?? prop.name);
-    const defaultVal = prop.optional ? undefined : defaultForTypeRaw(csType);
+    const defaultVal = prop.optional
+      ? undefined
+      : defaultForProperty(prop, csType);
     result.push({
       doc: propDoc ? escapeXml(propDoc) : undefined,
       type: `${csType}${nullable}`,
       name: propName,
-      jsonPropertyName: prop.name,
+      jsonPropertyName: escapeCsString(prop.name),
       defaultValue: defaultVal,
     });
   }
@@ -137,11 +140,11 @@ export function buildRecord(
       selfDiscriminator,
     );
     discriminator = {
-      propertyName: selfDiscriminator.propertyName,
+      propertyName: escapeCsString(selfDiscriminator.propertyName),
       derivedTypes: [...union.variants.entries()]
         .map(([value, derivedModel]) => ({
           typeName: getClientName(program, derivedModel) ?? derivedModel.name!,
-          value,
+          value: escapeCsString(value),
         }))
         .sort((a, b) => a.value.localeCompare(b.value)),
     };
@@ -270,20 +273,50 @@ export function flattenProperties(model: Model): Map<string, ModelProperty> {
   return props;
 }
 
+/** C# types that are value types, which can never be null and so need no initializer. */
+const CS_VALUE_TYPES = new Set([
+  "bool",
+  "sbyte",
+  "byte",
+  "short",
+  "ushort",
+  "int",
+  "uint",
+  "long",
+  "ulong",
+  "float",
+  "double",
+  "decimal",
+  "Guid",
+  "DateTimeOffset",
+  "DateOnly",
+  "TimeOnly",
+  "TimeSpan",
+]);
+
 /**
- * Returns the C# initializer for a required property of the given type, so
- * non-nullable reference types compile without nullable warnings (e.g. `List<T>`
- * → `[]`, `string` → `default!`). Returns `undefined` when no initializer is needed.
+ * Returns the C# initializer for a required property, so that a non-nullable
+ * reference type compiles without nullable warnings (CS8618): collections get an
+ * empty instance (`List<T>` → `[]`, `Dictionary<K, V>` → `new()`), and every other
+ * reference type gets `default!`. Value types and enums need no initializer, so
+ * `undefined` is returned for them.
  *
+ * Anything that is not an enum or a known C# value type is treated as a reference
+ * type: named models, `object`, `string`, `byte[]`, `Uri`, and generic type
+ * parameters all qualify.
+ *
+ * @param prop - The model property being emitted.
  * @param csType - The C# type expression of the property.
  * @returns The initializer expression, or `undefined`.
  */
-function defaultForTypeRaw(csType: string): string | undefined {
+function defaultForProperty(
+  prop: ModelProperty,
+  csType: string,
+): string | undefined {
   if (csType.startsWith("List<")) return "[]";
-  if (csType === "string") return "default!";
-  if (csType === "byte[]") return "default!";
-  if (csType === "Uri") return "default!";
-  return undefined;
+  if (csType.startsWith("Dictionary<")) return "new()";
+  if (prop.type.kind === "Enum" || CS_VALUE_TYPES.has(csType)) return undefined;
+  return "default!";
 }
 
 /**
@@ -426,7 +459,7 @@ export function buildEnum(
     members.push({
       doc: memberDoc ? escapeXml(memberDoc) : undefined,
       name: toCsPropName(member.name),
-      memberValue: stringValue,
+      memberValue: escapeCsString(stringValue),
     });
   }
 
@@ -441,7 +474,9 @@ export function buildEnum(
   const fileView: FileView = {
     namespace: csNs,
     usings: sortUsings([
+      "System",
       "System.Runtime.Serialization",
+      "System.Text.Json",
       "System.Text.Json.Serialization",
     ]),
     body,

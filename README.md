@@ -67,7 +67,7 @@ using MassiveScale.TspFlurlClient;
 
 #### `@clientName(name)`
 
-Overrides the C# identifier used for the decorated element in the emitted output.
+Overrides the C# identifier used for the decorated element in the emitted output. The name must be a plain C# identifier (letters, digits and underscores, not starting with a digit), because it becomes a type name and a file name; anything else is reported as `invalid-client-name`.
 
 | Target           | Effect                                                                                         |
 | ---------------- | ---------------------------------------------------------------------------------------------- |
@@ -100,6 +100,20 @@ interface SecretEndpoints {
   @get read(): InternalDto;
 }
 ```
+
+An internal interface is an internal property of the aggregate client, and the aggregate client's constructor becomes internal whenever any endpoint is internal (a public constructor cannot take an internal type).
+
+#### `internal-access-leak` lint rule
+
+A public operation or model that references an `@access(Access.internal)` type produces C# that cannot compile (`CS0053`, inconsistent accessibility), so the emitter ships a lint rule that warns about it. Enable it by adding the library's ruleset to `tspconfig.yaml`:
+
+```yaml
+linter:
+  extends:
+    - "@massivescale/tsp-flurl-client/recommended"
+```
+
+The fix is either to mark the referenced type `@access(Access.public)` or to mark the interface (or, for a property, its model) `@access(Access.internal)` as well. Marking an _operation_ internal does not help: C# interface methods cannot carry an access modifier, so the rule still reports it.
 
 Then compile your TypeSpec definition:
 
@@ -344,6 +358,8 @@ List<MyDog> dogs = await api.Pets.ListAsync<MyDog>();
 - JSON uses `System.Text.Json` with web defaults (camelCase, case-insensitive reads, numbers accepted as strings). Models carry explicit `[JsonPropertyName]` attributes, so declared properties always use their TypeSpec wire names.
 - Path values are fully percent-encoded, so a value containing `/` or `?` cannot change the shape of the URL.
 - Enum values in query strings, headers, and paths use their wire names; booleans are `true`/`false`; dates are ISO 8601.
+- Enums are read and written as their declared values through a converter generated for each enum (`ColorJsonConverter`), because `JsonStringEnumConverter` ignores `[EnumMember]` and would write the C# member name (`Blue`) where the API declared `blue`. A value the enum does not declare is rejected with a `JsonException` instead of being guessed.
+- Names that become C# string literals (property, query and header names, discriminator and enum values, media types) are escaped, and values written into the generated `.csproj` (NuGet metadata, namespace, target framework) are XML-escaped.
 - A `bytes` body or response is sent and read raw, as is a `string` body or response with a non-JSON media type (TypeSpec's default for `string` is `text/plain`).
 - A `Content-Type` header declared as an operation parameter is not exposed; the body's media type decides it.
 

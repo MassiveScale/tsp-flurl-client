@@ -42,7 +42,7 @@ describe("internal-access-leak", () => {
       .toEmitDiagnostics({
         code: "@massivescale/tsp-flurl-client/internal-access-leak",
         message:
-          '"read" is public but its parameter type "Secret" is marked @access(Access.internal); the generated C# will fail to compile (CS0053: inconsistent accessibility). Mark "Secret" @access(Access.public), or mark "read" @access(Access.internal) as well.',
+          '"read" is public but its parameter type "Secret" is marked @access(Access.internal); the generated C# will fail to compile (CS0053: inconsistent accessibility). Mark "Secret" @access(Access.public), or mark the interface that declares "read" @access(Access.internal) as well.',
       });
   });
 
@@ -68,7 +68,7 @@ describe("internal-access-leak", () => {
       .toEmitDiagnostics({
         code: "@massivescale/tsp-flurl-client/internal-access-leak",
         message:
-          '"read" is public but its return type "Secret" is marked @access(Access.internal); the generated C# will fail to compile (CS0053: inconsistent accessibility). Mark "Secret" @access(Access.public), or mark "read" @access(Access.internal) as well.',
+          '"read" is public but its return type "Secret" is marked @access(Access.internal); the generated C# will fail to compile (CS0053: inconsistent accessibility). Mark "Secret" @access(Access.public), or mark the interface that declares "read" @access(Access.internal) as well.',
       });
   });
 
@@ -146,7 +146,7 @@ describe("internal-access-leak", () => {
       .toEmitDiagnostics({
         code: "@massivescale/tsp-flurl-client/internal-access-leak",
         message:
-          '"secret" is public but its property type "Secret" is marked @access(Access.internal); the generated C# will fail to compile (CS0053: inconsistent accessibility). Mark "Secret" @access(Access.public), or mark "secret" @access(Access.internal) as well.',
+          '"secret" is public but its property type "Secret" is marked @access(Access.internal); the generated C# will fail to compile (CS0053: inconsistent accessibility). Mark "Secret" @access(Access.public), or mark the model that declares "secret" @access(Access.internal) as well.',
       });
   });
 
@@ -281,7 +281,7 @@ describe("internal-access-leak", () => {
       });
   });
 
-  it("is valid when an individual operation is @access(Access.internal) inside an otherwise public interface, even if it references an internal type via a parameter", async () => {
+  it("still flags an operation marked @access(Access.internal), because C# interface methods are always public", async () => {
     await tester
       .expect(
         `
@@ -303,6 +303,10 @@ describe("internal-access-leak", () => {
         }
       `,
       )
-      .toBeValid();
+      .toEmitDiagnostics({
+        code: "@massivescale/tsp-flurl-client/internal-access-leak",
+        message:
+          '"write" is public but its parameter type "Secret" is marked @access(Access.internal); the generated C# will fail to compile (CS0053: inconsistent accessibility). Mark "Secret" @access(Access.public), or mark the interface that declares "write" @access(Access.internal) as well.',
+      });
   });
 });

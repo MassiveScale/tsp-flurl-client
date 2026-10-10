@@ -11,13 +11,22 @@ export const namespace = "MassiveScale.TspFlurlClient";
 const clientNameKey = Symbol.for("@massivescale/tsp-flurl-client/clientName");
 const accessKey = Symbol.for("@massivescale/tsp-flurl-client/access");
 
+/**
+ * A plain C# identifier: a letter or underscore followed by letters, digits, or
+ * underscores. Keeps `@clientName` values safe to use as type names and file names.
+ */
+const CS_IDENTIFIER = /^[\p{L}_][\p{L}\p{Nd}_]*$/u;
+
 export function $clientName(
   context: DecoratorContext,
   target: Type,
   name: string,
 ): void {
   const trimmed = name.trim();
-  if (trimmed.length === 0) {
+  // The name becomes a C# identifier and a file name, so anything that is not a
+  // plain identifier (spaces, punctuation, path separators such as `../Client`)
+  // is rejected rather than written into the output.
+  if (!CS_IDENTIFIER.test(trimmed)) {
     reportDiagnostic(context.program, {
       code: "invalid-client-name",
       target,

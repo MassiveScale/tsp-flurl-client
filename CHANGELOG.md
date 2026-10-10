@@ -17,6 +17,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Collection request bodies are accepted as covariant `IEnumerable<T>` / `IReadOnlyDictionary<string, T>`, and merge-patch bodies as covariant `IMergePatch<T>`, so a `List<MyWidget>` or `MergePatch<MyWidget>` can be sent where the declared model is expected.
   - Custom subtypes of `@discriminator` models are sent with their discriminator and can be read directly by generic overload or through the model map.
   - A non-success response throws Flurl's `FlurlHttpException`; whether an API accepts extension properties is left to the API and the implementor.
+- Enums are read and written as their declared wire values through a converter generated for each enum, instead of `JsonStringEnumConverter`, which ignores `[EnumMember]` and would write the C# member name. Unknown values and non-string tokens are rejected with a `JsonException`.
+- `@clientName` rejects anything that is not a plain C# identifier (`invalid-client-name`), so a name cannot produce invalid C# or write outside the `Models` folder.
+- A synthesized request record (for example `WidgetCreateRequest`) now reserves its output name like a model does, so a model with the same name is reported as `output-name-collision` instead of being silently overwritten.
+- An internal endpoint is an internal property of the aggregate client, and the aggregate client's constructor is internal whenever any endpoint is, so an `@access(Access.internal)` interface no longer breaks the generated project with `CS0053`/`CS0051`.
+- The `internal-access-leak` rule now also checks operations marked `@access(Access.internal)`, which are still public in the generated interface, and its advice points at the interface or model that needs to change.
+- Every required reference-type property gets an initializer (`default!`, `[]` or `new()`), so generated models no longer raise `CS8618`.
+- NuGet metadata and other option-derived values in the `.csproj` are XML-escaped, wire names written as C# string literals are escaped, and version values such as `sprint-42` produce a valid namespace segment (`Vsprint_42`).
 - Raw request and response bodies: a `bytes` body or response, and a `string` body or response with a non-JSON media type, are sent and read raw instead of being JSON-encoded.
 - Path values are fully percent-encoded; query, header and path values use enum wire names, lower-case booleans, and ISO 8601 dates.
 - A parameter named after a C# keyword is escaped (`@params`), and a `Content-Type` header parameter is no longer exposed, because the body's media type decides it.

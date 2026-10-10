@@ -28,6 +28,10 @@
     .clientName       —   C# implementation class name, e.g. "PetsClient"
     .propertyName     —   property name on the aggregate client, e.g. "Pets"
     .paramName        —   constructor parameter name, e.g. "pets"
+    .access           —   "public" or "internal"; the property's access modifier
+
+  {{constructorAccess}} — "public", or "internal" when any endpoint is internal,
+                        because a public constructor cannot take an internal type
 
   ── Usage example ────────────────────────────────────────────────────────────
 
@@ -66,7 +70,7 @@ public class {{clientClassName}}
     public IFlurlClient FlurlClient { get; }
 
 {{#each interfaces}}    /// <summary>Gets the <see cref="{{name}}"/> client.</summary>
-    public {{name}} {{propertyName}} { get; }
+    {{access}} {{name}} {{propertyName}} { get; }
 
 {{/each}}
     /// <summary>
@@ -74,7 +78,7 @@ public class {{clientClassName}}
     /// </summary>
     /// <param name="flurlClient">The Flurl client the endpoints send requests through.</param>
 {{#each interfaces}}    /// <param name="{{paramName}}">The <see cref="{{name}}"/> client.</param>
-{{/each}}    public {{clientClassName}}(IFlurlClient flurlClient{{#each interfaces}}, {{name}} {{paramName}}{{/each}})
+{{/each}}    {{constructorAccess}} {{clientClassName}}(IFlurlClient flurlClient{{#each interfaces}}, {{name}} {{paramName}}{{/each}})
     {
         FlurlClient = flurlClient ?? throw new ArgumentNullException(nameof(flurlClient));
 {{#each interfaces}}        {{propertyName}} = {{paramName}};

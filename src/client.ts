@@ -16,6 +16,8 @@ export interface EndpointName {
   interfaceName: string;
   /** C# implementation class name, e.g. `PetsClient`. */
   clientName: string;
+  /** C# access modifier of the interface: `"public"` or `"internal"`. */
+  access: string;
 }
 
 /**
@@ -26,8 +28,10 @@ export interface EndpointName {
  * @param serviceName - Client/service display name (e.g. `PetStore`); drives the
  *   aggregate client name, the extension class name, and the `Add…` method name.
  * @param csNs - C# namespace the generated file is emitted into.
- * @param endpoints - The endpoint interfaces to register and their implementations;
- *   each interface maps to a client property/parameter with the leading `I` stripped.
+ * @param endpoints - The endpoint interfaces to register, their implementations, and
+ *   their access; each interface maps to a client property/parameter with the leading
+ *   `I` stripped. An internal interface becomes an internal property, and any internal
+ *   interface makes the aggregate client's constructor internal.
  * @param renderer - Handlebars renderer used to produce the file contents.
  * @returns The full C# source of the generated extensions file.
  */
@@ -41,14 +45,20 @@ export function buildExtensions(
   const methodName = `Add${serviceName}`;
   const clientClassName = serviceName;
   const interfaces: InterfaceEntry[] = endpoints.map(
-    ({ interfaceName, clientName }) => {
+    ({ interfaceName, clientName, access }) => {
       const propertyName = interfaceName.startsWith("I")
         ? interfaceName.slice(1)
         : interfaceName;
       const paramName = escapeCsIdentifier(
         propertyName.charAt(0).toLowerCase() + propertyName.slice(1),
       );
-      return { name: interfaceName, clientName, propertyName, paramName };
+      return {
+        name: interfaceName,
+        clientName,
+        propertyName,
+        paramName,
+        access,
+      };
     },
   );
   const view: ExtensionsView = {
@@ -56,6 +66,10 @@ export function buildExtensions(
     methodName,
     clientClassName,
     httpClientName: `${csNs}.${serviceName}`,
+    // A public constructor cannot take an internal parameter type (CS0051).
+    constructorAccess: interfaces.some((i) => i.access !== "public")
+      ? "internal"
+      : "public",
     interfaces,
   };
   const body = renderer.renderExtensions(view);
