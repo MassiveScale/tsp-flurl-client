@@ -1,0 +1,2 @@
+# Don't save package-lock.json for example projects
+package-lock.json

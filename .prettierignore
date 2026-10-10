@@ -1,0 +1,7 @@
+# Handlebars templates generate C# code, not HTML.
+# Prettier's HTML parser mangles C# XML doc comment tags (e.g. </param>, </returns>).
+src/templates/*.hbs
+
+# .NET build output
+bin/
+obj/

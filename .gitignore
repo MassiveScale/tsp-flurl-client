@@ -147,3 +147,10 @@ vite.config.ts.timestamp-*
 
 # Turbo Repo
 .turbo
+
+# TypeSpec emitter output
+tsp-output/
+
+# .NET build output
+bin/
+obj/

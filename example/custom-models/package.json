@@ -1,0 +1,11 @@
+{
+  "name": "custom-models",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "dependencies": {
+    "@typespec/compiler": "^1.15.0",
+    "@typespec/http": "^1.15.0",
+    "@massivescale/tsp-flurl-client": "file:../../"
+  }
+}

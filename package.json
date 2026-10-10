@@ -1,0 +1,47 @@
+{
+  "name": "@massivescale/tsp-flurl-client",
+  "version": "1.0.0-beta.1",
+  "description": "TypeSpec emitter that generates C# API clients built on Flurl.Http, with extensible models.",
+  "license": "MIT",
+  "type": "module",
+  "main": "dist/src/index.js",
+  "tspMain": "lib/main.tsp",
+  "exports": {
+    ".": {
+      "typespec": "./lib/main.tsp",
+      "types": "./dist/src/index.d.ts",
+      "default": "./dist/src/index.js"
+    }
+  },
+  "dependencies": {
+    "handlebars": "^4.7.9"
+  },
+  "peerDependencies": {
+    "@typespec/compiler": "^1.15.0",
+    "@typespec/http": "^1.15.0",
+    "@typespec/versioning": ">=0.85.0 <1.0.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.15.0",
+    "@types/node": "^26.1.0",
+    "@typespec/compiler": "^1.15.0",
+    "@typespec/http": "^1.15.0",
+    "@typespec/versioning": ">=0.85.0 <1.0.0",
+    "c8": "^12.0.0",
+    "eslint": "^9.15.0",
+    "prettier": "^3.3.3",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.49.0"
+  },
+  "scripts": {
+    "prepare": "tsc && node scripts/copy-templates.mjs",
+    "build": "tsc && node scripts/copy-templates.mjs",
+    "watch": "tsc --watch",
+    "test": "node --test \"dist/test/**/*.test.js\"",
+    "lint": "eslint src/ test/ --report-unused-disable-directives --max-warnings=0",
+    "lint:fix": "eslint . --report-unused-disable-directives --fix",
+    "format": "prettier . --write",
+    "format:check": "prettier --check .",
+    "test:coverage": "c8 --reporter=cobertura --reporter=text node --test \"dist/test/**/*.test.js\""
+  }
+}

@@ -1,0 +1,300 @@
+{{!--
+  client-runtime.hbs — internal static helper emitted once per namespace. It is
+  the only place that knows how generated clients talk to Flurl and System.Text.Json:
+
+    - `Configure` installs the serializer on a Flurl client, including the
+      behaviour behind `ModelMap`.
+    - `ToQueryValue` / `ToWireString` / `EscapePathSegment` render parameter values
+      the way the API expects them (enum wire names, ISO dates, lower-case booleans).
+    - `BytesContent` / `TextContent` build non-JSON request bodies.
+
+  How custom models work:
+
+    Sending   A request body is serialized by its runtime type, so a derived model
+              keeps its extra properties without any registration.
+    Reading   `ReadAsync<MyWidget>` asks for a type outright. A `ModelMap` entry
+              swaps the type for every read, including nested ones, through a
+              converter. For `@discriminator` hierarchies the converter cannot be
+              used (System.Text.Json owns derived-type resolution there), so the
+              map rewrites the base type's derived-type list instead, and a
+              custom subtype used on its own registers itself so its
+              discriminator is still written.
+
+  Override via tspconfig.yaml:
+    options:
+      "@massivescale/tsp-flurl-client":
+        templates:
+          client-runtime: "./templates/client-runtime.hbs"
+
+  ── Template variables ──────────────────────────────────────────────────────
+
+  (none — this template renders a fully static class body)
+
+--}}
+/// <summary>
+/// Serializer configuration and wire-format helpers shared by every generated endpoint client.
+/// </summary>
+internal static class ClientRuntime
+{
+    /// <summary>
+    /// Installs the JSON serializer this API needs on a Flurl client.
+    /// </summary>
+    /// <param name="client">The Flurl client to configure.</param>
+    /// <param name="models">Optional custom models to substitute for the generated ones.</param>
+    /// <returns><paramref name="client"/>, so calls can be chained.</returns>
+    internal static IFlurlClient Configure(IFlurlClient client, ModelMap? models)
+    {
+        if (client is null) throw new ArgumentNullException(nameof(client));
+
+        client.Settings.JsonSerializer = new DefaultJsonSerializer(CreateJsonOptions(models));
+        return client;
+    }
+
+    /// <summary>
+    /// Builds the serializer options: web defaults, null properties omitted, and the behaviour behind
+    /// <see cref="ModelMap"/>.
+    /// </summary>
+    /// <param name="models">Optional custom models to substitute for the generated ones.</param>
+    /// <returns>New serializer options.</returns>
+    internal static JsonSerializerOptions CreateJsonOptions(ModelMap? models)
+    {
+        var map = models ?? new ModelMap();
+        var options = new JsonSerializerOptions(JsonSerializerDefaults.Web)
+        {
+            DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
+            TypeInfoResolver = new DefaultJsonTypeInfoResolver
+            {
+                Modifiers = { typeInfo => CustomizeContract(typeInfo, map) },
+            },
+        };
+
+        if (!map.IsEmpty)
+        {
+            options.Converters.Add(new MappedModelConverterFactory(map));
+        }
+
+        return options;
+    }
+
+    /// <summary>
+    /// Converts a value to the object Flurl puts in the query string.
+    /// </summary>
+    /// <param name="value">The parameter value.</param>
+    /// <returns>
+    /// <see langword="null"/> for <see langword="null"/>, a list for a sequence, otherwise a string.
+    /// </returns>
+    internal static object? ToQueryValue(object? value) => value switch
+    {
+        null => null,
+        string text => text,
+        Enum enumValue => EnumWireName(enumValue),
+        bool flag => flag ? "true" : "false",
+        DateTimeOffset dateTimeOffset => dateTimeOffset.ToString("O", CultureInfo.InvariantCulture),
+        DateTime dateTime => dateTime.ToString("O", CultureInfo.InvariantCulture),
+        DateOnly dateOnly => dateOnly.ToString("O", CultureInfo.InvariantCulture),
+        TimeOnly timeOnly => timeOnly.ToString("O", CultureInfo.InvariantCulture),
+        TimeSpan timeSpan => XmlConvert.ToString(timeSpan),
+        IFormattable formattable => formattable.ToString(null, CultureInfo.InvariantCulture),
+        IEnumerable sequence => sequence.Cast<object?>().Select(ToQueryValue).ToList(),
+        _ => value.ToString(),
+    };
+
+    /// <summary>
+    /// Converts a value to the text sent in a header or path segment. A sequence is comma-separated.
+    /// </summary>
+    /// <param name="value">The parameter value.</param>
+    /// <returns>The wire text, or an empty string for <see langword="null"/>.</returns>
+    internal static string ToWireString(object? value) => ToQueryValue(value) switch
+    {
+        null => string.Empty,
+        IEnumerable<object?> sequence => string.Join(",", sequence),
+        var converted => converted.ToString() ?? string.Empty,
+    };
+
+    /// <summary>
+    /// Converts a value to a fully percent-encoded path segment, so a value containing <c>/</c> or
+    /// <c>?</c> cannot change the shape of the URL.
+    /// </summary>
+    /// <param name="value">The path parameter value.</param>
+    /// <returns>The encoded segment text.</returns>
+    internal static string EscapePathSegment(object? value) =>
+        Uri.EscapeDataString(ToWireString(value));
+
+    /// <summary>
+    /// Adds caller-supplied query parameters that are not part of the API contract.
+    /// </summary>
+    /// <param name="request">The request to add them to.</param>
+    /// <param name="parameters">The extra parameters; <see langword="null"/> adds nothing.</param>
+    internal static void AddQueryParameters(IFlurlRequest request, Dictionary<string, object>? parameters)
+    {
+        if (parameters is null) return;
+
+        foreach (var (name, value) in parameters)
+        {
+            request.SetQueryParam(name, ToQueryValue(value));
+        }
+    }
+
+    /// <summary>
+    /// Wraps raw bytes as a request body.
+    /// </summary>
+    /// <param name="data">The bytes to send.</param>
+    /// <param name="contentType">The media type, e.g. <c>application/octet-stream</c>.</param>
+    /// <returns>The request content.</returns>
+    internal static HttpContent BytesContent(byte[] data, string contentType)
+    {
+        var content = new ByteArrayContent(data);
+        content.Headers.ContentType = MediaTypeHeaderValue.Parse(contentType);
+        return content;
+    }
+
+    /// <summary>
+    /// Wraps raw text as a request body.
+    /// </summary>
+    /// <param name="text">The text to send.</param>
+    /// <param name="contentType">The media type, e.g. <c>text/plain</c>.</param>
+    /// <returns>The request content.</returns>
+    internal static HttpContent TextContent(string text, string contentType) =>
+        new StringContent(text, Encoding.UTF8, contentType);
+
+    /// <summary>
+    /// Returns the wire name of an enum value, honouring <see cref="EnumMemberAttribute"/>.
+    /// </summary>
+    private static string EnumWireName(Enum value)
+    {
+        var name = value.ToString();
+        var member = value.GetType().GetField(name);
+        return member?.GetCustomAttribute<EnumMemberAttribute>()?.Value ?? name;
+    }
+
+    /// <summary>
+    /// Adjusts the serializer contract of a type so custom models behave: it swaps mapped models into the
+    /// derived-type list of a discriminated base, and registers a custom subtype that is used on its own so
+    /// its discriminator is still written.
+    /// </summary>
+    private static void CustomizeContract(JsonTypeInfo typeInfo, ModelMap models)
+    {
+        if (typeInfo.Kind != JsonTypeInfoKind.Object) return;
+
+        if (typeInfo.PolymorphismOptions is { } polymorphism)
+        {
+            for (var i = 0; i < polymorphism.DerivedTypes.Count; i++)
+            {
+                var derived = polymorphism.DerivedTypes[i];
+                if (models.TryGetCustomType(derived.DerivedType, out var custom))
+                {
+                    polymorphism.DerivedTypes[i] = Register(custom, derived.TypeDiscriminator);
+                }
+            }
+
+            return;
+        }
+
+        // A mapped replacement is registered under the base type by the swap above.
+        if (models.IsCustomType(typeInfo.Type)) return;
+
+        if (FindRegistration(typeInfo.Type) is { } registration && registration.Registered != typeInfo.Type)
+        {
+            typeInfo.PolymorphismOptions = new JsonPolymorphismOptions
+            {
+                TypeDiscriminatorPropertyName = registration.DiscriminatorProperty,
+                DerivedTypes = { Register(typeInfo.Type, registration.Discriminator) },
+            };
+        }
+    }
+
+    /// <summary>
+    /// Creates a derived-type entry for a type under an existing discriminator value.
+    /// </summary>
+    private static JsonDerivedType Register(Type type, object? discriminator) => discriminator switch
+    {
+        string text => new JsonDerivedType(type, text),
+        int number => new JsonDerivedType(type, number),
+        _ => new JsonDerivedType(type),
+    };
+
+    /// <summary>
+    /// Finds the nearest type, starting at <paramref name="type"/> itself, that a discriminated base
+    /// declares through <see cref="JsonDerivedTypeAttribute"/>.
+    /// </summary>
+    private static (string DiscriminatorProperty, object? Discriminator, Type Registered)? FindRegistration(Type type)
+    {
+        for (var current = type; current is not null; current = current.BaseType)
+        {
+            for (var root = current.BaseType; root is not null; root = root.BaseType)
+            {
+                var polymorphic = root.GetCustomAttribute<JsonPolymorphicAttribute>(inherit: false);
+                if (polymorphic is null) continue;
+
+                var registration = root
+                    .GetCustomAttributes<JsonDerivedTypeAttribute>(inherit: false)
+                    .FirstOrDefault(attribute => attribute.DerivedType == current);
+                if (registration is not null)
+                {
+                    return (polymorphic.TypeDiscriminatorPropertyName ?? "$type", registration.TypeDiscriminator, current);
+                }
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Applies <see cref="ModelMap"/> entries to models that are not part of a discriminated hierarchy.
+    /// </summary>
+    private sealed class MappedModelConverterFactory : JsonConverterFactory
+    {
+        private readonly ModelMap _models;
+
+        public MappedModelConverterFactory(ModelMap models) => _models = models;
+
+        public override bool CanConvert(Type typeToConvert) =>
+            _models.TryGetCustomType(typeToConvert, out _) && FindRegistration(typeToConvert) is null;
+
+        public override JsonConverter CreateConverter(Type typeToConvert, JsonSerializerOptions options)
+        {
+            _models.TryGetCustomType(typeToConvert, out var custom);
+            return (JsonConverter)Activator.CreateInstance(
+                typeof(MappedModelConverter<,>).MakeGenericType(typeToConvert, custom!),
+                this)!;
+        }
+    }
+
+    /// <summary>
+    /// Reads <typeparamref name="TModel"/> as <typeparamref name="TCustom"/>, and writes a value by its runtime
+    /// type so a custom model nested in another model keeps its extra properties.
+    /// </summary>
+    private sealed class MappedModelConverter<TModel, TCustom> : JsonConverter<TModel>
+        where TCustom : TModel
+    {
+        private readonly JsonConverterFactory _factory;
+        private JsonSerializerOptions? _plainOptions;
+
+        public MappedModelConverter(JsonConverterFactory factory) => _factory = factory;
+
+        public override TModel? Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options) =>
+            JsonSerializer.Deserialize<TCustom>(ref reader, options);
+
+        public override void Write(Utf8JsonWriter writer, TModel value, JsonSerializerOptions options)
+        {
+            var runtimeType = value!.GetType();
+            if (runtimeType != typeof(TModel))
+            {
+                JsonSerializer.Serialize(writer, value, runtimeType, options);
+                return;
+            }
+
+            // A plain TModel would be routed straight back to this converter, so it is written with a copy
+            // of the options that does not include it.
+            _plainOptions ??= WithoutFactory(options);
+            JsonSerializer.Serialize(writer, value, typeof(TModel), _plainOptions);
+        }
+
+        private JsonSerializerOptions WithoutFactory(JsonSerializerOptions options)
+        {
+            var copy = new JsonSerializerOptions(options);
+            copy.Converters.Remove(_factory);
+            return copy;
+        }
+    }
+}

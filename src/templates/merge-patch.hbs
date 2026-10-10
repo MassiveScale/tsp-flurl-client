@@ -1,0 +1,213 @@
+{{!--
+  merge-patch.hbs — static helper emitted once per namespace into `Models/`,
+  but only when at least one generated operation takes a merge-patch body
+  (i.e. something in the TypeSpec uses `MergePatchUpdate<T>` or a sibling).
+
+  Unlike the server-side helper shipped by `@massivescale/tsp-aspnetcore-api`
+  — which is read-oriented, since a controller *receives* a patch — this one is
+  write-oriented: a client *builds* a patch. Callers compose the payload with
+  fluent `Set` / `Clear` / `Remove` calls, and `[JsonExtensionData]` means only
+  the properties actually touched are serialized, which is exactly the RFC 7396
+  contract.
+
+  Two types are emitted: the covariant marker `IMergePatch<out T>` and the
+  builder `MergePatch<T>`. Endpoint methods accept `IMergePatch<Widget>`, so a
+  `MergePatch<MyWidget>` (a patch against a custom model that derives from
+  `Widget`) can be sent to an operation declared against `Widget`.
+
+  Override via tspconfig.yaml:
+    options:
+      "@massivescale/tsp-flurl-client":
+        templates:
+          merge-patch: "./templates/merge-patch.hbs"
+
+  ── Template variables ──────────────────────────────────────────────────────
+
+  (none — this template renders a fully static class body)
+
+  ── Usage example ────────────────────────────────────────────────────────────
+
+  var patch = new MergePatch<Widget>()
+      .Set(w => w.Name, "new name")   // send a new value
+      .Clear(w => w.Description);     // send an explicit JSON null
+
+  await client.Widgets.UpdateAsync(id, patch, ct);
+
+--}}
+
+/// <summary>
+/// Marks a merge-patch payload targeting <typeparamref name="T"/>. It is covariant, so a patch
+/// against a custom model that derives from <typeparamref name="T"/> is accepted wherever a
+/// patch against <typeparamref name="T"/> is expected.
+/// </summary>
+/// <typeparam name="T">The model type the patch targets.</typeparam>
+public interface IMergePatch<out T>
+{
+}
+
+/// <summary>
+/// Builder for an RFC 7396 JSON Merge Patch request body targeting <typeparamref name="T"/>.
+/// </summary>
+/// <remarks>
+/// Only the properties you touch are serialized, so an untouched property is left
+/// unchanged by the server, while <see cref="Clear(string)"/> sends an explicit
+/// <c>null</c> to clear it. Property names are resolved from
+/// <see cref="JsonPropertyNameAttribute"/> on <typeparamref name="T"/> when you use the
+/// expression overloads, so you never have to hard-code wire names.
+/// </remarks>
+/// <typeparam name="T">The model type this patch targets.</typeparam>
+[ExcludeFromCodeCoverage]
+public class MergePatch<T> : IMergePatch<T>
+{
+    private static readonly JsonSerializerOptions DefaultSerializerOptions =
+        new(JsonSerializerDefaults.Web);
+
+    private static readonly JsonElement NullElement =
+        JsonSerializer.SerializeToElement<object?>(null);
+
+    /// <summary>
+    /// The patch payload, keyed by JSON wire name. Serialized inline by
+    /// <c>System.Text.Json</c> via <c>[JsonExtensionData]</c>, so this object writes
+    /// as a flat JSON object containing exactly the properties that were set.
+    /// </summary>
+    [JsonExtensionData]
+    public Dictionary<string, JsonElement> Properties { get; init; } = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// Sets a property to <paramref name="value"/>, selecting it with an expression
+    /// such as <c>w =&gt; w.Name</c>.
+    /// </summary>
+    /// <param name="property">Expression selecting the property to patch.</param>
+    /// <param name="value">The value to send. A <see langword="null"/> value is sent as JSON <c>null</c>.</param>
+    /// <param name="options">Optional serializer options for <paramref name="value"/>.</param>
+    /// <returns>This instance, so calls can be chained.</returns>
+    public MergePatch<T> Set<TValue>(
+        Expression<Func<T, TValue>> property,
+        TValue value,
+        JsonSerializerOptions? options = null) =>
+        Set(ResolveWireName(property), value, options);
+
+    /// <summary>
+    /// Sets a property to <paramref name="value"/> by its JSON wire name.
+    /// </summary>
+    /// <param name="propertyName">The JSON wire name, e.g. <c>"displayName"</c>.</param>
+    /// <param name="value">The value to send. A <see langword="null"/> value is sent as JSON <c>null</c>.</param>
+    /// <param name="options">Optional serializer options for <paramref name="value"/>.</param>
+    /// <returns>This instance, so calls can be chained.</returns>
+    public MergePatch<T> Set<TValue>(
+        string propertyName,
+        TValue value,
+        JsonSerializerOptions? options = null)
+    {
+        if (propertyName is null) throw new ArgumentNullException(nameof(propertyName));
+
+        Properties[propertyName] =
+            JsonSerializer.SerializeToElement(value, options ?? DefaultSerializerOptions);
+        return this;
+    }
+
+    /// <summary>
+    /// Sends an explicit JSON <c>null</c> for a property, instructing the server to clear it.
+    /// </summary>
+    /// <param name="property">Expression selecting the property to clear.</param>
+    /// <returns>This instance, so calls can be chained.</returns>
+    public MergePatch<T> Clear<TValue>(Expression<Func<T, TValue>> property) =>
+        Clear(ResolveWireName(property));
+
+    /// <summary>
+    /// Sends an explicit JSON <c>null</c> for a property by its JSON wire name.
+    /// </summary>
+    /// <param name="propertyName">The JSON wire name, e.g. <c>"displayName"</c>.</param>
+    /// <returns>This instance, so calls can be chained.</returns>
+    public MergePatch<T> Clear(string propertyName)
+    {
+        if (propertyName is null) throw new ArgumentNullException(nameof(propertyName));
+
+        Properties[propertyName] = NullElement;
+        return this;
+    }
+
+    /// <summary>
+    /// Drops a property from the patch entirely, so the request says nothing about it.
+    /// This is the opposite of <see cref="Clear(string)"/>, which asks the server to null it out.
+    /// </summary>
+    /// <param name="property">Expression selecting the property to drop.</param>
+    /// <returns>This instance, so calls can be chained.</returns>
+    public MergePatch<T> Remove<TValue>(Expression<Func<T, TValue>> property) =>
+        Remove(ResolveWireName(property));
+
+    /// <summary>
+    /// Drops a property from the patch entirely, by its JSON wire name.
+    /// </summary>
+    /// <param name="propertyName">The JSON wire name, e.g. <c>"displayName"</c>.</param>
+    /// <returns>This instance, so calls can be chained.</returns>
+    public MergePatch<T> Remove(string propertyName)
+    {
+        if (propertyName is null) throw new ArgumentNullException(nameof(propertyName));
+
+        Properties.Remove(propertyName);
+        return this;
+    }
+
+    /// <summary>
+    /// Returns <see langword="true"/> when the patch carries a value for the property
+    /// (including an explicit <c>null</c>).
+    /// </summary>
+    public bool IsDefined<TValue>(Expression<Func<T, TValue>> property) =>
+        IsDefined(ResolveWireName(property));
+
+    /// <summary>
+    /// Returns <see langword="true"/> when the patch carries a value for the JSON wire name
+    /// (including an explicit <c>null</c>).
+    /// </summary>
+    public bool IsDefined(string propertyName) =>
+        propertyName is not null && Properties.ContainsKey(propertyName);
+
+    /// <summary>
+    /// Returns <see langword="true"/> when the property is present in the patch and its
+    /// value is JSON <c>null</c>.
+    /// </summary>
+    public bool IsNull<TValue>(Expression<Func<T, TValue>> property) =>
+        IsNull(ResolveWireName(property));
+
+    /// <summary>
+    /// Returns <see langword="true"/> when the JSON wire name is present in the patch and its
+    /// value is JSON <c>null</c>.
+    /// </summary>
+    public bool IsNull(string propertyName) =>
+        propertyName is not null
+        && Properties.TryGetValue(propertyName, out var element)
+        && element.ValueKind == JsonValueKind.Null;
+
+    /// <summary>
+    /// Resolves the JSON wire name for a property-selector expression, preferring the
+    /// <see cref="JsonPropertyNameAttribute"/> value and falling back to the CLR property name.
+    /// </summary>
+    /// <exception cref="ArgumentException">
+    /// The expression does not select a property declared directly on <typeparamref name="T"/>.
+    /// </exception>
+    private static string ResolveWireName<TValue>(Expression<Func<T, TValue>> property)
+    {
+        if (property is null) throw new ArgumentNullException(nameof(property));
+
+        // A value-type property read through Func<T, object> arrives boxed inside a
+        // Convert node, so unwrap one level of UnaryExpression before matching.
+        var member = property.Body as MemberExpression
+            ?? (property.Body as UnaryExpression)?.Operand as MemberExpression;
+
+        // The patch payload is a flat map of T's own JSON properties, so only a
+        // direct read off the lambda parameter is meaningful. A nested selector
+        // such as x => x.Name.Length would otherwise resolve to "Length" and
+        // silently patch a field that does not exist on the wire.
+        if (member?.Member is not PropertyInfo info
+            || member.Expression != property.Parameters[0])
+        {
+            throw new ArgumentException(
+                "Expression must select a property declared directly on "
+                    + typeof(T).Name + ", for example x => x.Name.",
+                nameof(property));
+        }
+
+        return info.GetCustomAttribute<JsonPropertyNameAttribute>()?.Name ?? info.Name;
+    }
+}

@@ -1,0 +1,40 @@
+{{!--
+  enum.hbs — rendered once per TypeSpec enum as a C# `public enum`.
+
+  Override via tspconfig.yaml:
+    options:
+      "@massivescale/tsp-flurl-client":
+        templates:
+          enum: "./templates/enum.hbs"
+
+  ── Template variables ──────────────────────────────────────────────────────
+
+  {{doc}}         — optional XML <summary> text (pre-escaped; may be falsy).
+
+  {{enumName}}    — PascalCase enum name, e.g. "OrderStatus"
+
+  {{members}}     — array of enum-member objects in declaration order. Each has:
+    .doc          —   optional XML <summary> text (pre-escaped; may be falsy)
+    .name         —   PascalCase member name, e.g. "Pending"
+    .memberValue  —   wire string for [EnumMember(Value = "...")], e.g. "pending"
+
+  ── Built-in helpers ────────────────────────────────────────────────────────
+
+  {{indent <text>}}  — prefixes every non-empty line of <text> with 4 spaces
+  {{eq a b}}         — strict equality
+
+--}}
+/// <summary>
+{{#if doc}}/// {{docLines doc "/// "}}
+{{/if}}/// </summary>
+[JsonConverter(typeof(JsonStringEnumConverter))]
+{{access}} enum {{enumName}}
+{
+{{#each members}}{{#if doc}}    /// <summary>
+    /// {{docLines doc "    /// "}}
+    /// </summary>
+{{/if}}    [EnumMember(Value = "{{memberValue}}")]
+    {{name}},
+
+{{/each}}
+}

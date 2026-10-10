@@ -1,0 +1,52 @@
+{{!--
+  endpoint-client.hbs — rendered once per TypeSpec interface as an internal
+  class that implements the matching endpoint interface on top of a Flurl
+  `IFlurlClient`.
+
+  Consumers never name this class: they receive the interface from the
+  aggregate client or from dependency injection.
+
+  Override via tspconfig.yaml:
+    options:
+      "@massivescale/tsp-flurl-client":
+        templates:
+          endpoint-client: "./templates/endpoint-client.hbs"
+
+  ── Template variables ──────────────────────────────────────────────────────
+
+  {{className}}     — C# class name, e.g. "WidgetsClient"
+
+  {{interfaceName}} — the interface the class implements, e.g. "IWidgets"
+
+  {{methodsBlock}}  — pre-rendered string containing all method implementations,
+                      each indented with 4 spaces and separated by blank lines.
+                      A method with a generic overload gets a thin wrapper that
+                      forwards to the generic implementation; any other method
+                      carries the request logic itself.
+
+  The generated methods rely on a field named `_client` and on the internal
+  `ClientRuntime` helper emitted alongside the models.
+
+  ── Built-in helpers ────────────────────────────────────────────────────────
+
+  {{indent <text>}}  — prefixes every non-empty line of <text> with 4 spaces
+
+--}}
+/// <summary>
+/// Flurl-backed implementation of <see cref="{{interfaceName}}"/>.
+/// </summary>
+internal sealed class {{className}} : {{interfaceName}}
+{
+    private readonly IFlurlClient _client;
+
+    /// <summary>
+    /// Initializes a new instance of <see cref="{{className}}"/>.
+    /// </summary>
+    /// <param name="client">The Flurl client requests are sent through.</param>
+    public {{className}}(IFlurlClient client)
+    {
+        _client = client ?? throw new ArgumentNullException(nameof(client));
+    }
+
+{{{methodsBlock}}}
+}

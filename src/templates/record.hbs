@@ -1,0 +1,60 @@
+{{!--
+  record.hbs — rendered once per TypeSpec model or visibility-filtered request
+  type as a C# `{{access}} record`.
+
+  Override via tspconfig.yaml:
+    options:
+      "@massivescale/tsp-flurl-client":
+        templates:
+          record: "./templates/record.hbs"
+
+  ── Template variables ──────────────────────────────────────────────────────
+
+  {{doc}}           — optional XML <summary> text (pre-escaped; may be falsy).
+                      Rendered as: /// <summary>{{doc}}</summary>
+
+  {{recordName}}    — PascalCase record name, e.g. "Widget" or "PetCreateRequest"
+
+  {{genericSuffix}} — generic type parameter string if the model is generic,
+                      e.g. "<T>" or "". Empty string for non-generic records.
+
+  {{properties}}    — array of property objects in declaration order. Each has:
+    .doc            —   optional XML <summary> text (pre-escaped; may be falsy)
+    .type           —   C# type string incl. optional "?", e.g. "string", "int?"
+    .name           —   PascalCase property name, e.g. "FirstName"
+    .jsonPropertyName — JSON wire name for [JsonPropertyName("...")], e.g. "firstName"
+    .defaultValue   —   default initializer expression (may be falsy), e.g.
+                        "default!" or "[]". Written as `= <defaultValue>;`.
+
+  {{baseRecordName}} — C# record to inherit from (may be falsy). Set when this
+                        record is a derived member of a `@discriminator` hierarchy.
+
+  {{discriminator}} — present when the model declares `@discriminator` (may be falsy). Has:
+    .propertyName   —   JSON wire name of the discriminator property, e.g. "petKind"
+    .derivedTypes   —   array of { typeName, value } pairs, one per known derived type
+
+  {{isAbstract}}    — when true, renders the `abstract` modifier. Set for
+                       `@discriminator` hierarchy members with no concrete wire
+                       shape of their own (may be falsy).
+
+  ── Built-in helpers ────────────────────────────────────────────────────────
+
+  {{indent <text>}}        — prefixes every non-empty line of <text> with 4 spaces
+  {{#if (isDefined val)}}  — true when val is not undefined
+
+--}}
+/// <summary>
+{{#if doc}}/// {{docLines doc "/// "}}
+{{/if}}/// </summary>
+{{#if discriminator}}[JsonPolymorphic(TypeDiscriminatorPropertyName = "{{discriminator.propertyName}}")]
+{{#each discriminator.derivedTypes}}[JsonDerivedType(typeof({{typeName}}), "{{value}}")]
+{{/each}}{{/if}}{{access}} {{#if isAbstract}}abstract {{/if}}record {{recordName}}{{genericSuffix}}{{#if baseRecordName}} : {{baseRecordName}}{{/if}}
+{
+{{#each properties}}{{#if doc}}    /// <summary>
+    /// {{docLines doc "    /// "}}
+    /// </summary>
+{{/if}}    [JsonPropertyName("{{jsonPropertyName}}")]
+    public {{type}} {{name}} { get; init; }{{#if defaultValue}} = {{defaultValue}};{{/if}}
+    
+{{/each}}
+}

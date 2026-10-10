@@ -1,0 +1,84 @@
+import "@typespec/http";
+
+using Http;
+
+/**
+ * Exercises every place a caller can swap in a custom model: responses, list items,
+ * nested properties, discriminated hierarchies, merge patches, and request bodies.
+ */
+@service(#{ title: "Custom Models" })
+namespace MassiveScale.CustomModels;
+
+enum Color {
+  red,
+  blue,
+}
+
+model Widget {
+  @visibility(Lifecycle.Read)
+  id: string;
+
+  name: string;
+  color?: Color;
+}
+
+model WidgetPage {
+  items: Widget[];
+  featured?: Widget;
+}
+
+@discriminator("kind")
+model Pet {
+  kind: string;
+  name: string;
+}
+
+model Dog extends Pet {
+  kind: "dog";
+  isBarker: boolean;
+}
+
+model Cat extends Pet {
+  kind: "cat";
+  isPurrer: boolean;
+}
+
+@route("/widgets")
+interface Widgets {
+  @get list(
+    @query color?: Color,
+    @query tags?: string[],
+    @header("X-Trace") trace?: string,
+  ): WidgetPage;
+
+  @get read(@path id: string): Widget;
+  @post create(@body body: Widget): Widget;
+
+  @route("bulk") @post createMany(@body body: Widget[]): Widget[];
+
+  @patch update(
+    @path id: string,
+    @body body: MergePatchUpdate<Widget>,
+  ): Widget;
+
+  @delete delete(@path id: string): void;
+}
+
+@route("/pets")
+interface Pets {
+  @get list(): Pet[];
+  @post create(@body body: Pet): Pet;
+}
+
+@route("/files")
+interface Files {
+  @post upload(
+    @header contentType: "application/octet-stream",
+    @body body: bytes,
+  ): void;
+
+  @route("{id}") @get download(@path id: string): {
+    @header contentType: "application/octet-stream";
+    @body body: bytes;
+  };
+}

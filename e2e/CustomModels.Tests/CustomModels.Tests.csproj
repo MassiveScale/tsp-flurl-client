@@ -1,0 +1,14 @@
+<Project Sdk="MSTest.Sdk/4.2.3">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="AwesomeAssertions" Version="9.*" />
+    <ProjectReference Include="../../example/custom-models/tsp-output/MassiveScale.CustomModelsClient.csproj" />
+  </ItemGroup>
+
+</Project>
