@@ -117,8 +117,12 @@ jobs:
         with:
           name: coverage-report-typescript
 
+      # Non-fatal while GitHub code quality is not enabled for this repository
+      # (the upload is rejected with HTTP 403). The Coverage job above still
+      # runs the tests under c8. Remove this once code quality is enabled.
       - uses: actions/upload-code-coverage@v1
         with:
           file: cobertura-coverage.xml
           language: TypeScript
           label: code-coverage-agent
+          fail-on-error: false
