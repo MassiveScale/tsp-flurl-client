@@ -76,12 +76,12 @@ describe("dependency injection registration", () => {
     );
     ok(
       content.includes(
-        "services.AddTransient<IPets>(sp => new PetsClient(CreateFlurlClient(sp)));",
+        "services.AddTransient<IPets>(sp => new PetsClient(CreateFlurlClient(sp, models)));",
       ),
     );
     ok(
       content.includes(
-        "services.AddTransient<IStores>(sp => new StoresClient(CreateFlurlClient(sp)));",
+        "services.AddTransient<IStores>(sp => new StoresClient(CreateFlurlClient(sp, models)));",
       ),
     );
   });
@@ -98,7 +98,11 @@ describe("dependency injection registration", () => {
       ),
     );
     ok(content.includes("Action<ModelMap>? configureModels = null)"));
-    ok(content.includes("services.AddSingleton(models);"));
+    ok(
+      !content.includes("AddSingleton"),
+      "The model map must be captured, not registered by type, or one API version's map would replace another's",
+    );
+    ok(content.includes("configureModels?.Invoke(models);"));
   });
 
   it("keys the HttpClient name by client name", async () => {

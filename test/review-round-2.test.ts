@@ -485,17 +485,27 @@ describe("version projection", () => {
     ok(!v2.includes("Legacy"), "A property removed in v2 is not in v2");
   });
 
-  it("keeps every version's properties when all versions are emitted together", async () => {
+  it("gives each version its own models when all versions are emitted together", async () => {
     const results = await emit(spec, { "all-versions": true });
 
-    const widget = fileContent(results, "Widget.g.cs");
-    ok(widget.includes("Color"));
-    ok(widget.includes("Legacy"));
+    const v1 = fileContent(results, "v1.0/Models/Widget.g.cs");
+    ok(v1.includes("namespace TestApi.Client.V1_0;"));
+    ok(v1.includes("Legacy") && !v1.includes("Color"));
+
+    const v2 = fileContent(results, "v2.0/Models/Widget.g.cs");
+    ok(v2.includes("namespace TestApi.Client.V2_0;"));
+    ok(v2.includes("Color") && !v2.includes("Legacy"));
+
+    ok(
+      !Object.keys(results).some(
+        (k) => k.endsWith("/Models/Widget.g.cs") && !/v[12]\.0\//.test(k),
+      ),
+      "No unversioned copy of a versioned model is written",
+    );
     ok(
       !fileContent(results, "v1.0/Endpoints/WidgetsClient.g.cs").includes(
         'SetQueryParam("extra"',
       ),
-      "The v1 client still omits the v2 parameter",
     );
     ok(
       fileContent(results, "v2.0/Endpoints/WidgetsClient.g.cs").includes(

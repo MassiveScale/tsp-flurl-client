@@ -40,7 +40,7 @@ options:
 | `additional-usings`           | `string[]` | —                                             | Extra `using` directives appended to every emitted C# file. Use this when the service references types declared outside its own TypeSpec namespace but emitted elsewhere — for example a sibling emitter's shared namespace — so the generated code still compiles. |
 | `net-version`                 | `string`   | `net8.0`                                      | Target .NET version(s) written into the `.csproj`. Use a single TFM (e.g. `net8.0`) or a semicolon-separated list for multi-targeting (e.g. `net8.0;net9.0`). **.NET 8 or later is required** (see [Requirements](#requirements)).                                  |
 | `target-version`              | `string`   | Latest declared version                       | Emit only this API version. Ignored when `all-versions` is `true`.                                                                                                                                                                                                  |
-| `all-versions`                | `boolean`  | `false`                                       | When `true`, generate clients for every declared API version in separate subfolders.                                                                                                                                                                                |
+| `all-versions`                | `boolean`  | `false`                                       | When `true`, generate every declared API version, each in its own subfolder and `V<version>` namespace with its own models. See [Multiple API versions](#multiple-api-versions).                                                                                    |
 | `version-in-namespace`        | `boolean`  | `false`                                       | When `true`, append the sanitized API version to the C# namespace in single-version mode. Has no effect when `all-versions` is `true`.                                                                                                                              |
 | `route-prefix`                | `string`   | `api/{version}`                               | Prefix prepended to every emitted route path. The `{version}` token is replaced by the API version value (e.g. `api/{version}` + `v1.0` → `api/v1.0/items`). When no version is available, `{version}` is removed (`api/items`). Set to `""` to disable.            |
 | `emit-project-file`           | `boolean`  | `true`                                        | Set to `false` to skip `.csproj` generation.                                                                                                                                                                                                                        |
@@ -363,7 +363,7 @@ List<MyDog> dogs = await api.Pets.ListAsync<MyDog>();
 - Enums are read and written as their declared values through a converter generated for each enum (`ColorJsonConverter`), because `JsonStringEnumConverter` ignores `[EnumMember]` and would write the C# member name (`Blue`) where the API declared `blue`. A member declared with a number (`enum Status { ready: 1 }`) travels as a JSON number, and an enum can mix both. A value the enum does not declare, or a token of the wrong kind, is rejected with a `JsonException` instead of being guessed.
 - Names that become C# string literals (property, query and header names, discriminator and enum values, media types) are escaped, and values written into the generated `.csproj` (NuGet metadata, namespace, target framework) are XML-escaped.
 - A `bytes` body or response is sent and read raw, as is a `string` body or response with a non-JSON media type (TypeSpec's default for `string` is `text/plain`).
-- Versioning is applied per emitted version: an operation, and a parameter, that was `@added` later or `@removed` is left out of the client for versions that do not have it. In single-version mode (the default, or `target-version`) model properties are filtered the same way. With `all-versions`, each model is written once and carries the properties of every version, because the versions share one set of models; the per-version clients still omit the parameters they do not have.
+- Versioning is applied to everything that is emitted: an operation, a parameter, a model property, an enum member, a `@discriminator` subtype, and a whole model or enum is left out of any version that does not have it (`@added` / `@removed`).
 - A `Content-Type` header declared as an operation parameter is not exposed; the body's media type decides it.
 
 ### Polymorphism (`@discriminator`)
@@ -509,10 +509,46 @@ npm run format        # format all files
 npm run format:check  # check formatting without writing
 ```
 
+## Multiple API versions
+
+By default only the latest declared version is emitted (or the one named by `target-version`), into the root namespace. Set `all-versions: true` to emit every version side by side:
+
+```
+<output-dir>/
+  v1.0/
+    Endpoints/        # IWidgets, WidgetsClient, ... for v1.0
+    Models/           # Widget, Status, WidgetCreateRequest, ... exactly as v1.0 declares them
+    ApiClientExtensions.g.cs
+  v2.0/
+    Endpoints/
+    Models/
+    ApiClientExtensions.g.cs
+  Infrastructure/     # ModelMap, ClientRuntime: shared by every version
+  Models/MergePatch.g.cs   # only when used; shared
+  ApiClient.csproj
+```
+
+Each version is emitted on its own, into the namespace `<root>.V1_0`, `<root>.V2_0`, and so on. A version's types have exactly that version's shape: a property `@added(Versions.v2)` is absent from `V1_0.Widget`, an enum member `@removed(Versions.v2)` is absent from `V2_0.Status`, a model that only exists from v2 is only generated in `V2_0`, and a `@discriminator` subtype only registers in the versions that have it. Routes use the version (`api/v1.0/widgets`).
+
+```csharp
+V1_0.Widget old = await v1Client.Widgets.ReadAsync(id);           // has LegacyCode, no Color
+V2_0.Widget current = await v2Client.Widgets.ReadAsync(id, expand: true);   // has Color, no LegacyCode
+```
+
+Both versions can be registered in one application. Each registration keeps its own model map, so custom models for one version never leak into another:
+
+```csharp
+V1_0.ApiClientExtensions.AddApiClient(services, http => ..., configureModels: m => m.Map<V1_0.Widget, MyV1Widget>());
+V2_0.ApiClientExtensions.AddApiClient(services, http => ...);
+```
+
+`ModelMap`, `ClientRuntime` and `MergePatch<T>` are written once, in the root namespace, which every version's namespace is nested in. A model in a single-version emit (no `all-versions`) is projected onto that version in the same way, and `version-in-namespace` moves only the endpoints into the version namespace, as it always has.
+
 ## Examples
 
 - [`example/simple-api/`](example/simple-api/) — a small widget service.
 - [`example/custom-models/`](example/custom-models/) — exercises every place a custom model can be swapped in. It is the subject of the end-to-end tests.
+- [`example/all-versions/`](example/all-versions/) — a service whose versions differ in models, enums, subtypes, operations and parameters, emitted with `all-versions`. Its end-to-end tests prove each version has exactly its own shape.
 - [`example/versioned-api/`](example/versioned-api/) — a versioned Pet Store demonstrating multi-version route and model definitions. Run it with `./example/versioned-api/build.ps1`.
 
 ## Contributing

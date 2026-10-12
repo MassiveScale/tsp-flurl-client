@@ -58,7 +58,7 @@ TypeSpec discovers this emitter via two required exports in `src/index.ts`:
 
 Generation logic is split by output domain, each with a matching `test/<name>.test.ts`:
 
-- **`src/emitter.ts`** — Entry point and orchestration only: `$onEmit`, the per-service pipeline (`emitService`), renderer setup, file IO, `dotnet format`, output-name reservation, and version selection/filtering. Delegates all C# generation to the modules below.
+- **`src/emitter.ts`** — Entry point and orchestration only: `$onEmit`, the per-service pipeline (`emitService`), renderer setup, file IO, `dotnet format`, output-name reservation, and version selection. Each API version is emitted as its own unit (`emitUnit`) with its own model and enum accumulators and its own name reservations, so with `all-versions` every version gets models shaped exactly as that version declares them. Delegates all C# generation to the modules below.
 - **`src/endpoints.ts`** — Endpoint generation: for each TypeSpec interface, the C# interface and its Flurl implementation; route resolution into interpolated path strings; parameter bindings; body and response payload kinds; the generic overloads (see below); and collection of visibility-filtered request payload types.
 - **`src/models.ts`** — C# `record` and `enum` generation, including `@discriminator` polymorphic hierarchies, request-payload records, and namespace-based emission filters.
 - **`src/helpers.ts`** — The hand-written C# the generated project depends on: `ModelMap`, `ClientRuntime`, and `MergePatch<T>`. Written once per C# namespace.
@@ -104,6 +104,7 @@ On a machine whose NuGet config includes a private feed that rejects the current
 
 - `example/simple-api/` — a small widget service.
 - `example/custom-models/` — every place a custom model can be swapped in. The subject of the end-to-end tests.
+- `example/all-versions/` — versions that genuinely differ, emitted with `all-versions`. Its tests in `e2e/CustomModels.Tests` prove each version has exactly its own shape.
 - `example/versioned-api/` — a versioned Pet Store for manual end-to-end validation. Run it via `example/versioned-api/build.ps1`.
 
 ---
@@ -155,12 +156,13 @@ After making any change to the codebase:
    ```powershell
    cd example/simple-api && npm install && tsp compile .
    cd example/custom-models && npm install && tsp compile .
+   cd example/all-versions && npm install && tsp compile .
    cd example/versioned-api && npm install && ./build.ps1
    ```
 
    Run this for every subdirectory under `example/`.
 
-3. **Run the end-to-end tests** (after compiling `example/custom-models`):
+3. **Run the end-to-end tests** (after compiling `example/custom-models` and `example/all-versions`):
 
    ```powershell
    dotnet run --project e2e/CustomModels.Tests

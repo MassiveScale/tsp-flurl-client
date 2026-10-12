@@ -25,12 +25,7 @@ import {
   NoTarget,
 } from "@typespec/compiler";
 import { getAllHttpServices, HttpOperation } from "@typespec/http";
-import {
-  getAllVersions,
-  getAvailabilityMap,
-  Availability,
-  Version,
-} from "@typespec/versioning";
+import { getAllVersions, Version } from "@typespec/versioning";
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
@@ -58,6 +53,7 @@ import { buildExtensions, type EndpointName } from "./client.js";
 import { buildCsproj, deriveNugetVersion } from "./project.js";
 import {
   sanitizeVersionForNs,
+  isInVersion,
   MERGE_PATCH_HELPER_NAME,
   type UsedHelpers,
 } from "./utils.js";
@@ -437,11 +433,6 @@ async function emitService(
     (options["client-name"] !== undefined ? clientName : undefined);
   const allVersions = getAllVersions(program, serviceNs) ?? [];
 
-  const models = new Map<string, Model>();
-  const enums = new Map<string, Enum>();
-  const modelOutputOwners = new Map<string, OutputNameOwner>();
-  const usedHelpers: UsedHelpers = new Set();
-
   // Group operations by container (Interface or Namespace)
   const byContainer = new Map<
     string,
@@ -467,26 +458,38 @@ async function emitService(
   const useVersionedFolders = options["all-versions"] === true;
 
   /**
-   * Writes the endpoint interfaces and clients, the request-type records, and the
-   * aggregate client for one namespace/folder pair.
+   * Emits one self-contained set of output: the endpoint interfaces and clients,
+   * the aggregate client, and exactly the models, enums and request records those
+   * endpoints reference, projected onto the unit's API version. A unit owns its
+   * own model and enum accumulators and its own output-name reservations, so the
+   * same name can be used by different versions without clashing.
    *
-   * @param dir - Folder the Endpoints folder and aggregate client are written under.
-   * @param ns - C# namespace the files are emitted into.
-   * @param version - The API version emitted, or `undefined` when unversioned.
-   * @param requestTypeDir - Folder the synthesized request records are written to.
+   * @param unit - Where and how to emit.
+   * @param unit.dir - Folder the Endpoints folder and aggregate client are written under.
+   * @param unit.endpointNs - C# namespace of the endpoints and aggregate client.
+   * @param unit.modelNs - C# namespace of the models, enums, and request records.
+   * @param unit.modelsDir - Folder the models, enums, and request records are written to.
+   * @param unit.version - The API version emitted, or `undefined` when unversioned.
    */
-  const emitEndpoints = async (
-    dir: string,
-    ns: string,
-    version: Version | undefined,
-    requestTypeDir: string,
-  ): Promise<void> => {
+  const emitUnit = async (unit: {
+    dir: string;
+    endpointNs: string;
+    modelNs: string;
+    modelsDir: string;
+    version: Version | undefined;
+  }): Promise<void> => {
+    const { dir, endpointNs, modelNs, modelsDir, version } = unit;
+    const models = new Map<string, Model>();
+    const enums = new Map<string, Enum>();
+    const modelOutputOwners = new Map<string, OutputNameOwner>();
+    const usedHelpers: UsedHelpers = new Set();
     const requestTypes = new Map<string, RequestType>();
     const endpointNames: EndpointName[] = [];
+
     for (const { name, container, ops } of byContainer.values()) {
-      const vOps = version
-        ? ops.filter((op) => isOpInVersion(program, op, version))
-        : ops;
+      const vOps = ops.filter((op) =>
+        isInVersion(program, op.operation, version),
+      );
       if (vOps.length === 0) continue;
       const interfaceName = `I${name}`;
       const endpointClientName = `${name}Client`;
@@ -512,7 +515,7 @@ async function emitService(
       const sources = buildEndpoint(
         interfaceName,
         endpointClientName,
-        ns,
+        endpointNs,
         vOps,
         getDoc(program, container),
         access,
@@ -537,12 +540,11 @@ async function emitService(
         sources.clientSource,
       );
     }
+
+    // Request records share the models folder, so a model with the same name must
+    // be reported, not overwritten.
     for (const [, rt] of requestTypes) {
-      // In single-version mode request records share Models/ with the user's
-      // models, so a model with the same name must be reported, not overwritten.
-      // Per-version folders keep their records apart from the models.
       if (
-        !useVersionedFolders &&
         !tryReserveModelOutputName(
           program,
           modelOutputOwners,
@@ -553,25 +555,25 @@ async function emitService(
       ) {
         continue;
       }
-      const content = buildFilteredRecord(
-        rt.name,
-        rt.doc,
-        rt.props,
-        ns,
-        program,
-        models,
-        enums,
-        usedHelpers,
-        renderer,
-        additionalUsings,
-        rt.access,
-      );
       await writeFile(
         program,
-        resolvePath(requestTypeDir, `${rt.name}.g.cs`),
-        content,
+        resolvePath(modelsDir, `${rt.name}.g.cs`),
+        buildFilteredRecord(
+          rt.name,
+          rt.doc,
+          rt.props,
+          modelNs,
+          program,
+          models,
+          enums,
+          usedHelpers,
+          renderer,
+          additionalUsings,
+          rt.access,
+        ),
       );
     }
+
     if (
       endpointNames.length > 0 &&
       tryReserveModelOutputName(
@@ -585,125 +587,122 @@ async function emitService(
       await writeFile(
         program,
         resolvePath(dir, `${clientName}Extensions.g.cs`),
-        buildExtensions(clientName, ns, endpointNames, renderer),
+        buildExtensions(clientName, endpointNs, endpointNames, renderer),
       );
+    }
+
+    // A model's `derivedModels` are only discovered by walking `@discriminator`
+    // hierarchies explicitly — unlike sub-models reached through a property type,
+    // they may never appear as an operation parameter/return type or field type.
+    collectDerivedModels(program, models, version);
+
+    for (const [, model] of models) {
+      if (!isEmittable(model, nsFullName)) continue;
+      if (!isInVersion(program, model, version)) continue;
+      const recordFileName = getClientName(program, model) ?? model.name!;
+      if (
+        !tryReserveModelOutputName(
+          program,
+          modelOutputOwners,
+          recordFileName,
+          `model ${model.name!}`,
+          model,
+        )
+      ) {
+        continue;
+      }
+      await writeFile(
+        program,
+        resolvePath(modelsDir, `${recordFileName}.g.cs`),
+        buildRecord(
+          model,
+          modelNs,
+          program,
+          models,
+          enums,
+          usedHelpers,
+          renderer,
+          options["abstract-discriminated-base"] !== false,
+          additionalUsings,
+          version,
+        ),
+      );
+    }
+    for (const [, e] of enums) {
+      if (!isEmittableEnum(e, nsFullName)) continue;
+      if (!isInVersion(program, e, version)) continue;
+      const enumFileName = getClientName(program, e) ?? e.name;
+      if (
+        !tryReserveModelOutputName(
+          program,
+          modelOutputOwners,
+          enumFileName,
+          `enum ${e.name}`,
+          e,
+        )
+      ) {
+        continue;
+      }
+      await writeFile(
+        program,
+        resolvePath(modelsDir, `${enumFileName}.g.cs`),
+        buildEnum(e, modelNs, program, renderer, version),
+      );
+    }
+
+    // The runtime helpers are needed by every service. MergePatch is only needed
+    // when type mapping actually rewrote a merge-patch body. Each is reserved like
+    // a model so a user type of the same name reports a collision instead of being
+    // silently overwritten, and the files themselves are written by the caller
+    // once every service has had its turn. They live in the root namespace, which
+    // every version's namespace is nested in, so one copy serves all versions.
+    const neededHelpers: HelperName[] = [...ALWAYS_EMITTED_HELPERS];
+    if (usedHelpers.has(MERGE_PATCH_HELPER_NAME)) {
+      neededHelpers.push(MERGE_PATCH_HELPER_NAME);
+    }
+    for (const helper of neededHelpers) {
+      if (
+        tryReserveModelOutputName(
+          program,
+          modelOutputOwners,
+          helper,
+          `the ${helper} helper`,
+          NoTarget,
+        )
+      ) {
+        helperNamespaces.get(helper)!.add(baseNs);
+      }
     }
   };
 
-  if (versionsToEmit.length > 0) {
+  if (useVersionedFolders) {
+    // Every version is emitted on its own: its own folder, namespace, and models,
+    // so each version's types have exactly that version's shape.
     for (const version of versionsToEmit) {
-      const vDir = useVersionedFolders
-        ? resolvePath(outputDir, version.value)
-        : outputDir;
-      const shouldAppendVersion =
-        useVersionedFolders || options["version-in-namespace"] === true;
-      const vNs = shouldAppendVersion
-        ? `${baseNs}.${sanitizeVersionForNs(version.value)}`
-        : baseNs;
-      // In single-version mode, request types live alongside regular models.
-      const requestTypeDir = useVersionedFolders
-        ? vDir
-        : resolvePath(outputDir, "Models");
-      await emitEndpoints(vDir, vNs, version, requestTypeDir);
+      const vDir = resolvePath(outputDir, version.value);
+      const vNs = `${baseNs}.${sanitizeVersionForNs(version.value)}`;
+      await emitUnit({
+        dir: vDir,
+        endpointNs: vNs,
+        modelNs: vNs,
+        modelsDir: resolvePath(vDir, "Models"),
+        version,
+      });
     }
   } else {
-    await emitEndpoints(
-      outputDir,
-      baseNs,
-      undefined,
-      resolvePath(outputDir, "Models"),
-    );
-  }
-
-  // A model's `derivedModels` are only discovered by walking `@discriminator`
-  // hierarchies explicitly — unlike sub-models reached through a property type,
-  // they may never appear as an operation parameter/return type or field type.
-  collectDerivedModels(program, models);
-
-  // One version in one namespace: the models can be projected onto it. When every
-  // version is emitted together each model is written once, so it keeps the
-  // properties of all of them.
-  const singleVersion =
-    !useVersionedFolders && versionsToEmit.length === 1
-      ? versionsToEmit[0]
-      : undefined;
-
-  // Emit models and enums
-  for (const [, model] of models) {
-    if (!isEmittable(model, nsFullName)) continue;
-    const recordFileName = getClientName(program, model) ?? model.name!;
-    if (
-      !tryReserveModelOutputName(
-        program,
-        modelOutputOwners,
-        recordFileName,
-        `model ${model.name!}`,
-        model,
-      )
-    ) {
-      continue;
-    }
-    const content = buildRecord(
-      model,
-      baseNs,
-      program,
-      models,
-      enums,
-      usedHelpers,
-      renderer,
-      options["abstract-discriminated-base"] !== false,
-      additionalUsings,
-      singleVersion,
-    );
-    await writeFile(
-      program,
-      resolvePath(outputDir, "Models", `${recordFileName}.g.cs`),
-      content,
-    );
-  }
-  for (const [, e] of enums) {
-    if (!isEmittableEnum(e, nsFullName)) continue;
-    const enumFileName = getClientName(program, e) ?? e.name;
-    if (
-      !tryReserveModelOutputName(
-        program,
-        modelOutputOwners,
-        enumFileName,
-        `enum ${e.name}`,
-        e,
-      )
-    ) {
-      continue;
-    }
-    const content = buildEnum(e, baseNs, program, renderer);
-    await writeFile(
-      program,
-      resolvePath(outputDir, "Models", `${enumFileName}.g.cs`),
-      content,
-    );
-  }
-
-  // The runtime helpers are needed by every service. MergePatch is only needed
-  // when type mapping actually rewrote a merge-patch body. Each is reserved like
-  // a model so a user type of the same name reports a collision instead of being
-  // silently overwritten, and the files themselves are written by the caller
-  // once every service has had its turn.
-  const neededHelpers: HelperName[] = [...ALWAYS_EMITTED_HELPERS];
-  if (usedHelpers.has(MERGE_PATCH_HELPER_NAME)) {
-    neededHelpers.push(MERGE_PATCH_HELPER_NAME);
-  }
-  for (const helper of neededHelpers) {
-    if (
-      tryReserveModelOutputName(
-        program,
-        modelOutputOwners,
-        helper,
-        `the ${helper} helper`,
-        NoTarget,
-      )
-    ) {
-      helperNamespaces.get(helper)!.add(baseNs);
-    }
+    // At most one version. Its models live in the root namespace even when the
+    // endpoints are placed in a version namespace.
+    const version = versionsToEmit[0];
+    await emitUnit({
+      dir: outputDir,
+      endpointNs:
+        version && options["version-in-namespace"] === true
+          ? `${baseNs}.${sanitizeVersionForNs(version.value)}`
+          : baseNs,
+      modelNs: baseNs,
+      modelsDir: resolvePath(outputDir, "Models"),
+      version,
+    });
   }
 
   // Emit project file
@@ -847,24 +846,4 @@ function resolveTargetVersions(
 
   // Default: latest declared version (last in declaration order).
   return [versions[versions.length - 1]];
-}
-
-/**
- * Whether an operation exists in a given API version. Operations with no
- * availability map (unversioned) are considered present in every version.
- *
- * @param program - The compiler program.
- * @param op - The HTTP operation to test.
- * @param version - The version to check membership in.
- * @returns `true` if the operation is added or available in the version.
- */
-function isOpInVersion(
-  program: Program,
-  op: HttpOperation,
-  version: Version,
-): boolean {
-  const avail = getAvailabilityMap(program, op.operation);
-  if (!avail) return true;
-  const a = avail.get(version.name);
-  return a === Availability.Added || a === Availability.Available;
 }

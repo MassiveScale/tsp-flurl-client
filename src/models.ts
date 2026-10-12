@@ -168,6 +168,9 @@ export function buildRecord(
     discriminator = {
       propertyName: escapeCsString(selfDiscriminator.propertyName),
       derivedTypes: [...union.variants.entries()]
+        .filter(([, derivedModel]) =>
+          isInVersion(program, derivedModel, version),
+        )
         .map(([value, derivedModel]) => ({
           typeName: getClientName(program, derivedModel) ?? derivedModel.name!,
           value: escapeCsString(value),
@@ -389,10 +392,16 @@ function ownProperties(
  * multi-level hierarchy commonly don't redeclare `@discriminator` themselves,
  * only the root does, so gating on the model's own decorator would stop the
  * walk after the first generation and silently drop deeper variants.
+ *
+ * @param program - The compiler program.
+ * @param models - The accumulator the derived models are added to.
+ * @param version - The API version being emitted; a derived model that does not
+ *   exist in it (`@added` later, or `@removed`) is not collected.
  */
 export function collectDerivedModels(
   program: Program,
   models: Map<string, Model>,
+  version?: Version,
 ): void {
   const queue = [...models.values()];
   while (queue.length > 0) {
@@ -400,6 +409,7 @@ export function collectDerivedModels(
     if (!findDiscriminatedRoot(program, model)) continue;
     for (const derived of model.derivedModels) {
       if (!derived.name || models.has(derived.name)) continue;
+      if (!isInVersion(program, derived, version)) continue;
       models.set(derived.name, derived);
       queue.push(derived);
     }
@@ -481,6 +491,8 @@ function csNumberLiteral(value: number): string {
  * @param csNs - C# namespace the enum is emitted into.
  * @param program - The compiler program (for docs, client name, access).
  * @param renderer - Handlebars renderer used to produce the file contents.
+ * @param version - The API version being emitted; members that do not exist in it
+ *   (`@added` later, or `@removed`) are left out. Omit it for an unversioned API.
  * @returns The full C# source of the generated enum file.
  */
 export function buildEnum(
@@ -488,12 +500,14 @@ export function buildEnum(
   csNs: string,
   program: Program,
   renderer: Renderer,
+  version?: Version,
 ): string {
   const doc = getDoc(program, e);
   const enumName = getClientName(program, e) ?? e.name;
 
   const members: EnumMemberView[] = [];
   for (const [, member] of e.members) {
+    if (!isInVersion(program, member, version)) continue;
     const memberDoc = getDoc(program, member);
     const isNumber = typeof member.value === "number";
     const text =

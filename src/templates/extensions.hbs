@@ -138,25 +138,27 @@ public static class {{className}}
         if (services is null) throw new ArgumentNullException(nameof(services));
         if (configureHttpClient is null) throw new ArgumentNullException(nameof(configureHttpClient));
 
+        // The map is captured here rather than registered by type: ModelMap is one type
+        // shared by every API version in this project, so a container registration would
+        // let one version's map replace another's.
         var models = new ModelMap();
         configureModels?.Invoke(models);
-        services.AddSingleton(models);
 
         var builder = services.AddHttpClient(HttpClientName, configureHttpClient);
         configureBuilder?.Invoke(builder);
 
-{{#each interfaces}}        services.AddTransient<{{name}}>(sp => new {{clientName}}(CreateFlurlClient(sp)));
+{{#each interfaces}}        services.AddTransient<{{name}}>(sp => new {{clientName}}(CreateFlurlClient(sp, models)));
 {{/each}}        services.AddTransient<{{clientClassName}}>(sp =>
         {
-            var flurlClient = CreateFlurlClient(sp);
+            var flurlClient = CreateFlurlClient(sp, models);
             return new {{clientClassName}}(flurlClient{{#each interfaces}}, new {{clientName}}(flurlClient){{/each}});
         });
         return services;
     }
 
-    private static IFlurlClient CreateFlurlClient(IServiceProvider services)
+    private static IFlurlClient CreateFlurlClient(IServiceProvider services, ModelMap models)
     {
         var httpClient = services.GetRequiredService<IHttpClientFactory>().CreateClient(HttpClientName);
-        return ClientRuntime.Configure(new FlurlClient(httpClient), services.GetRequiredService<ModelMap>());
+        return ClientRuntime.Configure(new FlurlClient(httpClient), models);
     }
 }
