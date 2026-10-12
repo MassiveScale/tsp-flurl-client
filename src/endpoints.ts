@@ -37,6 +37,7 @@ import {
   FileView,
 } from "./renderer.js";
 import { getClientName, getAccess } from "./decorators.js";
+import { checkName } from "./names.js";
 import {
   mapType,
   mapPropertyType,
@@ -302,6 +303,7 @@ export function buildEndpoint(
     usings: sortUsings([
       ...new Set([
         "System.Collections.Generic",
+        "System.Text.Json",
         "System.Threading",
         "System.Threading.Tasks",
         ...additionalUsings,
@@ -325,6 +327,7 @@ export function buildEndpoint(
         "System",
         "System.Collections.Generic",
         "System.Net.Http",
+        "System.Text.Json",
         "System.Threading",
         "System.Threading.Tasks",
         ...additionalUsings,
@@ -373,6 +376,7 @@ function buildMethodView(
     : op.path;
   const baseMethodName =
     getClientName(program, op.operation) ?? op.operation.name;
+  checkName(program, "operation", baseMethodName, op.operation);
   const methodName = toCsMethodName(baseMethodName);
   const doc = getDoc(program, op.operation);
   const response = resolveResponse(
@@ -407,9 +411,12 @@ function buildMethodView(
       enums,
       usedHelpers,
     );
-    const csParam = escapeCsIdentifier(toCsParamName(param.param.name));
+    const paramName = getClientName(program, param.param) ?? param.param.name;
+    checkName(program, "parameter", paramName, param.param);
+    const csParam = escapeCsIdentifier(toCsParamName(paramName));
     const isOptional = param.param.optional;
-    const decl = `${csType}${isOptional ? "?" : ""} ${csParam}${isOptional ? " = null" : ""}`;
+    const nullableSuffix = isOptional && !csType.endsWith("?") ? "?" : "";
+    const decl = `${csType}${nullableSuffix} ${csParam}${isOptional ? " = null" : ""}`;
 
     if (param.type === "query") {
       queryParams.push({ name: param.name, variable: csParam });

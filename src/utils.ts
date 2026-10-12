@@ -10,6 +10,7 @@ import {
   Scalar,
   Enum,
   Type,
+  Union,
   Program,
   getEncode,
   getFormat,
@@ -147,7 +148,20 @@ export function mapType(
     }
 
     case "Union":
+      return mapUnion(type as Union, program, models, enums, usedHelpers);
+
+    case "String":
       return "string";
+
+    case "Boolean":
+      return "bool";
+
+    case "Number":
+      return Number.isSafeInteger(type.value)
+        ? Math.abs(type.value) <= 2147483647
+          ? "int"
+          : "long"
+        : "double";
 
     case "Intrinsic":
       if (isVoidType(type)) return "void";
@@ -165,10 +179,81 @@ export function mapType(
 }
 
 /**
- * Maps a model property to its C# type, taking `@encode` into account before
- * delegating to {@link mapType}. A `boolean` property carrying `@encode("string")`
- * travels on the wire as a JSON string (`"true"`/`"false"`), so it is emitted as
- * C# `string` rather than `bool`; all other properties map by their declared type.
+ * Maps a TypeSpec union, which C# cannot express directly:
+ *
+ * - `T | null` is `T?`.
+ * - A union whose variants are all strings (string literals, `string`, or enums of
+ *   strings) is `string`, which is exactly what is on the wire.
+ * - Any other union (models, mixed scalars, numbers and strings) is `JsonElement`,
+ *   which holds whatever the server sends and can be read with `Deserialize<T>`.
+ *   Mapping these to `string`, as a union of models would otherwise get, fails at
+ *   runtime because a JSON object or number cannot be read as a string.
+ *
+ * @param union - The union to map.
+ * @param program - The compiler program.
+ * @param models - Accumulator that collects referenced named models by name.
+ * @param enums - Accumulator that collects referenced named enums by name.
+ * @param usedHelpers - Accumulator that collects required helper class names.
+ * @returns The C# type expression.
+ */
+function mapUnion(
+  union: Union,
+  program: Program,
+  models: Map<string, Model>,
+  enums: Map<string, Enum>,
+  usedHelpers: UsedHelpers,
+): string {
+  const variants = [...union.variants.values()].map((v) => v.type);
+  const present = variants.filter((t) => !isNullType(t));
+  const nullable = present.length !== variants.length;
+  if (present.length === 0) return "object";
+
+  let mapped: string;
+  if (present.length === 1) {
+    mapped = mapType(present[0], program, models, enums, usedHelpers);
+  } else if (present.every(isStringLike)) {
+    mapped = "string";
+  } else {
+    mapped = "JsonElement";
+  }
+  return nullable && !mapped.endsWith("?") ? `${mapped}?` : mapped;
+}
+
+/**
+ * Whether a type is a string on the wire: a string literal, a `string` scalar, or
+ * an enum whose members are all strings.
+ *
+ * @param type - The type to test.
+ * @returns `true` when every value of the type is a JSON string.
+ */
+function isStringLike(type: Type): boolean {
+  switch (type.kind) {
+    case "String":
+      return true;
+    case "Scalar":
+      return builtinScalarName(type as Scalar) === "string";
+    case "Enum":
+      return [...(type as Enum).members.values()].every(
+        (m) => m.value === undefined || typeof m.value === "string",
+      );
+    case "Union":
+      return [...(type as Union).variants.values()].every((v) =>
+        isStringLike(v.type),
+      );
+    default:
+      return false;
+  }
+}
+
+/**
+ * Maps a model property to its C# type, taking `@encode` and a property-level
+ * `@format` into account before delegating to {@link mapType}.
+ *
+ * A `boolean` property carrying `@encode("string")` travels on the wire as a JSON
+ * string (`"true"`/`"false"`), so it is emitted as C# `string` rather than `bool`.
+ * A `string` property carrying `@format("uuid")` is a `Guid`, and one carrying
+ * `@format("uri")` or `@format("url")` is a `Uri`. All other properties map by
+ * their declared type.
  *
  * @param prop - The model property to map (source of both the type and `@encode`).
  * @param program - The compiler program, used to read `@encode` and scalar formats.
@@ -196,6 +281,18 @@ export function mapPropertyType(
     builtinScalarName(prop.type as Scalar) === "boolean"
   ) {
     return "string";
+  }
+
+  // `@format` applies to a property or parameter as well as to a scalar, so
+  // `@format("uuid") id: string` is a `Guid` just like a `uuid` scalar would be.
+  // It only means anything for a string.
+  if (
+    prop.type.kind === "Scalar" &&
+    builtinScalarName(prop.type as Scalar) === "string"
+  ) {
+    const format = getFormat(program, prop);
+    if (format === "uuid") return "Guid";
+    if (format === "uri" || format === "url") return "Uri";
   }
   return mapType(prop.type, program, models, enums, usedHelpers);
 }

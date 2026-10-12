@@ -136,3 +136,18 @@ export function isCsTypeName(name: string): boolean {
 export function isCsNamespace(name: string): boolean {
   return name.split(".").every(isCsTypeName);
 }
+
+/**
+ * Turns arbitrary text into a legal C# identifier by replacing every character
+ * that is not a letter, digit, or underscore with an underscore, and prefixing an
+ * underscore when the result would start with a digit. Used for enum members,
+ * whose wire value is carried separately and which have no `@clientName`.
+ *
+ * @param name - The raw name.
+ * @returns A legal identifier (`_` for an empty name).
+ */
+export function toCsIdentifier(name: string): string {
+  const replaced = name.replace(/[^\p{L}\p{Nd}_]/gu, "_");
+  if (replaced.length === 0) return "_";
+  return /^\p{Nd}/u.test(replaced) ? `_${replaced}` : replaced;
+}

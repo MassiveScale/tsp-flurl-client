@@ -11,6 +11,7 @@
 // output-name reservation, and version selection/filtering.
 
 import {
+  CompilerHost,
   EmitContext,
   Model,
   Enum,
@@ -26,12 +27,13 @@ import {
 } from "@typespec/compiler";
 import { getAllHttpServices, HttpOperation } from "@typespec/http";
 import { getAllVersions, Version } from "@typespec/versioning";
-import { spawnSync } from "node:child_process";
+import { spawnSync, type SpawnSyncReturns } from "node:child_process";
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { createRenderer, Renderer, TemplateOverrides } from "./renderer.js";
 import { EmitterOptions, createDiagnostic } from "./lib.js";
 import { isCsNamespace, isCsTypeName } from "./identifiers.js";
+import { checkName } from "./names.js";
 import { getClientName, getAccess } from "./decorators.js";
 import { buildEndpoint, RequestType } from "./endpoints.js";
 import {
@@ -81,7 +83,7 @@ export async function $onEmit(
   if (program.compilerOptions.noEmit) return;
 
   if (options["clean-output-dir"] !== false) {
-    await deleteGcsFiles(program, emitterOutputDir);
+    await deleteGeneratedFiles(program.host, emitterOutputDir);
   }
 
   const renderer = buildRenderer(program, options);
@@ -209,19 +211,22 @@ function resolveTemplateOverrides(
   return result;
 }
 
+/** The slice of the compiler host the cleanup and existence checks use. */
+export type FileHost = Pick<CompilerHost, "readDir" | "stat" | "rm">;
+
 /**
  * Whether a file exists at the given path on the compiler host.
  *
- * @param program - The compiler program (its host performs the stat).
+ * @param host - The compiler host that performs the stat.
  * @param filePath - Absolute path to check.
  * @returns `true` if the path exists and is a file.
  */
-async function fileExists(
-  program: Program,
+export async function fileExists(
+  host: FileHost,
   filePath: string,
 ): Promise<boolean> {
   try {
-    const s = await program.host.stat(filePath);
+    const s = await host.stat(filePath);
     return s.isFile();
   } catch {
     return false;
@@ -248,15 +253,19 @@ async function writeFile(
 /**
  * Recursively deletes all `*.g.cs` files under a directory (the pre-emit
  * cleanup pass), leaving non-generated files and project files in place. A
- * missing directory is a no-op.
+ * missing directory is a no-op, and an entry that cannot be inspected is skipped
+ * rather than failing the run.
  *
- * @param program - The compiler program (its host performs the IO).
+ * @param host - The compiler host that performs the IO.
  * @param dir - Directory to clean, recursively.
  */
-async function deleteGcsFiles(program: Program, dir: string): Promise<void> {
+export async function deleteGeneratedFiles(
+  host: FileHost,
+  dir: string,
+): Promise<void> {
   let entries: string[];
   try {
-    entries = await program.host.readDir(dir);
+    entries = await host.readDir(dir);
   } catch {
     return;
   }
@@ -265,42 +274,68 @@ async function deleteGcsFiles(program: Program, dir: string): Promise<void> {
       const entryPath = resolvePath(dir, entry);
       let stat;
       try {
-        stat = await program.host.stat(entryPath);
+        stat = await host.stat(entryPath);
       } catch {
         return;
       }
       if (stat.isDirectory()) {
-        await deleteGcsFiles(program, entryPath);
+        await deleteGeneratedFiles(host, entryPath);
       } else if (stat.isFile() && entry.endsWith(".g.cs")) {
-        await program.host.rm(entryPath);
+        await host.rm(entryPath);
       }
     }),
   );
 }
 
 /**
+ * The outside world `dotnet format` needs: whether a directory exists and how to
+ * run a process. Injectable so the failure paths can be tested without a real
+ * `dotnet`.
+ */
+export interface FormatDeps {
+  /** Whether a path exists on the real filesystem. */
+  exists(path: string): boolean;
+  /** Runs a command to completion and returns how it ended. */
+  spawn(
+    command: string,
+    args: string[],
+  ): Pick<SpawnSyncReturns<string>, "error" | "status" | "stderr">;
+}
+
+/** The real filesystem and process runner. */
+const realFormatDeps: FormatDeps = {
+  exists: existsSync,
+  spawn: (command, args) =>
+    spawnSync(command, args, { encoding: "utf-8", stdio: "pipe" }),
+};
+
+/**
  * Runs `dotnet format --no-restore` over the output directory to normalize the
  * generated C#. Skipped when the directory doesn't exist on the real filesystem
- * (e.g. the in-memory test harness); a non-zero exit reports a
- * `dotnet-format-failed` diagnostic rather than throwing.
+ * (e.g. the in-memory test harness); a failure to start, or a non-zero exit,
+ * reports a `dotnet-format-failed` diagnostic rather than throwing. The message is
+ * the start error, else the process's stderr, else the exit code.
  *
  * @param program - The compiler program, used to report diagnostics.
  * @param outputDir - The emitter output directory to format.
+ * @param deps - The filesystem and process runner; the real ones by default.
  */
-function runDotnetFormat(program: Program, outputDir: string): void {
+export function runDotnetFormat(
+  program: Program,
+  outputDir: string,
+  deps: FormatDeps = realFormatDeps,
+): void {
   // Skip when the output directory doesn't exist on the real filesystem
   // (e.g. in-memory test harness).
-  if (!existsSync(outputDir)) return;
+  if (!deps.exists(outputDir)) return;
 
-  const result = spawnSync("dotnet", ["format", outputDir, "--no-restore"], {
-    encoding: "utf-8",
-    stdio: "pipe",
-  });
+  const result = deps.spawn("dotnet", ["format", outputDir, "--no-restore"]);
 
   if (result.error || (result.status !== null && result.status !== 0)) {
+    // An empty stderr is not a message, so `||` (not `??`) falls through to the code.
     const message =
-      result.error?.message ??
-      result.stderr?.trim() ??
+      result.error?.message ||
+      result.stderr?.trim() ||
       `exited with code ${result.status}`;
     program.reportDiagnostic(
       createDiagnostic({
@@ -491,6 +526,8 @@ async function emitService(
         isInVersion(program, op.operation, version),
       );
       if (vOps.length === 0) continue;
+      // The name becomes two class names and two file names.
+      if (!checkName(program, "interface", name, container)) continue;
       const interfaceName = `I${name}`;
       const endpointClientName = `${name}Client`;
       const label = `interface ${container.name ?? name} in ${nsFullName}`;
@@ -544,6 +581,7 @@ async function emitService(
     // Request records share the models folder, so a model with the same name must
     // be reported, not overwritten.
     for (const [, rt] of requestTypes) {
+      if (!checkName(program, "model", rt.name, NoTarget)) continue;
       if (
         !tryReserveModelOutputName(
           program,
@@ -600,6 +638,7 @@ async function emitService(
       if (!isEmittable(model, nsFullName)) continue;
       if (!isInVersion(program, model, version)) continue;
       const recordFileName = getClientName(program, model) ?? model.name!;
+      if (!checkName(program, "model", recordFileName, model)) continue;
       if (
         !tryReserveModelOutputName(
           program,
@@ -632,6 +671,7 @@ async function emitService(
       if (!isEmittableEnum(e, nsFullName)) continue;
       if (!isInVersion(program, e, version)) continue;
       const enumFileName = getClientName(program, e) ?? e.name;
+      if (!checkName(program, "enum", enumFileName, e)) continue;
       if (
         !tryReserveModelOutputName(
           program,
@@ -679,6 +719,8 @@ async function emitService(
     // Every version is emitted on its own: its own folder, namespace, and models,
     // so each version's types have exactly that version's shape.
     for (const version of versionsToEmit) {
+      // The version value is a folder name.
+      if (!checkName(program, "version", version.value, NoTarget)) continue;
       const vDir = resolvePath(outputDir, version.value);
       const vNs = `${baseNs}.${sanitizeVersionForNs(version.value)}`;
       await emitUnit({
@@ -709,7 +751,7 @@ async function emitService(
   if (options["emit-project-file"] !== false) {
     const csprojPath = resolvePath(outputDir, `${projectName}.csproj`);
     const overwrite = options["overwrite-project-file"] ?? false;
-    if (overwrite || !(await fileExists(program, csprojPath))) {
+    if (overwrite || !(await fileExists(program.host, csprojPath))) {
       await writeFile(
         program,
         csprojPath,

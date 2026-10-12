@@ -26,6 +26,8 @@ import {
   DiscriminatorView,
 } from "./renderer.js";
 import { getClientName, getAccess } from "./decorators.js";
+import { checkName, reportInvalidName } from "./names.js";
+import { toCsIdentifier } from "./identifiers.js";
 import {
   mapPropertyType,
   escapeXml,
@@ -58,8 +60,10 @@ function buildPropertyViews(
   for (const [, prop] of props) {
     const propDoc = getDoc(program, prop);
     const csType = mapPropertyType(prop, program, models, enums, usedHelpers);
-    const nullable = prop.optional ? "?" : "";
-    const propName = toCsPropName(getClientName(program, prop) ?? prop.name);
+    const nullable = prop.optional && !csType.endsWith("?") ? "?" : "";
+    const declaredName = getClientName(program, prop) ?? prop.name;
+    checkName(program, "property", declaredName, prop);
+    const propName = toCsPropName(declaredName);
     const defaultVal = prop.optional
       ? undefined
       : defaultForProperty(prop, csType);
@@ -216,6 +220,7 @@ export function buildRecord(
       ...new Set([
         "System",
         "System.Collections.Generic",
+        "System.Text.Json",
         "System.Text.Json.Serialization",
         ...additionalUsings,
       ]),
@@ -274,6 +279,7 @@ export function buildFilteredRecord(
       ...new Set([
         "System",
         "System.Collections.Generic",
+        "System.Text.Json",
         "System.Text.Json.Serialization",
         ...additionalUsings,
       ]),
@@ -323,6 +329,7 @@ const CS_VALUE_TYPES = new Set([
   "DateOnly",
   "TimeOnly",
   "TimeSpan",
+  "JsonElement",
 ]);
 
 /**
@@ -344,6 +351,8 @@ function defaultForProperty(
   prop: ModelProperty,
   csType: string,
 ): string | undefined {
+  // A nullable type (`T | null`) can be left unset.
+  if (csType.endsWith("?")) return undefined;
   if (csType.startsWith("List<")) return "[]";
   if (csType.startsWith("Dictionary<")) return "new()";
   if (prop.type.kind === "Enum" || CS_VALUE_TYPES.has(csType)) return undefined;
@@ -506,9 +515,24 @@ export function buildEnum(
   const enumName = getClientName(program, e) ?? e.name;
 
   const members: EnumMemberView[] = [];
+  const memberNames = new Set<string>();
   for (const [, member] of e.members) {
     if (!isInVersion(program, member, version)) continue;
     const memberDoc = getDoc(program, member);
+    // An enum member has no @clientName, and its wire value travels separately in
+    // [EnumMember], so an odd name is sanitized rather than rejected.
+    const csMemberName = toCsIdentifier(toCsPropName(member.name));
+    if (memberNames.has(csMemberName)) {
+      reportInvalidName(
+        program,
+        "enum member",
+        member.name,
+        `produces the C# member name "${csMemberName}", which another member of the enum already uses`,
+        member,
+      );
+      continue;
+    }
+    memberNames.add(csMemberName);
     const isNumber = typeof member.value === "number";
     const text =
       typeof member.value === "string"
@@ -518,7 +542,7 @@ export function buildEnum(
           : member.name;
     members.push({
       doc: memberDoc ? escapeXml(memberDoc) : undefined,
-      name: toCsPropName(member.name),
+      name: csMemberName,
       memberValue: escapeCsString(text),
       numberLiteral: isNumber
         ? csNumberLiteral(member.value as number)

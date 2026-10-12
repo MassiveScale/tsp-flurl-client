@@ -252,6 +252,12 @@ export const $lib = createTypeSpecLibrary({
           "@clientName(name) requires a valid C# identifier: letters, digits and underscores, not starting with a digit. A model, enum or interface name cannot be a C# keyword.",
       },
     },
+    "invalid-name": {
+      severity: "error",
+      messages: {
+        default: paramMessage`The ${"kind"} name "${"name"}" ${"reason"}.`,
+      },
+    },
     "invalid-option": {
       severity: "error",
       messages: {

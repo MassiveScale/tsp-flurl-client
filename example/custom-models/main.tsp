@@ -49,6 +49,15 @@ model Gadget {
   bytes: bytes;
 }
 
+/** Unions and literal types, which C# cannot express directly. */
+model Mixed {
+  kind: "mixed";
+  value: string | int32;
+  note: string | null;
+  owner: Owner | null;
+  tags?: string | null;
+}
+
 @discriminator("kind")
 model Pet {
   kind: string;
@@ -114,4 +123,11 @@ interface Gadgets {
 @route("/admin")
 interface Admin {
   @post reindex(): void;
+}
+
+@route("/mixed")
+interface Mixes {
+  @get read(): Mixed;
+  @post create(@body body: Mixed): Mixed;
+  @route("either") @get either(): Widget | Owner;
 }

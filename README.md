@@ -89,6 +89,12 @@ interface Animals {
 }
 ```
 
+#### Names that are not valid C#
+
+TypeSpec lets an identifier contain almost anything once it is backtick-quoted, so the emitter checks every name it turns into a type, file, folder or member. A model, enum or interface name must be a valid C# type name (letters, digits and underscores, not starting with a digit, and not a C# keyword). A property, operation or parameter name must be a valid C# identifier. With `all-versions`, a version value must be safe as a folder name (letters, digits, dots, underscores and hyphens). A name that fails is reported as `invalid-name`, and a type with a bad name is not written. Give it a valid one with `@clientName`, which works on models, enums, interfaces, operations and properties (including parameters); the wire name is unaffected.
+
+Enum members have no `@clientName`, and their wire value travels separately, so an odd member name is sanitized instead (`my-member` becomes `My_member`, `2fast` becomes `_2fast`). Two members that sanitize to the same name are reported.
+
 #### `@access(Access.public | Access.internal)`
 
 Controls the C# access modifier on the emitted type declaration. Defaults to `public`.
@@ -361,6 +367,8 @@ List<MyDog> dogs = await api.Pets.ListAsync<MyDog>();
 - Path values are fully percent-encoded, so a value containing `/` or `?` cannot change the shape of the URL.
 - Enum values in query strings, headers, and paths use their wire names; booleans are `true`/`false`; dates are ISO 8601.
 - Enums are read and written as their declared values through a converter generated for each enum (`ColorJsonConverter`), because `JsonStringEnumConverter` ignores `[EnumMember]` and would write the C# member name (`Blue`) where the API declared `blue`. A member declared with a number (`enum Status { ready: 1 }`) travels as a JSON number, and an enum can mix both. A value the enum does not declare, or a token of the wrong kind, is rejected with a `JsonException` instead of being guessed.
+- Unions map to what is on the wire, since C# has no union type: `T | null` is `T?`; a union whose variants are all strings (literals, `string`, string enums) is `string`; any other union, such as models, or a string and a number, is `System.Text.Json.JsonElement`, which holds whatever the server sends (read it with `Deserialize<T>()`). A response that is a union of models is therefore a `JsonElement` rather than a `string` that would fail to deserialize. A literal type maps to its underlying type (`"dog"` is `string`, `5` is `int`).
+- `@format("uuid")` on a string, whether it is on a property, a parameter, or a scalar, maps to `Guid`, and `@format("uri")` or `@format("url")` maps to `Uri`.
 - Names that become C# string literals (property, query and header names, discriminator and enum values, media types) are escaped, and values written into the generated `.csproj` (NuGet metadata, namespace, target framework) are XML-escaped.
 - A `bytes` body or response is sent and read raw, as is a `string` body or response with a non-JSON media type (TypeSpec's default for `string` is `text/plain`).
 - Versioning is applied to everything that is emitted: an operation, a parameter, a model property, an enum member, a `@discriminator` subtype, and a whole model or enum is left out of any version that does not have it (`@added` / `@removed`).

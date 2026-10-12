@@ -346,9 +346,9 @@ describe("escapeCsString", () => {
     strictEqual(escapeCsString("plain-name_1"), "plain-name_1");
   });
 
-  it("keeps a property name containing a quote from ending the string literal", async () => {
+  it("keeps a wire name containing a quote from ending the string literal", async () => {
     const results = await emit(`${PREAMBLE}
-      model Thing { \`a"b\`: string; }
+      model Thing { @clientName("ab") \`a"b\`: string; }
 
       @route("/things") interface Things { @get read(): Thing; }
     `);
