@@ -36,6 +36,7 @@ import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { createRenderer, Renderer, TemplateOverrides } from "./renderer.js";
 import { EmitterOptions, createDiagnostic } from "./lib.js";
+import { isCsNamespace, isCsTypeName } from "./identifiers.js";
 import { getClientName, getAccess } from "./decorators.js";
 import { buildEndpoint, RequestType } from "./endpoints.js";
 import {
@@ -99,6 +100,10 @@ export async function $onEmit(
   const helperNamespaces: HelperNamespaces = new Map(
     ALL_HELPERS.map((name) => [name, new Set<string>()]),
   );
+  // Endpoint and aggregate-client files are named after the interface and client,
+  // not the service, so two services can aim at the same path. Their reservations
+  // are shared so the clash is reported instead of the later write winning.
+  const endpointOutputOwners = new Map<string, OutputNameOwner>();
 
   for (const service of services) {
     if (!isService(program, service.namespace)) continue;
@@ -111,6 +116,7 @@ export async function $onEmit(
       options,
       renderer,
       helperNamespaces,
+      endpointOutputOwners,
     );
   }
 
@@ -311,6 +317,63 @@ function runDotnetFormat(program: Program, outputDir: string): void {
 }
 
 /**
+ * Checks the names that become file paths and C# identifiers before anything is
+ * written: a project name such as `../../Outside` would write the `.csproj` outside
+ * the output directory, and a client name such as `class` would generate C# that
+ * cannot compile. Reports an `invalid-option` diagnostic for each bad value.
+ *
+ * @param program - The compiler program, used to report diagnostics.
+ * @param projectName - The effective project name (dots separate namespace-like segments).
+ * @param clientName - The effective aggregate client name.
+ * @param rootNamespace - The effective root C# namespace.
+ * @param clientNameIsDerived - Whether the client name was derived from the project
+ *   name rather than given. A derived name is only checked when the project name is
+ *   valid, so one bad project name is reported once.
+ * @returns `true` when every name is safe to use; `false` after reporting.
+ */
+function validateNames(
+  program: Program,
+  projectName: string,
+  clientName: string,
+  rootNamespace: string,
+  clientNameIsDerived: boolean,
+): boolean {
+  const problems: { option: string; value: string; reason: string }[] = [];
+  if (!isCsNamespace(projectName)) {
+    problems.push({
+      option: "project-name",
+      value: projectName,
+      reason:
+        "is not a safe file name; use dot-separated C# identifiers such as `Acme.PetStoreClient`",
+    });
+  }
+  if (
+    !isCsTypeName(clientName) &&
+    !(clientNameIsDerived && problems.length > 0)
+  ) {
+    problems.push({
+      option: "client-name",
+      value: clientName,
+      reason: "is not a valid C# class name (it must not be a C# keyword)",
+    });
+  }
+  if (!isCsNamespace(rootNamespace)) {
+    problems.push({
+      option: "root-namespace",
+      value: rootNamespace,
+      reason: "is not a valid C# namespace",
+    });
+  }
+
+  for (const format of problems) {
+    program.reportDiagnostic(
+      createDiagnostic({ code: "invalid-option", target: NoTarget, format }),
+    );
+  }
+  return problems.length === 0;
+}
+
+/**
  * Emits all output for a single HTTP service: resolves options and target
  * versions, groups operations by container, then writes the endpoint interfaces
  * and clients (via {@link buildEndpoint}), request-type records, DI extensions,
@@ -326,6 +389,9 @@ function runDotnetFormat(program: Program, outputDir: string): void {
  * @param helperNamespaces - Shared accumulator of the C# namespaces needing each
  *   helper. This service adds its own namespace to every helper it uses; the
  *   caller writes the helper files once every service has been emitted.
+ * @param endpointOutputOwners - Shared record of which declaration claimed each
+ *   endpoint and aggregate-client file, keyed by path relative to the output
+ *   directory, so clashes between services are reported.
  */
 async function emitService(
   program: Program,
@@ -335,6 +401,7 @@ async function emitService(
   options: EmitterOptions,
   renderer: Renderer,
   helperNamespaces: HelperNamespaces,
+  endpointOutputOwners: Map<string, OutputNameOwner>,
 ): Promise<void> {
   const nsFullName = getNamespaceFullName(serviceNs);
   const projectName = options["project-name"] ?? `${nsFullName}Client`;
@@ -343,6 +410,16 @@ async function emitService(
     : projectName;
   const clientName = options["client-name"] ?? csharpName;
   const baseNs = options["root-namespace"] ?? `${nsFullName}.Client`;
+  if (
+    !validateNames(
+      program,
+      projectName,
+      clientName,
+      baseNs,
+      options["client-name"] === undefined,
+    )
+  )
+    return;
   const rawNetVersion = options["net-version"] ?? "net8.0";
   const netVersionParts = rawNetVersion
     .split(";")
@@ -413,6 +490,19 @@ async function emitService(
       if (vOps.length === 0) continue;
       const interfaceName = `I${name}`;
       const endpointClientName = `${name}Client`;
+      const label = `interface ${container.name ?? name} in ${nsFullName}`;
+      const claimed = [interfaceName, endpointClientName].map((file) =>
+        tryReserveModelOutputName(
+          program,
+          endpointOutputOwners,
+          relativeTo(outputDir, resolvePath(dir, "Endpoints", file)),
+          label,
+          NoTarget,
+        ),
+      );
+      // Both names are always claimed (so every clash is reported); the interface
+      // is only emitted when it won both files.
+      if (claimed.includes(false)) continue;
       const access = getAccess(program, container) ?? "public";
       endpointNames.push({
         interfaceName,
@@ -474,6 +564,7 @@ async function emitService(
         usedHelpers,
         renderer,
         additionalUsings,
+        rt.access,
       );
       await writeFile(
         program,
@@ -481,7 +572,16 @@ async function emitService(
         content,
       );
     }
-    if (endpointNames.length > 0) {
+    if (
+      endpointNames.length > 0 &&
+      tryReserveModelOutputName(
+        program,
+        endpointOutputOwners,
+        relativeTo(outputDir, resolvePath(dir, `${clientName}Extensions`)),
+        `the ${clientName} client in ${nsFullName}`,
+        NoTarget,
+      )
+    ) {
       await writeFile(
         program,
         resolvePath(dir, `${clientName}Extensions.g.cs`),
@@ -520,6 +620,14 @@ async function emitService(
   // they may never appear as an operation parameter/return type or field type.
   collectDerivedModels(program, models);
 
+  // One version in one namespace: the models can be projected onto it. When every
+  // version is emitted together each model is written once, so it keeps the
+  // properties of all of them.
+  const singleVersion =
+    !useVersionedFolders && versionsToEmit.length === 1
+      ? versionsToEmit[0]
+      : undefined;
+
   // Emit models and enums
   for (const [, model] of models) {
     if (!isEmittable(model, nsFullName)) continue;
@@ -545,6 +653,7 @@ async function emitService(
       renderer,
       options["abstract-discriminated-base"] !== false,
       additionalUsings,
+      singleVersion,
     );
     await writeFile(
       program,
@@ -618,6 +727,20 @@ async function emitService(
       );
     }
   }
+}
+
+/**
+ * The path of `file` relative to the output directory, with forward slashes, for
+ * use as a reservation key and in collision messages.
+ *
+ * @param outputDir - The root emitter output directory.
+ * @param file - An absolute path inside it.
+ * @returns The relative path, e.g. `Endpoints/IItems` or `v1.0/Endpoints/IItems`.
+ */
+function relativeTo(outputDir: string, file: string): string {
+  return file.startsWith(outputDir)
+    ? file.slice(outputDir.length).replace(/^\/+/, "")
+    : file;
 }
 
 /**

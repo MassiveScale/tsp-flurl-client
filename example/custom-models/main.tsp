@@ -16,12 +16,19 @@ enum Color {
   blue,
 }
 
+/** Declared with numbers, so it travels as a JSON number. */
+enum Priority {
+  low: 1,
+  high: 2,
+}
+
 model Widget {
   @visibility(Lifecycle.Read)
   id: string;
 
   name: string;
   color?: Color;
+  priority?: Priority;
 }
 
 model WidgetPage {

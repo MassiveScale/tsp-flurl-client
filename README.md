@@ -56,6 +56,8 @@ options:
 | `nuget-tags`                  | `string`   | —                                             | NuGet `<PackageTags>` (space-separated).                                                                                                                                                                                                                            |
 | `templates`                   | `object`   | —                                             | Override individual built-in Handlebars templates. Keys: `file`, `record`, `enum`, `endpoint-interface`, `endpoint-client`, `csproj`, `extensions`, `merge-patch`, `model-map`, `client-runtime`.                                                                   |
 
+`project-name`, `client-name` and `root-namespace` become file paths and C# identifiers, so they are validated before anything is written. A project name must be dot-separated C# identifiers (no path separators), a client name must be a valid class name that is not a C# keyword, and a root namespace must be a valid dotted C# namespace. A bad value is reported as `invalid-option` and nothing is emitted.
+
 ### Decorators
 
 Import the library and bring the namespace into scope to use the decorators:
@@ -358,9 +360,10 @@ List<MyDog> dogs = await api.Pets.ListAsync<MyDog>();
 - JSON uses `System.Text.Json` with web defaults (camelCase, case-insensitive reads, numbers accepted as strings). Models carry explicit `[JsonPropertyName]` attributes, so declared properties always use their TypeSpec wire names.
 - Path values are fully percent-encoded, so a value containing `/` or `?` cannot change the shape of the URL.
 - Enum values in query strings, headers, and paths use their wire names; booleans are `true`/`false`; dates are ISO 8601.
-- Enums are read and written as their declared values through a converter generated for each enum (`ColorJsonConverter`), because `JsonStringEnumConverter` ignores `[EnumMember]` and would write the C# member name (`Blue`) where the API declared `blue`. A value the enum does not declare is rejected with a `JsonException` instead of being guessed.
+- Enums are read and written as their declared values through a converter generated for each enum (`ColorJsonConverter`), because `JsonStringEnumConverter` ignores `[EnumMember]` and would write the C# member name (`Blue`) where the API declared `blue`. A member declared with a number (`enum Status { ready: 1 }`) travels as a JSON number, and an enum can mix both. A value the enum does not declare, or a token of the wrong kind, is rejected with a `JsonException` instead of being guessed.
 - Names that become C# string literals (property, query and header names, discriminator and enum values, media types) are escaped, and values written into the generated `.csproj` (NuGet metadata, namespace, target framework) are XML-escaped.
 - A `bytes` body or response is sent and read raw, as is a `string` body or response with a non-JSON media type (TypeSpec's default for `string` is `text/plain`).
+- Versioning is applied per emitted version: an operation, and a parameter, that was `@added` later or `@removed` is left out of the client for versions that do not have it. In single-version mode (the default, or `target-version`) model properties are filtered the same way. With `all-versions`, each model is written once and carries the properties of every version, because the versions share one set of models; the per-version clients still omit the parameters they do not have.
 - A `Content-Type` header declared as an operation parameter is not exposed; the body's media type decides it.
 
 ### Polymorphism (`@discriminator`)

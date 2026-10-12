@@ -5,17 +5,12 @@ import type {
   Type,
 } from "@typespec/compiler";
 import { createDiagnostic, reportDiagnostic } from "./lib.js";
+import { isCsIdentifier, isCsKeyword } from "./identifiers.js";
 
 export const namespace = "MassiveScale.TspFlurlClient";
 
 const clientNameKey = Symbol.for("@massivescale/tsp-flurl-client/clientName");
 const accessKey = Symbol.for("@massivescale/tsp-flurl-client/access");
-
-/**
- * A plain C# identifier: a letter or underscore followed by letters, digits, or
- * underscores. Keeps `@clientName` values safe to use as type names and file names.
- */
-const CS_IDENTIFIER = /^[\p{L}_][\p{L}\p{Nd}_]*$/u;
 
 export function $clientName(
   context: DecoratorContext,
@@ -25,8 +20,13 @@ export function $clientName(
   const trimmed = name.trim();
   // The name becomes a C# identifier and a file name, so anything that is not a
   // plain identifier (spaces, punctuation, path separators such as `../Client`)
-  // is rejected rather than written into the output.
-  if (!CS_IDENTIFIER.test(trimmed)) {
+  // is rejected rather than written into the output. A model, enum, or interface
+  // name also cannot be a reserved keyword, since it becomes a type name.
+  const becomesTypeName =
+    target.kind === "Model" ||
+    target.kind === "Enum" ||
+    target.kind === "Interface";
+  if (!isCsIdentifier(trimmed) || (becomesTypeName && isCsKeyword(trimmed))) {
     reportDiagnostic(context.program, {
       code: "invalid-client-name",
       target,

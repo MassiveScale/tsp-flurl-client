@@ -22,6 +22,12 @@ import {
 } from "@typespec/compiler";
 import { getMergePatchSource } from "@typespec/http/experimental/merge-patch";
 import { getClientName } from "./decorators.js";
+import {
+  getAvailabilityMap,
+  Availability,
+  type Version,
+} from "@typespec/versioning";
+import { isCsKeyword } from "./identifiers.js";
 
 /** C# name of the generic merge-patch helper class emitted alongside the models. */
 export const MERGE_PATCH_HELPER_NAME = "MergePatch";
@@ -416,90 +422,6 @@ export function sortUsings(usings: Iterable<string>): string[] {
 }
 
 /**
- * C# reserved keywords. A parameter named after one of these needs a leading `@`
- * to be a legal identifier.
- */
-const CS_KEYWORDS = new Set([
-  "abstract",
-  "as",
-  "base",
-  "bool",
-  "break",
-  "byte",
-  "case",
-  "catch",
-  "char",
-  "checked",
-  "class",
-  "const",
-  "continue",
-  "decimal",
-  "default",
-  "delegate",
-  "do",
-  "double",
-  "else",
-  "enum",
-  "event",
-  "explicit",
-  "extern",
-  "false",
-  "finally",
-  "fixed",
-  "float",
-  "for",
-  "foreach",
-  "goto",
-  "if",
-  "implicit",
-  "in",
-  "int",
-  "interface",
-  "internal",
-  "is",
-  "lock",
-  "long",
-  "namespace",
-  "new",
-  "null",
-  "object",
-  "operator",
-  "out",
-  "override",
-  "params",
-  "private",
-  "protected",
-  "public",
-  "readonly",
-  "ref",
-  "return",
-  "sbyte",
-  "sealed",
-  "short",
-  "sizeof",
-  "stackalloc",
-  "static",
-  "string",
-  "struct",
-  "switch",
-  "this",
-  "throw",
-  "true",
-  "try",
-  "typeof",
-  "uint",
-  "ulong",
-  "unchecked",
-  "unsafe",
-  "ushort",
-  "using",
-  "virtual",
-  "void",
-  "volatile",
-  "while",
-]);
-
-/**
  * Escapes text for use between the quotes of an ordinary C# string literal, so a
  * wire name or discriminator value containing a quote, backslash, or line break
  * cannot end the literal early or change the surrounding code.
@@ -524,7 +446,7 @@ export function escapeCsString(text: string): string {
  * @returns The identifier, verbatim-escaped when it is a C# keyword.
  */
 export function escapeCsIdentifier(name: string): string {
-  return CS_KEYWORDS.has(name) ? `@${name}` : name;
+  return isCsKeyword(name) ? `@${name}` : name;
 }
 
 /**
@@ -608,4 +530,28 @@ export function findModelSlot(
     constraint: mapType(model, program, models, enums, usedHelpers),
     wrap: (x) => x,
   };
+}
+
+/**
+ * Whether a type (a model property, a parameter, an operation) exists in an API
+ * version, according to `@added` / `@removed`. A type with no versioning
+ * decorators exists in every version, and so does everything when no version is
+ * being emitted.
+ *
+ * @param program - The compiler program.
+ * @param type - The type to test.
+ * @param version - The API version being emitted, or `undefined` when unversioned
+ *   or when every version is emitted together.
+ * @returns `true` when the type is part of the version's API.
+ */
+export function isInVersion(
+  program: Program,
+  type: Type,
+  version: Version | undefined,
+): boolean {
+  if (!version) return true;
+  const availability = getAvailabilityMap(program, type);
+  if (!availability) return true;
+  const state = availability.get(version.name);
+  return state === Availability.Added || state === Availability.Available;
 }

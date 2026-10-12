@@ -4,8 +4,10 @@
 
   The converter is generated per enum because `JsonStringEnumConverter` does not
   honour `[EnumMember]`: it would write the C# member name (`Blue`) where the API
-  declared a different wire value (`blue`). The converter maps each member to its
-  declared value, and rejects values it does not know instead of guessing.
+  declared a different wire value (`blue`), and it knows nothing of numeric
+  values. The converter maps each member to its declared value, as a JSON string
+  or a JSON number according to how the member was declared, and rejects values
+  it does not know instead of guessing.
 
   Override via tspconfig.yaml:
     options:
@@ -22,8 +24,14 @@
   {{members}}     — array of enum-member objects in declaration order. Each has:
     .doc          —   optional XML <summary> text (pre-escaped; may be falsy)
     .name         —   PascalCase member name, e.g. "Pending"
-    .memberValue  —   wire string for [EnumMember(Value = "...")], e.g. "pending"
-                      (already escaped for a C# string literal)
+    .memberValue  —   text form of the declared value for [EnumMember(Value = "...")],
+                      e.g. "pending" or "1" (already escaped for a C# string literal)
+    .numberLiteral —  set only when the member was declared with a number: the C#
+                      numeric literal, e.g. "1L" or "1.5D". Falsy for a string member.
+
+  {{hasStringMembers}} — true when at least one member is declared as a string
+  {{hasNumberMembers}} — true when at least one member is declared as a number
+  {{expectedToken}}    — "a string", "a number", or "a string or a number"
 
   ── Built-in helpers ────────────────────────────────────────────────────────
 
@@ -54,26 +62,40 @@ internal sealed class {{enumName}}JsonConverter : JsonConverter<{{enumName}}>
     /// <inheritdoc />
     public override {{enumName}} Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
     {
-        if (reader.TokenType != JsonTokenType.String)
+{{#if hasStringMembers}}        if (reader.TokenType == JsonTokenType.String)
         {
-            throw new JsonException($"Expected a string for {{enumName}} but found {reader.TokenType}.");
+            var text = reader.GetString();
+            return text switch
+            {
+{{#each members}}{{#unless numberLiteral}}                "{{memberValue}}" => {{../enumName}}.{{name}},
+{{/unless}}{{/each}}                _ => throw new JsonException($"'{text}' is not a known {{enumName}} value."),
+            };
         }
 
-        var value = reader.GetString();
-        return value switch
+{{/if}}{{#if hasNumberMembers}}        if (reader.TokenType == JsonTokenType.Number)
         {
-{{#each members}}            "{{memberValue}}" => {{../enumName}}.{{name}},
-{{/each}}            _ => throw new JsonException($"'{value}' is not a known {{enumName}} value."),
-        };
+            var number = reader.GetDouble();
+            return number switch
+            {
+{{#each members}}{{#if numberLiteral}}                {{numberLiteral}} => {{../enumName}}.{{name}},
+{{/if}}{{/each}}                _ => throw new JsonException($"{number} is not a known {{enumName}} value."),
+            };
+        }
+
+{{/if}}        throw new JsonException($"Expected {{expectedToken}} for {{enumName}} but found {reader.TokenType}.");
     }
 
     /// <inheritdoc />
     public override void Write(Utf8JsonWriter writer, {{enumName}} value, JsonSerializerOptions options)
     {
-        writer.WriteStringValue(value switch
+        switch (value)
         {
-{{#each members}}            {{../enumName}}.{{name}} => "{{memberValue}}",
-{{/each}}            _ => throw new JsonException($"{value} is not a known {{enumName}} value."),
-        });
+{{#each members}}            case {{../enumName}}.{{name}}:
+{{#if numberLiteral}}                writer.WriteNumberValue({{numberLiteral}});
+{{else}}                writer.WriteStringValue("{{memberValue}}");
+{{/if}}                break;
+{{/each}}            default:
+                throw new JsonException($"{value} is not a known {{enumName}} value.");
+        }
     }
 }

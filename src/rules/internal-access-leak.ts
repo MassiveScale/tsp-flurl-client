@@ -21,9 +21,10 @@ import { getAccess } from "../decorators.js";
 import { flattenProperties } from "../models.js";
 
 /**
- * Unwraps one level of `Array<T>` / `Record<T>` / `Union` wrapping (mirroring
- * how `mapType` in `../utils.ts` treats these wrapper kinds) to find the named
- * `Model`/`Enum` type(s) actually referenced. Anonymous models, scalars, and
+ * Unwraps `Array<T>` / `Record<T>` / `Union` wrapping and the type arguments of
+ * template instances (mirroring how `mapType` in `../utils.ts` treats these
+ * wrapper kinds) to find the named `Model`/`Enum` type(s) actually referenced.
+ * Anonymous models, scalars, and
  * other non-named types are not tracked since they cannot carry `@access`.
  *
  * @param type - The type to resolve.
@@ -35,7 +36,16 @@ function resolveNamedTypes(type: Type): (Model | Enum)[] {
       if (isArrayModelType(type) || isRecordModelType(type)) {
         return type.indexer ? resolveNamedTypes(type.indexer.value) : [];
       }
-      return type.name ? [type] : [];
+      // A template instance such as `Page<Secret>` is emitted as `Page<Secret>`, so
+      // its type arguments are as visible in the signature as the model itself.
+      const typeArguments = (type.templateMapper?.args ?? []).filter(
+        (arg): arg is Type =>
+          (arg as { entityKind?: string }).entityKind === "Type",
+      );
+      return [
+        ...(type.name ? [type] : []),
+        ...typeArguments.flatMap(resolveNamedTypes),
+      ];
     }
     case "Enum":
       return type.name ? [type] : [];
@@ -97,6 +107,11 @@ export const internalAccessLeakRule = createRule({
         }
       },
       model: (model: Model) => {
+        // A template instance such as `Page<Secret>` is emitted as the generic
+        // `Page<T>`, whose declaration never names `Secret`. The leak is where the
+        // instance is used, which the operation and property checks report.
+        if (model.templateMapper) return;
+
         const modelAccess = getAccess(context.program, model) ?? "public";
         if (modelAccess === "internal") return;
 

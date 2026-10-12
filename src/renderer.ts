@@ -98,8 +98,16 @@ export interface EnumMemberView {
   doc?: string;
   /** PascalCase member name. */
   name: string;
-  /** Wire string written to / read from JSON for `[EnumMember(Value = "...")]`. */
+  /**
+   * Text form of the declared value, for `[EnumMember(Value = "...")]` and, for a
+   * string member, the wire string. Escaped for a C# string literal.
+   */
   memberValue: string;
+  /**
+   * The C# numeric literal (`"1L"`, `"1.5D"`) when the member was declared with a
+   * number, so it travels as a JSON number. Absent for a string member.
+   */
+  numberLiteral?: string;
 }
 
 /** View model for a C# `public enum` declaration. */
@@ -112,6 +120,12 @@ export interface EnumView {
   members: EnumMemberView[];
   /** C# access modifier: `"public"` (default) or `"internal"`. */
   access: string;
+  /** Whether any member is declared as a string. */
+  hasStringMembers: boolean;
+  /** Whether any member is declared as a number. */
+  hasNumberMembers: boolean;
+  /** What a reader may find for this enum, for the error message: `"a string"`, `"a number"`, or both. */
+  expectedToken: string;
 }
 
 /** How a request or response payload travels on the wire. */

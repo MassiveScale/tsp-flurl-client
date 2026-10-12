@@ -22,11 +22,7 @@ import {
   isVisible,
   resolveRequestVisibility,
 } from "@typespec/http";
-import {
-  getAvailabilityMap,
-  Availability,
-  Version,
-} from "@typespec/versioning";
+import type { Version } from "@typespec/versioning";
 import {
   Renderer,
   EndpointInterfaceView,
@@ -40,7 +36,7 @@ import {
   PayloadKind,
   FileView,
 } from "./renderer.js";
-import { getClientName } from "./decorators.js";
+import { getClientName, getAccess } from "./decorators.js";
 import {
   mapType,
   mapPropertyType,
@@ -51,6 +47,7 @@ import {
   escapeCsIdentifier,
   escapeXml,
   sortUsings,
+  isInVersion,
   MERGE_PATCH_HELPER_NAME,
   MERGE_PATCH_INTERFACE_NAME,
   type UsedHelpers,
@@ -69,6 +66,11 @@ export interface RequestType {
   doc: string | undefined;
   /** The properties visible in the request context, keyed by property name. */
   props: Map<string, ModelProperty>;
+  /**
+   * C# access modifier of the record: that of the source body model, so a record
+   * built from an internal model can still reference other internal types.
+   */
+  access: string;
 }
 
 /** The two C# source files generated for one operation container. */
@@ -117,13 +119,7 @@ function filterPropsForRequest(
 ): Map<string, ModelProperty> {
   const result = new Map<string, ModelProperty>();
   for (const [name, prop] of flattenProperties(model)) {
-    if (version) {
-      const avail = getAvailabilityMap(program, prop);
-      if (avail) {
-        const a = avail.get(version.name);
-        if (a !== Availability.Added && a !== Availability.Available) continue;
-      }
-    }
+    if (!isInVersion(program, prop, version)) continue;
     if (!isVisible(program, prop, visibility)) continue;
     result.set(name, prop);
   }
@@ -402,6 +398,8 @@ function buildMethodView(
     ) {
       continue;
     }
+    // A parameter added in a later version is not part of this version's API.
+    if (!isInVersion(program, param.param, version)) continue;
     const csType = mapPropertyType(
       param.param,
       program,
@@ -457,6 +455,7 @@ function buildMethodView(
             requestTypes.set(requestTypeName, {
               name: requestTypeName,
               doc: getDoc(program, bodyModel),
+              access: getAccess(program, bodyModel) ?? "public",
               props: filterPropsForRequest(
                 bodyModel,
                 visibility,

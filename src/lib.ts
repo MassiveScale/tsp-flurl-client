@@ -249,7 +249,13 @@ export const $lib = createTypeSpecLibrary({
       severity: "error",
       messages: {
         default:
-          "@clientName(name) requires a valid C# identifier: letters, digits and underscores, not starting with a digit.",
+          "@clientName(name) requires a valid C# identifier: letters, digits and underscores, not starting with a digit. A model, enum or interface name cannot be a C# keyword.",
+      },
+    },
+    "invalid-option": {
+      severity: "error",
+      messages: {
+        default: paramMessage`Option "${"option"}" has the value "${"value"}", which ${"reason"}.`,
       },
     },
     "invalid-access-modifier": {

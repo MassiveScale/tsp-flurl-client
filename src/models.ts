@@ -15,6 +15,7 @@ import {
   getDiscriminatedUnionFromInheritance,
   type Discriminator,
 } from "@typespec/compiler";
+import type { Version } from "@typespec/versioning";
 import {
   Renderer,
   RecordView,
@@ -31,6 +32,7 @@ import {
   sortUsings,
   toCsPropName,
   escapeCsString,
+  isInVersion,
   type UsedHelpers,
 } from "./utils.js";
 
@@ -73,6 +75,25 @@ function buildPropertyViews(
 }
 
 /**
+ * Drops the properties that do not exist in an API version.
+ *
+ * @param props - The `[name, property]` pairs to filter.
+ * @param program - The compiler program.
+ * @param version - The API version being emitted, or `undefined` to keep every property.
+ * @returns The properties that are part of the version.
+ */
+function versionProps(
+  props: Map<string, ModelProperty>,
+  program: Program,
+  version: Version | undefined,
+): Map<string, ModelProperty> {
+  if (!version) return props;
+  return new Map(
+    [...props].filter(([, prop]) => isInVersion(program, prop, version)),
+  );
+}
+
+/**
  * Renders the C# `record` file for a model, including generic type parameters,
  * base-record inheritance, and `@discriminator` polymorphism. Models with a
  * discriminated ancestor inherit from that ancestor rather than flattening its
@@ -92,6 +113,10 @@ function buildPropertyViews(
  * @param additionalUsings - Extra `using` directives from the `additional-usings`
  *   option, appended to every emitted file regardless of whether this particular
  *   file references anything from them (see `EmitterOptions["additional-usings"]`).
+ * @param version - The single API version being emitted; properties that do not
+ *   exist in it (`@added` later, or `@removed`) are left out. Omit it when the API
+ *   is unversioned or every version is emitted together, in which case the record
+ *   carries the properties of all versions.
  * @returns The full C# source of the generated record file.
  */
 export function buildRecord(
@@ -104,6 +129,7 @@ export function buildRecord(
   renderer: Renderer,
   abstractDiscriminatedBase: boolean,
   additionalUsings: Set<string>,
+  version?: Version,
 ): string {
   const typeParams = collectTypeParams(model);
   const genericSuffix =
@@ -169,7 +195,7 @@ export function buildRecord(
     genericSuffix,
     access: getAccess(program, model) ?? "public",
     properties: buildPropertyViews(
-      propsSource,
+      versionProps(propsSource, program, version),
       program,
       models,
       enums,
@@ -214,6 +240,7 @@ export function buildRecord(
  * @param additionalUsings - Extra `using` directives from the `additional-usings`
  *   option, appended to every emitted file regardless of whether this particular
  *   file references anything from them (see `EmitterOptions["additional-usings"]`).
+ * @param access - C# access modifier of the record (`public` / `internal`).
  * @returns The full C# source of the generated record file.
  */
 export function buildFilteredRecord(
@@ -227,12 +254,13 @@ export function buildFilteredRecord(
   usedHelpers: UsedHelpers,
   renderer: Renderer,
   additionalUsings: Set<string>,
+  access: string = "public",
 ): string {
   const recordView: RecordView = {
     doc: doc ? escapeXml(doc) : undefined,
     recordName: name,
     genericSuffix: "",
-    access: "public",
+    access,
     properties: buildPropertyViews(props, program, models, enums, usedHelpers),
   };
 
@@ -433,6 +461,19 @@ function gatherTemplateParams(
 }
 
 /**
+ * Formats a number as a C# numeric literal: `1` becomes `1L` (a `long`) and
+ * `1.5` becomes `1.5D` (a `double`), so it selects the right
+ * `Utf8JsonWriter.WriteNumberValue` overload and compares against the `double`
+ * the reader produces.
+ *
+ * @param value - The declared numeric enum value.
+ * @returns The C# literal.
+ */
+function csNumberLiteral(value: number): string {
+  return Number.isInteger(value) ? `${value}L` : `${value}D`;
+}
+
+/**
  * Renders the C# `enum` file for a TypeSpec enum, mapping each member to a
  * PascalCase name with its original value preserved as the JSON wire string.
  *
@@ -454,20 +495,38 @@ export function buildEnum(
   const members: EnumMemberView[] = [];
   for (const [, member] of e.members) {
     const memberDoc = getDoc(program, member);
-    const stringValue =
-      typeof member.value === "string" ? member.value : member.name;
+    const isNumber = typeof member.value === "number";
+    const text =
+      typeof member.value === "string"
+        ? member.value
+        : isNumber
+          ? String(member.value)
+          : member.name;
     members.push({
       doc: memberDoc ? escapeXml(memberDoc) : undefined,
       name: toCsPropName(member.name),
-      memberValue: escapeCsString(stringValue),
+      memberValue: escapeCsString(text),
+      numberLiteral: isNumber
+        ? csNumberLiteral(member.value as number)
+        : undefined,
     });
   }
+  const hasNumberMembers = members.some((m) => m.numberLiteral !== undefined);
+  const hasStringMembers = members.some((m) => m.numberLiteral === undefined);
 
   const enumView: EnumView = {
     doc: doc ? escapeXml(doc) : undefined,
     enumName,
     access: getAccess(program, e) ?? "public",
     members,
+    hasStringMembers,
+    hasNumberMembers,
+    expectedToken:
+      hasNumberMembers && hasStringMembers
+        ? "a string or a number"
+        : hasNumberMembers
+          ? "a number"
+          : "a string",
   };
 
   const body = renderer.renderEnum(enumView);

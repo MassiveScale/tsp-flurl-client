@@ -190,17 +190,19 @@ describe("project file escaping", () => {
     ok(!csproj.includes("<Evil/>"), "A closing tag must not inject elements");
   });
 
-  it("escapes the root namespace and target framework", async () => {
+  it("escapes the target framework", async () => {
     const results = await emit(
       `${PREAMBLE}
       @route("/items") interface Items { @get list(): string[]; }
     `,
-      { "root-namespace": "A&B", "net-version": "net8.0&x" },
+      { "net-version": "net8.0&x" },
     );
 
-    const csproj = fileContent(results, ".csproj");
-    ok(csproj.includes("<RootNamespace>A&amp;B</RootNamespace>"));
-    ok(csproj.includes("<TargetFramework>net8.0&amp;x</TargetFramework>"));
+    ok(
+      fileContent(results, ".csproj").includes(
+        "<TargetFramework>net8.0&amp;x</TargetFramework>",
+      ),
+    );
   });
 });
 
@@ -223,7 +225,7 @@ describe("enum wire values", () => {
       ),
     );
     ok(color.includes('"deep-blue" => Color.DeepBlue,'));
-    ok(color.includes('Color.DeepBlue => "deep-blue",'));
+    ok(color.includes('writer.WriteStringValue("deep-blue");'));
     ok(color.includes("is not a known Color value"));
     ok(color.includes("using System.Text.Json;"));
   });
