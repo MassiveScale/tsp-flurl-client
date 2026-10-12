@@ -72,7 +72,7 @@ describe("parameter binding", () => {
       }
     `);
 
-    const client = fileContent(results, "ItemsClient.g.cs");
+    const client = fileContent(results, "ItemsEndpoint.g.cs");
     ok(
       client.includes(
         'flurlRequest.SetQueryParam("page-size", ClientRuntime.ToQueryValue(pageSize));',
@@ -94,7 +94,7 @@ describe("parameter binding", () => {
     `);
 
     ok(
-      fileContent(results, "ItemsClient.g.cs").includes(
+      fileContent(results, "ItemsEndpoint.g.cs").includes(
         'if (trace is not null) flurlRequest.WithHeader("X-Trace", ClientRuntime.ToWireString(trace));',
       ),
     );
@@ -108,7 +108,7 @@ describe("parameter binding", () => {
       }
     `);
 
-    const client = fileContent(results, "ItemsClient.g.cs");
+    const client = fileContent(results, "ItemsEndpoint.g.cs");
     ok(
       client.includes(
         'AppendPathSegment($"api/stores/{ClientRuntime.EscapePathSegment(storeId)}/items/{ClientRuntime.EscapePathSegment(itemId)}")',
@@ -128,7 +128,7 @@ describe("parameter binding", () => {
     ok(iface.includes("string? @params = null"));
     ok(iface.includes("string? @event = null"));
     ok(
-      fileContent(results, "ItemsClient.g.cs").includes(
+      fileContent(results, "ItemsEndpoint.g.cs").includes(
         "ClientRuntime.ToQueryValue(@params)",
       ),
     );
@@ -162,7 +162,7 @@ describe("parameter binding", () => {
       }
     `);
 
-    const client = fileContent(results, "ItemsClient.g.cs");
+    const client = fileContent(results, "ItemsEndpoint.g.cs");
     for (const verb of ["Get", "Post", "Put", "Patch", "Delete", "Head"]) {
       ok(client.includes(`HttpMethod.${verb}`), `Expected HttpMethod.${verb}`);
     }
@@ -181,7 +181,7 @@ describe("payload kinds", () => {
     `);
 
     ok(
-      fileContent(results, "ItemsClient.g.cs").includes(
+      fileContent(results, "ItemsEndpoint.g.cs").includes(
         "SendJsonAsync(HttpMethod.Post, body,",
       ),
     );
@@ -196,7 +196,7 @@ describe("payload kinds", () => {
     `);
 
     ok(
-      fileContent(results, "FilesClient.g.cs").includes(
+      fileContent(results, "FilesEndpoint.g.cs").includes(
         'ClientRuntime.BytesContent(body, "application/octet-stream")',
       ),
     );
@@ -211,7 +211,7 @@ describe("payload kinds", () => {
     `);
 
     ok(
-      fileContent(results, "NotesClient.g.cs").includes(
+      fileContent(results, "NotesEndpoint.g.cs").includes(
         'ClientRuntime.TextContent(body, "text/plain")',
       ),
     );
@@ -226,7 +226,7 @@ describe("payload kinds", () => {
     `);
 
     ok(
-      fileContent(results, "NotesClient.g.cs").includes(
+      fileContent(results, "NotesEndpoint.g.cs").includes(
         'ClientRuntime.TextContent(body, "text/plain")',
       ),
     );
@@ -241,7 +241,7 @@ describe("payload kinds", () => {
     `);
 
     ok(
-      fileContent(results, "NotesClient.g.cs").includes(
+      fileContent(results, "NotesEndpoint.g.cs").includes(
         "SendJsonAsync(HttpMethod.Post, body,",
       ),
     );
@@ -258,7 +258,7 @@ describe("payload kinds", () => {
     `);
 
     ok(
-      fileContent(results, "ItemsClient.g.cs").includes(
+      fileContent(results, "ItemsEndpoint.g.cs").includes(
         "SendJsonAsync(HttpMethod.Post, body,",
       ),
     );
@@ -272,7 +272,7 @@ describe("payload kinds", () => {
       }
     `);
 
-    const client = fileContent(results, "FilesClient.g.cs");
+    const client = fileContent(results, "FilesEndpoint.g.cs");
     ok(client.includes("public async Task<byte[]> DownloadAsync("));
     ok(client.includes("GetBytesAsync()"));
   });
@@ -285,7 +285,7 @@ describe("payload kinds", () => {
       }
     `);
 
-    const client = fileContent(results, "NotesClient.g.cs");
+    const client = fileContent(results, "NotesEndpoint.g.cs");
     ok(client.includes("public async Task<string> ReadAsync("));
     ok(client.includes("GetStringAsync()"));
   });
@@ -298,7 +298,7 @@ describe("payload kinds", () => {
       }
     `);
 
-    const client = fileContent(results, "ItemsClient.g.cs");
+    const client = fileContent(results, "ItemsEndpoint.g.cs");
     ok(client.includes("public async Task RemoveAsync("));
     doesNotMatch(client, /GetJsonAsync|GetBytesAsync|GetStringAsync/);
   });
@@ -348,8 +348,8 @@ describe("access", () => {
     `);
 
     ok(
-      fileContent(results, "ItemsClient.g.cs").includes(
-        "internal sealed class ItemsClient : IItems",
+      fileContent(results, "ItemsEndpoint.g.cs").includes(
+        "internal sealed class ItemsEndpoint : IItems",
       ),
     );
     ok(fileContent(results, "IItems.g.cs").includes("public interface IItems"));

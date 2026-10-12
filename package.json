@@ -3,6 +3,23 @@
   "version": "1.0.0-beta.1",
   "description": "TypeSpec emitter that generates C# API clients built on Flurl.Http, with extensible models.",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/MassiveScale/tsp-flurl-client.git"
+  },
+  "homepage": "https://github.com/MassiveScale/tsp-flurl-client#readme",
+  "bugs": {
+    "url": "https://github.com/MassiveScale/tsp-flurl-client/issues"
+  },
+  "keywords": [
+    "typespec",
+    "emitter",
+    "csharp",
+    "dotnet",
+    "flurl",
+    "http-client",
+    "api-client"
+  ],
   "type": "module",
   "main": "dist/src/index.js",
   "tspMain": "lib/main.tsp",
@@ -13,6 +30,14 @@
       "default": "./dist/src/index.js"
     }
   },
+  "files": [
+    "dist/src",
+    "dist/templates",
+    "lib",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
   "dependencies": {
     "handlebars": "^4.7.9"
   },

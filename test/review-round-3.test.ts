@@ -513,12 +513,12 @@ describe("generated type names that collide with models", () => {
 
   it("reports a model named like an endpoint client", async () => {
     const { messages } = await collisions(`${PREAMBLE}
-      model ItemsClient { id: string; }
+      model ItemsEndpoint { id: string; }
 
-      @route("/items") interface Items { @get read(): ItemsClient; }
+      @route("/items") interface Items { @get read(): ItemsEndpoint; }
     `);
 
-    ok(messages.some((m) => m.includes("ItemsClient")));
+    ok(messages.some((m) => m.includes("ItemsEndpoint")));
   });
 
   it("reports a model named like an endpoint interface", async () => {
@@ -573,14 +573,14 @@ describe("generated type names that collide with models", () => {
 
       enum Versions { v1: "v1.0" }
 
-      model ItemsClient { id: string; }
+      model ItemsEndpoint { id: string; }
 
-      @route("/items") interface Items { @get read(): ItemsClient; }
+      @route("/items") interface Items { @get read(): ItemsEndpoint; }
     `,
       { "all-versions": true },
     );
 
-    ok(messages.some((m) => m.includes("ItemsClient")));
+    ok(messages.some((m) => m.includes("ItemsEndpoint")));
   });
 
   it("accepts models whose names only resemble generated types", async () => {

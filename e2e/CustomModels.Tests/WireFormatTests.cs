@@ -12,7 +12,7 @@ namespace CustomModels.Tests;
 public sealed class WireFormatTests
 {
     [TestMethod]
-    public async Task Query_parameters_use_wire_names_and_repeat_for_lists()
+    public async Task Query_parameters_use_wire_names_and_join_unexploded_lists()
     {
         var (client, handler) = Harness.Create();
         handler.RespondJson("""{"items":[]}""");
@@ -20,7 +20,8 @@ public sealed class WireFormatTests
         await client.Widgets.ListAsync(Color.Blue, ["a", "b"], "trace-1");
 
         handler.Last.Method.Should().Be(HttpMethod.Get);
-        handler.Last.Uri.PathAndQuery.Should().Be("/api/widgets?color=blue&tags=a&tags=b");
+        // TypeSpec arrays are not exploded by default, so a list is one comma-separated value.
+        Uri.UnescapeDataString(handler.Last.Uri.PathAndQuery).Should().Be("/api/widgets?color=blue&tags=a,b");
         handler.Last.Headers["X-Trace"].Should().Be("trace-1");
     }
 

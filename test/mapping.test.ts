@@ -148,7 +148,7 @@ describe("unions in operations", () => {
     ok(iface.includes("using System.Text.Json;"));
     ok(!iface.includes("<TResult>"), "A union has no model to substitute");
     ok(
-      fileContent(results, "ItemsClient.g.cs").includes(
+      fileContent(results, "ItemsEndpoint.g.cs").includes(
         "GetJsonAsync<JsonElement>()",
       ),
     );
@@ -183,7 +183,7 @@ describe("unions in operations", () => {
       ),
     );
     ok(
-      fileContent(results, "ItemsClient.g.cs").includes(
+      fileContent(results, "ItemsEndpoint.g.cs").includes(
         "SendJsonAsync(HttpMethod.Post, body,",
       ),
     );

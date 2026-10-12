@@ -46,7 +46,7 @@ describe("aggregate client", () => {
     ok(content.includes("ClientRuntime.Configure(flurlClient, models);"));
     ok(
       content.includes(
-        "return new TestApiClient(flurlClient, new PetsClient(flurlClient), new StoresClient(flurlClient));",
+        "return new TestApiClient(flurlClient, new PetsEndpoint(flurlClient), new StoresEndpoint(flurlClient));",
       ),
     );
     ok(
@@ -76,12 +76,12 @@ describe("dependency injection registration", () => {
     );
     ok(
       content.includes(
-        "services.AddTransient<IPets>(sp => new PetsClient(CreateFlurlClient(sp, models)));",
+        "services.AddTransient<IPets>(sp => new PetsEndpoint(CreateFlurlClient(sp, models)));",
       ),
     );
     ok(
       content.includes(
-        "services.AddTransient<IStores>(sp => new StoresClient(CreateFlurlClient(sp, models)));",
+        "services.AddTransient<IStores>(sp => new StoresEndpoint(CreateFlurlClient(sp, models)));",
       ),
     );
   });

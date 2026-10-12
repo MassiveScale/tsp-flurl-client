@@ -59,8 +59,10 @@ public interface IMergePatch<out T>
 [ExcludeFromCodeCoverage]
 public class MergePatch<T> : IMergePatch<T>
 {
+    // The same options the client uses, so a value written through the patch has the same wire
+    // format as one sent in a body (ISO 8601 durations, enum wire values, and so on).
     private static readonly JsonSerializerOptions DefaultSerializerOptions =
-        new(JsonSerializerDefaults.Web);
+        ClientRuntime.CreateJsonOptions(null);
 
     private static readonly JsonElement NullElement =
         JsonSerializer.SerializeToElement<object?>(null);

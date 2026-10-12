@@ -95,7 +95,8 @@ Tests use Node.js native test runner (`node:test` / `node:assert`) — no extern
 
 ```powershell
 cd example/custom-models; npm install; npx tsp compile .
-dotnet run --project ../../e2e/CustomModels.Tests
+dotnet run --project ../../e2e/CustomModels.Tests -f net8.0
+dotnet run --project ../../e2e/CustomModels.Tests -f net10.0
 ```
 
 On a machine whose NuGet config includes a private feed that rejects the current credentials, add `-p:RestoreSources=https://api.nuget.org/v3/index.json` to the restore.
@@ -104,6 +105,7 @@ On a machine whose NuGet config includes a private feed that rejects the current
 
 - `example/simple-api/` — a small widget service.
 - `example/custom-models/` — every place a custom model can be swapped in. The subject of the end-to-end tests.
+- `example/kitchen-sink/` — most of TypeSpec at once (every scalar, unions, generics, discriminators, encodings, cookies, query styles, error models). It is compiled with warnings as errors, and its end-to-end tests cover the wire formats that are easiest to get silently wrong.
 - `example/all-versions/` — versions that genuinely differ, emitted with `all-versions`. Its tests in `e2e/CustomModels.Tests` prove each version has exactly its own shape.
 - `example/versioned-api/` — a versioned Pet Store for manual end-to-end validation. Run it via `example/versioned-api/build.ps1`.
 
@@ -135,9 +137,17 @@ Do **not** add decorative section-divider banner comments (e.g. `// ─── C#
 
 Every function, method, type, interface, and exported constant must have a JSDoc (`/** … */`) block describing what it is. Document parameters and return values with `@param` / `@returns` where they are not fully self-evident from the signature, and document non-obvious fields on interfaces/types. This is a hard requirement for all new and modified declarations — do not omit it.
 
+### Report, never guess
+
+If TypeSpec uses something the emitter cannot send or read correctly (a multipart body, a nested discriminator, an `@encode` it cannot produce), report it with a diagnostic instead of generating code that behaves differently from the spec. The cost of a loud error is a clear message; the cost of a silent one is a wrong request in production. Every such case has a diagnostic in `src/lib.ts`, a test, and a line in the README's "What is not supported".
+
+### Line endings
+
+Everything the emitter writes uses LF. `.gitattributes` pins LF in the repository, and the renderer normalizes template line endings on load, so a CRLF checkout or a CRLF template override cannot change the output. When editing files from a script on Windows, write them with `newline="\n"` (Python) or an explicit LF so a template does not become CRLF.
+
 ### Generated C#
 
-Every public type and member in the `.hbs` templates carries an XML doc comment; the generated project sets `GenerateDocumentationFile`, so a malformed `cref` or `typeparamref` surfaces as a build warning. The generated example projects must build with zero warnings.
+Every public type and member the emitter generates carries an XML doc comment (a generated summary is used when the spec has no documentation), and every `.hbs` template does too; the generated project sets `GenerateDocumentationFile`, so a malformed `cref` or `typeparamref` surfaces as a build warning. The generated example projects must build with zero warnings.
 
 ---
 
@@ -157,15 +167,17 @@ After making any change to the codebase:
    cd example/simple-api && npm install && tsp compile .
    cd example/custom-models && npm install && tsp compile .
    cd example/all-versions && npm install && tsp compile .
+   cd example/kitchen-sink && npm install && tsp compile .
    cd example/versioned-api && npm install && ./build.ps1
    ```
 
-   Run this for every subdirectory under `example/`.
+   Run this for every subdirectory under `example/`, then build each generated project with warnings as errors, for example `dotnet build tsp-output -warnaserror`. A nullable, accessibility, or XML-documentation warning in the generated C# is a defect.
 
-3. **Run the end-to-end tests** (after compiling `example/custom-models` and `example/all-versions`):
+3. **Run the end-to-end tests** (after compiling `example/custom-models`, `example/all-versions` and `example/kitchen-sink`):
 
    ```powershell
-   dotnet run --project e2e/CustomModels.Tests
+   dotnet run --project e2e/CustomModels.Tests -f net8.0
+   dotnet run --project e2e/CustomModels.Tests -f net10.0
    ```
 
 All steps must pass before a change is considered complete.

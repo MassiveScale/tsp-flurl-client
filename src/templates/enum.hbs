@@ -22,7 +22,9 @@
   {{enumName}}    — PascalCase enum name, e.g. "OrderStatus"
 
   {{members}}     — array of enum-member objects in declaration order. Each has:
-    .doc          —   optional XML <summary> text (pre-escaped; may be falsy)
+    .doc          —   optional XML <summary> text (pre-escaped; may be falsy). When it
+                      is falsy the template writes a generated summary.
+    .docValue     —   the text form of the declared value, XML-escaped, for that summary
     .name         —   PascalCase member name, e.g. "Pending"
     .memberValue  —   text form of the declared value for [EnumMember(Value = "...")],
                       e.g. "pending" or "1" (already escaped for a C# string literal)
@@ -41,14 +43,16 @@
 --}}
 /// <summary>
 {{#if doc}}/// {{docLines doc "/// "}}
+{{else}}/// The <c>{{enumName}}</c> enumeration.
 {{/if}}/// </summary>
 [JsonConverter(typeof({{enumName}}JsonConverter))]
 {{access}} enum {{enumName}}
 {
-{{#each members}}{{#if doc}}    /// <summary>
-    /// {{docLines doc "    /// "}}
-    /// </summary>
-{{/if}}    [EnumMember(Value = "{{memberValue}}")]
+{{#each members}}    /// <summary>
+{{#if doc}}    /// {{docLines doc "    /// "}}
+{{else}}    /// The <c>{{docValue}}</c> value.
+{{/if}}    /// </summary>
+    [EnumMember(Value = "{{memberValue}}")]
     {{name}},
 
 {{/each}}

@@ -28,6 +28,8 @@ import {
 import { getClientName, getAccess } from "./decorators.js";
 import { checkName, reportInvalidName, MemberScope } from "./names.js";
 import { toCsIdentifier } from "./identifiers.js";
+import { checkEncoding } from "./encoding.js";
+import { createDiagnostic } from "./lib.js";
 import {
   mapPropertyType,
   escapeXml,
@@ -91,20 +93,24 @@ function buildPropertyViews(
     const csType = mapPropertyType(prop, program, models, enums, usedHelpers);
     const nullable = prop.optional && !csType.endsWith("?") ? "?" : "";
     const declaredName = getClientName(program, prop) ?? prop.name;
-    checkName(program, "property", declaredName, prop);
+    // A property whose name is not a valid C# identifier is reported and left out.
+    if (!checkName(program, "property", declaredName, prop)) continue;
     const propName = toCsPropName(declaredName);
     // Two properties can become the same C# name (`foo` and `Foo`), and a property
     // cannot share its record's name or a member the record generates.
     if (!scope.claim(propName, `"${prop.name}"`, prop)) continue;
+    const encoding = checkEncoding(program, prop, "property");
     const defaultVal = prop.optional
       ? undefined
       : defaultForProperty(prop, csType);
     result.push({
       doc: propDoc ? escapeXml(propDoc) : undefined,
+      docName: escapeXml(prop.name),
       type: `${csType}${nullable}`,
       name: propName,
       jsonPropertyName: escapeCsString(prop.name),
       defaultValue: defaultVal,
+      numberAsString: encoding === "number-as-string",
     });
   }
   return result;
@@ -187,6 +193,24 @@ export function buildRecord(
     : flattenProperties(model);
 
   const selfDiscriminator = getDiscriminator(program, model);
+  // A model that is both a variant of a discriminated parent and the root of a
+  // discriminator of its own would need two discriminators resolved, which
+  // System.Text.Json cannot do. It is reported rather than generated into models
+  // that read as the wrong subtype or throw when written.
+  if (selfDiscriminator && parentDiscriminated) {
+    program.reportDiagnostic(
+      createDiagnostic({
+        code: "unsupported-nested-discriminator",
+        target: model,
+        format: {
+          name: recordName,
+          parent:
+            getClientName(program, parentDiscriminated.root) ??
+            parentDiscriminated.root.name,
+        },
+      }),
+    );
+  }
   // The discriminator property is emitted purely as [JsonPolymorphic] metadata,
   // never as a real member — declaring it as a property too makes
   // System.Text.Json throw ("conflicts with an existing metadata property name")
@@ -582,6 +606,7 @@ export function buildEnum(
           : member.name;
     members.push({
       doc: memberDoc ? escapeXml(memberDoc) : undefined,
+      docValue: escapeXml(text),
       name: csMemberName,
       memberValue: escapeCsString(text),
       numberLiteral: isNumber

@@ -117,6 +117,7 @@ interface Files {
 @route("/gadgets")
 interface Gadgets {
   @get read(@path id: string): Gadget;
+  @post create(@body body: Gadget): Gadget;
 }
 
 @access(Access.internal)

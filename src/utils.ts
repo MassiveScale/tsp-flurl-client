@@ -371,8 +371,9 @@ function mapScalar(scalar: Scalar, program: Program): string {
       return "TimeSpan";
     case "url":
       return "Uri";
-    case "numeric":
     case "integer":
+      return "long";
+    case "numeric":
     case "float":
       return "double";
     default:
@@ -417,7 +418,7 @@ const BUILTIN_SCALARS = new Set([
  * @param scalar - The scalar to resolve.
  * @returns The built-in scalar name, or the scalar's own name if none is found.
  */
-function builtinScalarName(scalar: Scalar): string {
+export function builtinScalarName(scalar: Scalar): string {
   let current: Scalar | undefined = scalar;
   while (current) {
     if (BUILTIN_SCALARS.has(current.name)) return current.name;

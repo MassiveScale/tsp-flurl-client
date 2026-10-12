@@ -383,7 +383,7 @@ describe("endpoint output name collisions", () => {
     `);
 
     ok(collisions.some((m) => m.includes("Endpoints/IItems.g.cs")));
-    ok(collisions.some((m) => m.includes("Endpoints/ItemsClient.g.cs")));
+    ok(collisions.some((m) => m.includes("Endpoints/ItemsEndpoint.g.cs")));
     ok(
       fileContent(results, "IItems.g.cs").includes("namespace A.Client;"),
       "The first claim is kept rather than overwritten",
@@ -456,7 +456,7 @@ describe("version projection", () => {
   it("leaves a parameter added in v2 out of a v1 client", async () => {
     const results = await emit(spec, { "target-version": "v1.0" });
 
-    const client = fileContent(results, "WidgetsClient.g.cs");
+    const client = fileContent(results, "WidgetsEndpoint.g.cs");
     ok(client.includes('SetQueryParam("always"'));
     ok(!client.includes('SetQueryParam("extra"'));
     ok(!fileContent(results, "IWidgets.g.cs").includes("extra"));
@@ -466,7 +466,7 @@ describe("version projection", () => {
     const results = await emit(spec, { "target-version": "v2.0" });
 
     ok(
-      fileContent(results, "WidgetsClient.g.cs").includes(
+      fileContent(results, "WidgetsEndpoint.g.cs").includes(
         'SetQueryParam("extra"',
       ),
     );
@@ -503,12 +503,12 @@ describe("version projection", () => {
       "No unversioned copy of a versioned model is written",
     );
     ok(
-      !fileContent(results, "v1.0/Endpoints/WidgetsClient.g.cs").includes(
+      !fileContent(results, "v1.0/Endpoints/WidgetsEndpoint.g.cs").includes(
         'SetQueryParam("extra"',
       ),
     );
     ok(
-      fileContent(results, "v2.0/Endpoints/WidgetsClient.g.cs").includes(
+      fileContent(results, "v2.0/Endpoints/WidgetsEndpoint.g.cs").includes(
         'SetQueryParam("extra"',
       ),
     );

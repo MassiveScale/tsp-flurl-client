@@ -33,11 +33,14 @@ import {
   GenericOverloadView,
   QueryParamView,
   HeaderParamView,
+  CookieParamView,
   PayloadKind,
   FileView,
 } from "./renderer.js";
 import { getClientName, getAccess } from "./decorators.js";
 import { checkName, MemberScope } from "./names.js";
+import { checkEncoding } from "./encoding.js";
+import { createDiagnostic } from "./lib.js";
 import {
   mapType,
   mapPropertyType,
@@ -78,7 +81,7 @@ export interface RequestType {
 export interface EndpointSources {
   /** Source of the endpoint interface file (e.g. `IWidgets.g.cs`). */
   interfaceSource: string;
-  /** Source of the endpoint implementation file (e.g. `WidgetsClient.g.cs`). */
+  /** Source of the endpoint implementation file (e.g. `WidgetsEndpoint.g.cs`). */
   clientSource: string;
 }
 
@@ -242,7 +245,7 @@ export function buildRouteExpression(
  * container, turning each operation into a method.
  *
  * @param csName - Interface name (e.g. `IPets`).
- * @param csClientName - Implementation class name (e.g. `PetsClient`).
+ * @param csClientName - Implementation class name (e.g. `PetsEndpoint`).
  * @param csNs - C# namespace the files are emitted into.
  * @param ops - The HTTP operations to render as methods.
  * @param doc - Optional doc comment for the interface.
@@ -283,6 +286,11 @@ export function buildEndpoint(
   // member (or an ambiguous overload), so the second is reported and left out.
   const methodScope = new MemberScope(program, "method", `interface ${csName}`);
   const methods = ops.flatMap((op) => {
+    // An operation whose name is not a valid C# identifier is reported and left
+    // out, rather than rendered as a method that cannot compile.
+    const declaredName =
+      getClientName(program, op.operation) ?? op.operation.name;
+    if (!checkName(program, "operation", declaredName, op.operation)) return [];
     const view = buildMethodView(
       op,
       program,
@@ -293,6 +301,7 @@ export function buildEndpoint(
       requestTypes,
       routePrefix,
     );
+    if (!view) return [];
     return methodScope.claim(
       view.methodName,
       `operation "${op.operation.name}"`,
@@ -369,7 +378,9 @@ export function buildEndpoint(
  * @param version - The API version being emitted, or `undefined` when unversioned.
  * @param requestTypes - Accumulator for synthesized request payload types.
  * @param routePrefix - The already-resolved route prefix for this version.
- * @returns The {@link MethodView} for the operation.
+ * @returns The {@link MethodView} for the operation, or `undefined` when the
+ *   operation uses something this emitter cannot send or read correctly (it is
+ *   reported, and left out, rather than generated with the wrong behaviour).
  */
 function buildMethodView(
   op: HttpOperation,
@@ -380,13 +391,27 @@ function buildMethodView(
   version: Version | undefined,
   requestTypes: Map<string, RequestType>,
   routePrefix: string,
-): MethodView {
+): MethodView | undefined {
+  const unsupported = findUnsupportedPayload(op);
+  if (unsupported) {
+    program.reportDiagnostic(
+      createDiagnostic({
+        code: "unsupported-feature",
+        target: op.operation,
+        format: {
+          feature: unsupported,
+          operation: op.operation.name,
+          hint: "Call the API with the IFlurlClient exposed as FlurlClient instead.",
+        },
+      }),
+    );
+    return undefined;
+  }
   const rawPath = routePrefix
     ? `${routePrefix}/${op.path}`.replace(/\/+/g, "/").replace(/\/$/, "")
     : op.path;
   const baseMethodName =
     getClientName(program, op.operation) ?? op.operation.name;
-  checkName(program, "operation", baseMethodName, op.operation);
   const methodName = toCsMethodName(baseMethodName);
   const doc = getDoc(program, op.operation);
   const response = resolveResponse(
@@ -396,11 +421,13 @@ function buildMethodView(
     enums,
     usedHelpers,
   );
+  registerErrorModels(op.responses, program, models, enums, usedHelpers);
 
   const requiredParams: { decl: string; name: string }[] = [];
   const optionalParams: { decl: string; name: string }[] = [];
   const queryParams: QueryParamView[] = [];
   const headerParams: HeaderParamView[] = [];
+  const cookieParams: CookieParamView[] = [];
   const pathParams = new Map<string, string>();
 
   // Parameter names must be unique, and must not collide with the parameters every
@@ -443,7 +470,8 @@ function buildMethodView(
       usedHelpers,
     );
     const paramName = getClientName(program, param.param) ?? param.param.name;
-    checkName(program, "parameter", paramName, param.param);
+    // A parameter whose name is not a valid C# identifier is reported and left out.
+    if (!checkName(program, "parameter", paramName, param.param)) continue;
     if (
       !paramScope.claim(
         toCsParamName(paramName),
@@ -453,15 +481,24 @@ function buildMethodView(
     ) {
       continue;
     }
+    checkEncoding(program, param.param, "parameter");
     const csParam = escapeCsIdentifier(toCsParamName(paramName));
     const isOptional = param.param.optional;
     const nullableSuffix = isOptional && !csType.endsWith("?") ? "?" : "";
     const decl = `${csType}${nullableSuffix} ${csParam}${isOptional ? " = null" : ""}`;
 
     if (param.type === "query") {
-      queryParams.push({ name: param.name, variable: csParam });
+      // An array without `explode` is one comma-separated value (`tags=a,b`), which
+      // is TypeSpec's default; with `explode` it is repeated (`tags=a&tags=b`).
+      const delimited =
+        param.explode === false &&
+        param.param.type.kind === "Model" &&
+        isArrayModelType(param.param.type as Model);
+      queryParams.push({ name: param.name, variable: csParam, delimited });
     } else if (param.type === "header") {
       headerParams.push({ name: param.name, variable: csParam });
+    } else if (param.type === "cookie") {
+      cookieParams.push({ name: param.name, variable: csParam });
     } else if (param.type === "path") {
       pathParams.set(param.name, csParam);
     }
@@ -497,7 +534,11 @@ function buildMethodView(
         );
         if (hasHiddenProperties(bodyModel, visibility, program)) {
           const suffix = requestTypeSuffix(op.verb);
-          const requestTypeName = `${bodyModel.name}${suffix}Request`;
+          // Named after the model's effective (client) name, so renaming `Widget` to
+          // `Product` gives `ProductCreateRequest`, and two same-named models with
+          // different client names get different records.
+          const modelName = getClientName(program, bodyModel) ?? bodyModel.name;
+          const requestTypeName = `${modelName}${suffix}Request`;
           if (!requestTypes.has(requestTypeName)) {
             requestTypes.set(requestTypeName, {
               name: requestTypeName,
@@ -548,6 +589,7 @@ function buildMethodView(
     route: buildRouteExpression(rawPath, pathParams),
     queryParams,
     headerParams,
+    cookieParams,
     body,
     response: response?.view,
     generic: response?.generic,
@@ -600,14 +642,7 @@ function resolveResponse(
   usedHelpers: UsedHelpers,
 ): ResolvedResponse | undefined {
   for (const resp of responses) {
-    const sc = resp.statusCodes;
-    const isSuccess =
-      sc === "*"
-        ? false
-        : typeof sc === "number"
-          ? sc >= 200 && sc < 300
-          : sc.start >= 200 && sc.end < 300;
-    if (!isSuccess) continue;
+    if (!isSuccessStatus(resp.statusCodes)) continue;
 
     for (const content of resp.responses) {
       if (!content.body) continue;
@@ -749,4 +784,76 @@ function mapBodyParamType(
     }
   }
   return mapType(type, program, models, enums, usedHelpers);
+}
+
+/**
+ * Whether a response status code is a success (2xx). A wildcard is not.
+ *
+ * @param statusCodes - The response's status code or range.
+ * @returns `true` for a status code, or a range that lies within 200-299.
+ */
+function isSuccessStatus(
+  statusCodes: HttpOperationResponse["statusCodes"],
+): boolean {
+  if (statusCodes === "*") return false;
+  if (typeof statusCodes === "number") {
+    return statusCodes >= 200 && statusCodes < 300;
+  }
+  return statusCodes.start >= 200 && statusCodes.end < 300;
+}
+
+/**
+ * Finds a request or success-response body the client cannot send or read
+ * correctly. A multipart body or a file (`Http.File`) body would otherwise be
+ * written as JSON, which is not what the API expects, with no sign of it.
+ *
+ * @param op - The HTTP operation.
+ * @returns A description of the unsupported feature, or `undefined` when all is supported.
+ */
+function findUnsupportedPayload(op: HttpOperation): string | undefined {
+  const body = op.parameters.body;
+  if (body && body.bodyKind !== "single") {
+    return body.bodyKind === "multipart"
+      ? "A multipart request body"
+      : "A file request body (Http.File)";
+  }
+  for (const response of op.responses) {
+    if (!isSuccessStatus(response.statusCodes)) continue;
+    for (const content of response.responses) {
+      if (content.body && content.body.bodyKind !== "single") {
+        return content.body.bodyKind === "multipart"
+          ? "A multipart response body"
+          : "A file response body (Http.File)";
+      }
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Registers the models used by error responses (`@error` models, or any non-success
+ * body), so they are generated even though no method returns them. A caller reads
+ * one from a failed call with `FlurlHttpException.GetResponseJsonAsync<T>()`.
+ *
+ * @param responses - The operation's HTTP responses.
+ * @param program - The compiler program.
+ * @param models - Accumulator for referenced named models (see {@link mapType}).
+ * @param enums - Accumulator for referenced named enums (see {@link mapType}).
+ * @param usedHelpers - Accumulator for required helper classes (see {@link mapType}).
+ */
+function registerErrorModels(
+  responses: HttpOperationResponse[],
+  program: Program,
+  models: Map<string, Model>,
+  enums: Map<string, Enum>,
+  usedHelpers: UsedHelpers,
+): void {
+  for (const response of responses) {
+    if (isSuccessStatus(response.statusCodes)) continue;
+    for (const content of response.responses) {
+      if (content.body?.bodyKind === "single") {
+        mapType(content.body.type, program, models, enums, usedHelpers);
+      }
+    }
+  }
 }

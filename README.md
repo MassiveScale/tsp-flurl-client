@@ -97,7 +97,7 @@ Different source names can also become the same C# name, which C# rejects, so co
 
 - Properties: `foo` and `Foo`, or two `@clientName` values that differ only in the case of the first letter, and a property that shares its record's name (`model Owner { owner: string }`, which C# rejects as `CS0542`) or the name of a member every record has (`EqualityContract`, `Equals`, `ToString`, ...).
 - Operations: `read` and `Read` both become `ReadAsync`. Parameters: `foo` and `Foo` both become `foo`, and a parameter cannot be named `body` (when there is a request body), `cancellationToken`, `additionalQueryParameters`, `flurlRequest`, `flurlResponse` or `_client`, which the generated method already uses.
-- Types: two models or enums with the same name in different child namespaces (they are flattened into one C# namespace), two interfaces with the same name, and a model named like a generated type (`IItems`, `ItemsClient`, the aggregate client, its `...Extensions` class, or an enum's `...JsonConverter`). An interface cannot be named like the aggregate client, `FlurlClient` or `Create`, which are members of it.
+- Types: two models or enums with the same name in different child namespaces (they are flattened into one C# namespace), two interfaces with the same name, and a model named like a generated type (`IItems`, `ItemsEndpoint`, the aggregate client, its `...Extensions` class, or an enum's `...JsonConverter`). An interface cannot be named like the aggregate client, `FlurlClient` or `Create`, which are members of it.
 - With `all-versions`, two version values that sanitize to the same namespace segment (`1.0` and `1_0`).
 
 Rename one with `@clientName` to resolve any of them.
@@ -146,7 +146,7 @@ After running `tsp compile`, the emitter writes a self-contained C# project to y
 <output-dir>/
   Endpoints/
     ICustomers.g.cs          # Endpoint interface per TypeSpec interface
-    CustomersClient.g.cs     # Its Flurl implementation (internal)
+    CustomersEndpoint.g.cs     # Its Flurl implementation (internal)
   Models/
     Customer.g.cs            # C# records for every model
     CustomerCreateRequest.g.cs
@@ -243,9 +243,11 @@ try
 }
 catch (FlurlHttpException ex) when (ex.StatusCode == 404)
 {
-    var problem = await ex.GetResponseJsonAsync<ProblemDetails>();
+    var problem = await ex.GetResponseJsonAsync<ApiError>();
 }
 ```
+
+Models that only an error response uses (an `@error` model such as `ApiError`) are generated too, even though no method returns them, so the body of a failed call can be read as a typed model.
 
 ### Adding custom query parameters
 
@@ -412,19 +414,43 @@ List<Pet> pets = await api.Pets.ListAsync();
 
 `Pet` is emitted as `abstract` because a bare `Pet` has no valid JSON shape of its own — `System.Text.Json` would throw at the first (de)serialization attempt. This also applies to pass-through grouping models with no discriminator value of their own. Set `"abstract-discriminated-base": false` to keep these records concrete instead.
 
-### String-encoded booleans (`@encode`)
+### Encodings (`@encode`)
 
-A `boolean` property or parameter decorated with `@encode("string")` travels on the wire as a JSON string (`"true"`/`"false"`), so it is emitted as C# `string` rather than `bool`:
+`@encode` changes how a value is written on the wire. The client honours the ones below, and reports a warning (`unsupported-encoding`) for any other, because the value would otherwise travel in the wrong format with no sign of it.
+
+| Encoding                                                                | Result                                                                                                  |
+| ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| none                                                                    | The default: ISO 8601 / RFC 3339 for dates and durations, base64 for bytes, a JSON number for a number. |
+| `@encode("string")` on a `boolean`                                      | The property or parameter is a C# `string` (`"true"` / `"false"`).                                      |
+| `@encode("string")` on a number (`int64`, `float64`, `decimal`, ...)    | The C# type stays numeric and is written and read as a JSON string, so an `int64` keeps its precision.  |
+| `rfc3339` on a date-time, `ISO8601` on a duration, `base64` on bytes    | The same as the default.                                                                                |
+| anything else (`unixTimestamp`, `rfc7231`, `seconds`, `base64url`, ...) | Not supported: the default format is used and a warning is reported.                                    |
 
 ```typespec
 model Widget {
-  @encode(string)
-  active: boolean;   // → public string Active
-  enabled: boolean;  // → public bool Enabled
+  @encode("string") active: boolean;   // → public string Active
+  @encode("string") total: int64;      // → public long Total, written as "9007199254740993"
+  took: duration;                      // → public TimeSpan Took, written as "PT1H30M"
 }
 ```
 
-Other `@encode` targets (dates, durations, bytes) are not yet honored and map by their declared type.
+Durations are written and read as ISO 8601 (`PT1H30M`), which is what a TypeSpec `duration` is on the wire; `System.Text.Json` would otherwise write a `TimeSpan` as `01:30:00`. An `integer` is a C# `long`.
+
+### Query, header, and cookie parameters
+
+- A `@query` array that is not exploded (TypeSpec's default) is sent as one comma-separated value, `tags=a,b`. With `@query(#{ explode: true })` it is repeated, `tags=a&tags=b`.
+- A `@cookie` parameter is sent as a cookie.
+- A header or path value that is an array is joined with commas; enums use their wire names, booleans are `true`/`false`, and dates are ISO 8601.
+
+### What is not supported
+
+A request or success response that cannot be sent or read correctly is reported as an error (`unsupported-feature`) and that one operation is left out of the client, rather than being generated with the wrong behaviour. The rest of the client is generated. Call such an operation through the Flurl client the aggregate client exposes (`FlurlClient`).
+
+- Multipart request or response bodies (`@multipartBody`).
+- File bodies (`Http.File`).
+- A `@discriminator` model that is also a variant of another discriminated model (a nested discriminator). `System.Text.Json` can resolve only one discriminator per hierarchy: reading through the base type would return the wrong subtype, and writing a subtype would fail or omit a discriminator. Reported as `unsupported-nested-discriminator`. A grouping model with no discriminator of its own (`model Dog extends Animal {}`) is fine.
+- `@encode` values other than those in the table above (reported as a warning).
+- Streaming responses such as server-sent events are read in full before the call returns.
 
 ### Merge-patch request bodies
 
@@ -514,7 +540,8 @@ The end-to-end tests compile the `custom-models` example, then run the **generat
 
 ```powershell
 cd example/custom-models; npm install; npx tsp compile .
-dotnet run --project ../../e2e/CustomModels.Tests
+dotnet run --project ../../e2e/CustomModels.Tests -f net8.0
+dotnet run --project ../../e2e/CustomModels.Tests -f net10.0
 ```
 
 ### Lint & Format
@@ -533,7 +560,7 @@ By default only the latest declared version is emitted (or the one named by `tar
 ```
 <output-dir>/
   v1.0/
-    Endpoints/        # IWidgets, WidgetsClient, ... for v1.0
+    Endpoints/        # IWidgets, WidgetsEndpoint, ... for v1.0
     Models/           # Widget, Status, WidgetCreateRequest, ... exactly as v1.0 declares them
     ApiClientExtensions.g.cs
   v2.0/

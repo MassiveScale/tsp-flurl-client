@@ -288,7 +288,7 @@ describe("version namespace segments", () => {
     );
 
     ok(
-      fileContent(results, "ItemsClient.g.cs").includes(
+      fileContent(results, "ItemsEndpoint.g.cs").includes(
         "namespace TestApi.Client.Vsprint_42;",
       ),
     );
@@ -366,7 +366,7 @@ describe("escapeCsString", () => {
     `);
 
     ok(
-      fileContent(results, "ThingsClient.g.cs").includes(
+      fileContent(results, "ThingsEndpoint.g.cs").includes(
         'SetQueryParam("a\\"b", ',
       ),
     );

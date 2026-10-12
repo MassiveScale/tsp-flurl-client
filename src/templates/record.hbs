@@ -19,7 +19,12 @@
                       e.g. "<T>" or "". Empty string for non-generic records.
 
   {{properties}}    — array of property objects in declaration order. Each has:
-    .doc            —   optional XML <summary> text (pre-escaped; may be falsy)
+    .doc            —   optional XML <summary> text (pre-escaped; may be falsy). When it
+                        is falsy the template writes a generated summary, so every public
+                        member carries XML documentation.
+    .docName        —   the wire name, XML-escaped, for that generated summary
+    .numberAsString —   true for a number written as a JSON string (@encode("string")).
+                        Adds [JsonNumberHandling(...)] so it round-trips as a string.
     .type           —   C# type string incl. optional "?", e.g. "string", "int?"
     .name           —   PascalCase property name, e.g. "FirstName"
     .jsonPropertyName — JSON wire name for [JsonPropertyName("...")], e.g. "firstName"
@@ -45,16 +50,19 @@
 --}}
 /// <summary>
 {{#if doc}}/// {{docLines doc "/// "}}
+{{else}}/// The <c>{{recordName}}</c> model.
 {{/if}}/// </summary>
 {{#if discriminator}}[JsonPolymorphic(TypeDiscriminatorPropertyName = "{{discriminator.propertyName}}")]
 {{#each discriminator.derivedTypes}}[JsonDerivedType(typeof({{typeName}}), "{{value}}")]
 {{/each}}{{/if}}{{access}} {{#if isAbstract}}abstract {{/if}}record {{recordName}}{{genericSuffix}}{{#if baseRecordName}} : {{baseRecordName}}{{/if}}
 {
-{{#each properties}}{{#if doc}}    /// <summary>
-    /// {{docLines doc "    /// "}}
-    /// </summary>
-{{/if}}    [JsonPropertyName("{{jsonPropertyName}}")]
-    public {{type}} {{name}} { get; init; }{{#if defaultValue}} = {{defaultValue}};{{/if}}
+{{#each properties}}    /// <summary>
+{{#if doc}}    /// {{docLines doc "    /// "}}
+{{else}}    /// The <c>{{docName}}</c> property.
+{{/if}}    /// </summary>
+    [JsonPropertyName("{{jsonPropertyName}}")]
+{{#if numberAsString}}    [JsonNumberHandling(JsonNumberHandling.WriteAsString | JsonNumberHandling.AllowReadingFromString)]
+{{/if}}    public {{type}} {{name}} { get; init; }{{#if defaultValue}} = {{defaultValue}};{{/if}}
     
 {{/each}}
 }

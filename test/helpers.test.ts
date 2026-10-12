@@ -133,7 +133,7 @@ describe("helper files", () => {
       ),
     );
     ok(
-      fileContent(results, "v1.0/Endpoints/ItemsClient.g.cs").includes(
+      fileContent(results, "v1.0/Endpoints/ItemsEndpoint.g.cs").includes(
         "namespace TestApi.Client.V1_0;",
       ),
     );
@@ -274,7 +274,9 @@ describe("template overrides for the Flurl templates", () => {
 
     ok(fileContent(results, "IItems.g.cs").includes("/* custom interface */"));
     ok(
-      fileContent(results, "ItemsClient.g.cs").includes("/* custom client */"),
+      fileContent(results, "ItemsEndpoint.g.cs").includes(
+        "/* custom client */",
+      ),
     );
   });
 

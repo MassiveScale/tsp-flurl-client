@@ -291,12 +291,12 @@ describe("per-version output when all versions are emitted", () => {
     );
 
     ok(
-      fileContent(results, "v1.0/Endpoints/WidgetsClient.g.cs").includes(
+      fileContent(results, "v1.0/Endpoints/WidgetsEndpoint.g.cs").includes(
         'AppendPathSegment($"api/v1.0/widgets")',
       ),
     );
     ok(
-      fileContent(results, "v3.0/Endpoints/WidgetsClient.g.cs").includes(
+      fileContent(results, "v3.0/Endpoints/WidgetsEndpoint.g.cs").includes(
         'AppendPathSegment($"api/v3.0/widgets")',
       ),
     );
@@ -377,7 +377,7 @@ describe("a single emitted version", () => {
       fileContent(results, "Widget.g.cs").includes("namespace TestApi.Client;"),
     );
     ok(
-      fileContent(results, "WidgetsClient.g.cs").includes(
+      fileContent(results, "WidgetsEndpoint.g.cs").includes(
         "namespace TestApi.Client.V2_0;",
       ),
     );

@@ -32,9 +32,9 @@ describe("endpoints", () => {
     );
 
     const clientFile = Object.keys(results).find((k) =>
-      k.endsWith("ItemsClient.g.cs"),
+      k.endsWith("ItemsEndpoint.g.cs"),
     );
-    ok(clientFile, "Expected ItemsClient.g.cs to be emitted");
+    ok(clientFile, "Expected ItemsEndpoint.g.cs to be emitted");
     ok(
       results[clientFile].includes('AppendPathSegment($"api/items")'),
       "Expected the default route prefix in the request path",
@@ -65,9 +65,9 @@ describe("endpoints", () => {
     `);
 
     const ifaceFile = Object.keys(results).find((k) =>
-      k.endsWith("ItemsClient.g.cs"),
+      k.endsWith("ItemsEndpoint.g.cs"),
     );
-    ok(ifaceFile, "Expected ItemsClient.g.cs");
+    ok(ifaceFile, "Expected ItemsEndpoint.g.cs");
     const content = results[ifaceFile];
     ok(
       content.includes('AppendPathSegment($"api/items")') &&
@@ -132,7 +132,7 @@ describe("endpoints", () => {
     `);
 
     const ifaceFile = Object.keys(results).find((k) =>
-      k.endsWith("WidgetsClient.g.cs"),
+      k.endsWith("WidgetsEndpoint.g.cs"),
     );
     ok(ifaceFile);
     const content = results[ifaceFile];
@@ -165,9 +165,9 @@ describe("endpoints", () => {
     `);
 
     const ifaceFile = Object.keys(results).find((k) =>
-      k.endsWith("ItemsClient.g.cs"),
+      k.endsWith("ItemsEndpoint.g.cs"),
     );
-    ok(ifaceFile, "Expected ItemsClient.g.cs");
+    ok(ifaceFile, "Expected ItemsEndpoint.g.cs");
     ok(
       results[ifaceFile].includes('AppendPathSegment($"api/v1.0/items")') &&
         results[ifaceFile].includes("HttpMethod.Get"),
@@ -190,9 +190,9 @@ describe("endpoints", () => {
     `);
 
     const ifaceFile = Object.keys(results).find((k) =>
-      k.endsWith("ItemsClient.g.cs"),
+      k.endsWith("ItemsEndpoint.g.cs"),
     );
-    ok(ifaceFile, "Expected ItemsClient.g.cs");
+    ok(ifaceFile, "Expected ItemsEndpoint.g.cs");
     ok(
       results[ifaceFile].includes('AppendPathSegment($"api/items")') &&
         results[ifaceFile].includes("HttpMethod.Get"),
@@ -218,9 +218,9 @@ describe("endpoints", () => {
     );
 
     const ifaceFile = Object.keys(results).find((k) =>
-      k.endsWith("ItemsClient.g.cs"),
+      k.endsWith("ItemsEndpoint.g.cs"),
     );
-    ok(ifaceFile, "Expected ItemsClient.g.cs");
+    ok(ifaceFile, "Expected ItemsEndpoint.g.cs");
     ok(
       results[ifaceFile].includes('AppendPathSegment($"v1/api/items")') &&
         results[ifaceFile].includes("HttpMethod.Get"),
@@ -246,9 +246,9 @@ describe("endpoints", () => {
     );
 
     const ifaceFile = Object.keys(results).find((k) =>
-      k.endsWith("ItemsClient.g.cs"),
+      k.endsWith("ItemsEndpoint.g.cs"),
     );
-    ok(ifaceFile, "Expected ItemsClient.g.cs");
+    ok(ifaceFile, "Expected ItemsEndpoint.g.cs");
     ok(
       results[ifaceFile].includes('AppendPathSegment($"api/items")') &&
         results[ifaceFile].includes("HttpMethod.Get"),
@@ -278,9 +278,9 @@ describe("endpoints", () => {
     );
 
     const ifaceFile = Object.keys(results).find((k) =>
-      k.endsWith("ItemsClient.g.cs"),
+      k.endsWith("ItemsEndpoint.g.cs"),
     );
-    ok(ifaceFile, "Expected ItemsClient.g.cs");
+    ok(ifaceFile, "Expected ItemsEndpoint.g.cs");
     ok(
       results[ifaceFile].includes('AppendPathSegment($"items")') &&
         results[ifaceFile].includes("HttpMethod.Get"),

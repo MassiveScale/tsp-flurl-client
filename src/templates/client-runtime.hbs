@@ -68,6 +68,9 @@ internal static class ClientRuntime
             },
         };
 
+        // TypeSpec durations are ISO 8601 (`PT1H`); System.Text.Json writes a TimeSpan as `01:00:00`.
+        options.Converters.Add(new Iso8601DurationConverter());
+
         if (!map.IsEmpty)
         {
             options.Converters.Add(new MappedModelConverterFactory(map));
@@ -98,6 +101,15 @@ internal static class ClientRuntime
         IEnumerable sequence => sequence.Cast<object?>().Select(ToQueryValue).ToList(),
         _ => value.ToString(),
     };
+
+    /// <summary>
+    /// Converts an array query value to the single comma-separated value TypeSpec calls
+    /// <c>explode: false</c> (<c>tags=a,b</c>).
+    /// </summary>
+    /// <param name="value">The parameter value; <see langword="null"/> sends nothing.</param>
+    /// <returns><see langword="null"/> for <see langword="null"/>, otherwise the joined text.</returns>
+    internal static object? ToDelimitedQueryValue(object? value) =>
+        value is null ? null : ToWireString(value);
 
     /// <summary>
     /// Converts a value to the text sent in a header or path segment. A sequence is comma-separated.
@@ -240,20 +252,55 @@ internal static class ClientRuntime
     }
 
     /// <summary>
+    /// Reads and writes a <see cref="TimeSpan"/> as an ISO 8601 duration, which is what a TypeSpec
+    /// <c>duration</c> is on the wire.
+    /// </summary>
+    private sealed class Iso8601DurationConverter : JsonConverter<TimeSpan>
+    {
+        public override TimeSpan Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+        {
+            if (reader.TokenType != JsonTokenType.String)
+            {
+                throw new JsonException($"Expected an ISO 8601 duration string but found {reader.TokenType}.");
+            }
+
+            try
+            {
+                return XmlConvert.ToTimeSpan(reader.GetString()!);
+            }
+            catch (FormatException exception)
+            {
+                throw new JsonException($"'{reader.GetString()}' is not an ISO 8601 duration.", exception);
+            }
+        }
+
+        public override void Write(Utf8JsonWriter writer, TimeSpan value, JsonSerializerOptions options) =>
+            writer.WriteStringValue(XmlConvert.ToString(value));
+    }
+
+    /// <summary>
     /// Applies <see cref="ModelMap"/> entries to models that are not part of a discriminated hierarchy.
     /// </summary>
     private sealed class MappedModelConverterFactory : JsonConverterFactory
     {
-        private readonly ModelMap _models;
+        private readonly Type? _excluded;
 
-        public MappedModelConverterFactory(ModelMap models) => _models = models;
+        public MappedModelConverterFactory(ModelMap models, Type? excluded = null)
+        {
+            Models = models;
+            _excluded = excluded;
+        }
+
+        public ModelMap Models { get; }
 
         public override bool CanConvert(Type typeToConvert) =>
-            _models.TryGetCustomType(typeToConvert, out _) && FindRegistration(typeToConvert) is null;
+            typeToConvert != _excluded
+            && Models.TryGetCustomType(typeToConvert, out _)
+            && FindRegistration(typeToConvert) is null;
 
         public override JsonConverter CreateConverter(Type typeToConvert, JsonSerializerOptions options)
         {
-            _models.TryGetCustomType(typeToConvert, out var custom);
+            Models.TryGetCustomType(typeToConvert, out var custom);
             return (JsonConverter)Activator.CreateInstance(
                 typeof(MappedModelConverter<,>).MakeGenericType(typeToConvert, custom!),
                 this)!;
@@ -267,10 +314,10 @@ internal static class ClientRuntime
     private sealed class MappedModelConverter<TModel, TCustom> : JsonConverter<TModel>
         where TCustom : TModel
     {
-        private readonly JsonConverterFactory _factory;
+        private readonly MappedModelConverterFactory _factory;
         private JsonSerializerOptions? _plainOptions;
 
-        public MappedModelConverter(JsonConverterFactory factory) => _factory = factory;
+        public MappedModelConverter(MappedModelConverterFactory factory) => _factory = factory;
 
         public override TModel? Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options) =>
             JsonSerializer.Deserialize<TCustom>(ref reader, options);
@@ -285,7 +332,8 @@ internal static class ClientRuntime
             }
 
             // A plain TModel would be routed straight back to this converter, so it is written with a copy
-            // of the options that does not include it.
+            // of the options that leaves out the mapping for TModel alone. Every other mapping stays, so a
+            // custom model of another mapped type nested inside it keeps its extra properties.
             _plainOptions ??= WithoutFactory(options);
             JsonSerializer.Serialize(writer, value, typeof(TModel), _plainOptions);
         }
@@ -294,6 +342,7 @@ internal static class ClientRuntime
         {
             var copy = new JsonSerializerOptions(options);
             copy.Converters.Remove(_factory);
+            copy.Converters.Add(new MappedModelConverterFactory(_factory.Models, typeof(TModel)));
             return copy;
         }
     }

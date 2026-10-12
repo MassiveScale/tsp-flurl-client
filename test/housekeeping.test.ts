@@ -216,7 +216,7 @@ describe("aggregate client for an interface that is not prefixed with I", () => 
     const source = buildExtensions(
       "Api",
       "Acme",
-      [{ interfaceName: "Pets", clientName: "PetsClient", access: "public" }],
+      [{ interfaceName: "Pets", clientName: "PetsEndpoint", access: "public" }],
       createRenderer(),
     );
 

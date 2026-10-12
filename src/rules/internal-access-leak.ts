@@ -58,6 +58,14 @@ function resolveNamedTypes(type: Type): (Model | Enum)[] {
   }
 }
 
+/**
+ * Lint rule `internal-access-leak`: warns when something public in the generated C#
+ * would expose an `@access(Access.internal)` type, which C# rejects as
+ * inconsistent accessibility. It checks operation parameters and return types
+ * (including type arguments of template instances), operations declared directly in
+ * a namespace, model property types, and the internal base of a public
+ * discriminated subtype.
+ */
 export const internalAccessLeakRule = createRule({
   name: "internal-access-leak",
   severity: "warning",

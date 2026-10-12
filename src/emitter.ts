@@ -524,6 +524,30 @@ async function emitService(
     const usedHelpers: UsedHelpers = new Set();
     const requestTypes = new Map<string, RequestType>();
     const endpointNames: EndpointName[] = [];
+
+    /**
+     * Claims a model, enum, or request-record file by its path under the output
+     * directory. Every service writes into the same output folders, so the claim is
+     * shared across all services, not just this one.
+     *
+     * @param name - The file's base name.
+     * @param owner - How to describe the claimant in a collision message.
+     * @param target - The declaration to point a diagnostic at.
+     * @returns `true` when the path was free; `false` after reporting a collision.
+     */
+    const claimPath = (
+      name: string,
+      owner: string,
+      target: Type | typeof NoTarget,
+    ): boolean =>
+      tryReserveModelOutputName(
+        program,
+        endpointOutputOwners,
+        relativeTo(outputDir, resolvePath(modelsDir, name)),
+        owner,
+        target,
+      );
+
     // An endpoint is a property of the aggregate client, so its name cannot be the
     // client's own name (a member cannot share its type's name) or one of the
     // members the client generates.
@@ -558,7 +582,7 @@ async function emitService(
         continue;
       }
       const interfaceName = `I${name}`;
-      const endpointClientName = `${name}Client`;
+      const endpointClientName = `${name}Endpoint`;
       const label = `interface ${container.name ?? name} in ${getNamespaceFullName(container.kind === "Interface" ? (container.namespace ?? serviceNs) : container)}`;
       const claimed = [interfaceName, endpointClientName].map((file) =>
         tryReserveModelOutputName(
@@ -626,14 +650,16 @@ async function emitService(
     // be reported, not overwritten.
     for (const [, rt] of requestTypes) {
       if (!checkName(program, "model", rt.name, NoTarget)) continue;
+      const owner = `the ${rt.name} request type`;
       if (
         !tryReserveModelOutputName(
           program,
           modelOutputOwners,
           rt.name,
-          `the ${rt.name} request type`,
+          owner,
           NoTarget,
-        )
+        ) ||
+        !claimPath(rt.name, owner, NoTarget)
       ) {
         continue;
       }
@@ -690,43 +716,54 @@ async function emitService(
       );
     }
 
-    // A model's `derivedModels` are only discovered by walking `@discriminator`
-    // hierarchies explicitly — unlike sub-models reached through a property type,
-    // they may never appear as an operation parameter/return type or field type.
-    collectDerivedModels(program, models, version);
+    // Rendering a record can reference further models (a property type), and a
+    // newly referenced discriminated model brings derived models of its own that
+    // nothing else references. Emit in rounds, discovering derived models each
+    // time, until a round finds nothing new.
+    const emittedModels = new Set<Model>();
+    for (;;) {
+      // A model's `derivedModels` are only discovered by walking `@discriminator`
+      // hierarchies explicitly, unlike sub-models reached through a property type.
+      collectDerivedModels(program, models, version);
+      const pending = [...models.values()].filter((m) => !emittedModels.has(m));
+      if (pending.length === 0) break;
 
-    for (const [, model] of models) {
-      if (!isEmittable(model, nsFullName)) continue;
-      if (!isInVersion(program, model, version)) continue;
-      const recordFileName = getClientName(program, model) ?? model.name!;
-      if (!checkName(program, "model", recordFileName, model)) continue;
-      if (
-        !tryReserveModelOutputName(
+      for (const model of pending) {
+        emittedModels.add(model);
+        if (!isEmittable(model, nsFullName)) continue;
+        if (!isInVersion(program, model, version)) continue;
+        const recordFileName = getClientName(program, model) ?? model.name!;
+        if (!checkName(program, "model", recordFileName, model)) continue;
+        const owner = `model ${declarationKey(model)}`;
+        if (
+          !tryReserveModelOutputName(
+            program,
+            modelOutputOwners,
+            recordFileName,
+            owner,
+            model,
+          ) ||
+          !claimPath(recordFileName, owner, model)
+        ) {
+          continue;
+        }
+        await writeFile(
           program,
-          modelOutputOwners,
-          recordFileName,
-          `model ${declarationKey(model)}`,
-          model,
-        )
-      ) {
-        continue;
+          resolvePath(modelsDir, `${recordFileName}.g.cs`),
+          buildRecord(
+            model,
+            modelNs,
+            program,
+            models,
+            enums,
+            usedHelpers,
+            renderer,
+            options["abstract-discriminated-base"] !== false,
+            additionalUsings,
+            version,
+          ),
+        );
       }
-      await writeFile(
-        program,
-        resolvePath(modelsDir, `${recordFileName}.g.cs`),
-        buildRecord(
-          model,
-          modelNs,
-          program,
-          models,
-          enums,
-          usedHelpers,
-          renderer,
-          options["abstract-discriminated-base"] !== false,
-          additionalUsings,
-          version,
-        ),
-      );
     }
     for (const [, e] of enums) {
       if (!isEmittableEnum(e, nsFullName)) continue;
@@ -752,7 +789,8 @@ async function emitService(
           `${enumFileName}JsonConverter`,
           `the converter for enum ${declarationKey(e)}`,
           e,
-        )
+        ) ||
+        !claimPath(enumFileName, `enum ${declarationKey(e)}`, e)
       ) {
         continue;
       }

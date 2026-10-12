@@ -14,7 +14,7 @@ import { escapeCsIdentifier, sortUsings } from "./utils.js";
 export interface EndpointName {
   /** C# interface name, e.g. `IPets`. */
   interfaceName: string;
-  /** C# implementation class name, e.g. `PetsClient`. */
+  /** C# implementation class name, e.g. `PetsEndpoint`. */
   clientName: string;
   /** C# access modifier of the interface: `"public"` or `"internal"`. */
   access: string;

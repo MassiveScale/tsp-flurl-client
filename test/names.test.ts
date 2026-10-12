@@ -182,7 +182,7 @@ describe("names that come from the TypeSpec", () => {
     strictEqual(invalidNames(diagnostics).length, 0);
     ok(fileContent(results, "IThings.g.cs").includes("int? pageSize = null"));
     ok(
-      fileContent(results, "ThingsClient.g.cs").includes(
+      fileContent(results, "ThingsEndpoint.g.cs").includes(
         'SetQueryParam("page-size", ClientRuntime.ToQueryValue(pageSize))',
       ),
     );

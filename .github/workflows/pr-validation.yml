@@ -55,7 +55,9 @@ jobs:
       - name: Set up .NET
         uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: 10.0.x
+          dotnet-version: |
+            8.0.x
+            10.0.x
 
       - name: Install dependencies
         run: npm ci
@@ -63,20 +65,21 @@ jobs:
       - name: Build
         run: npm run build
 
-      - name: Compile the custom-models example
-        working-directory: example/custom-models
+      # Every example is generated and its C# compiled with warnings as errors, so a
+      # nullable, accessibility, or XML-documentation defect in the output fails here.
+      - name: Generate and compile the examples with warnings as errors
         run: |
-          npm install
-          npx tsp compile .
+          for example in simple-api custom-models all-versions kitchen-sink; do
+            (cd "example/$example" && npm install && npx tsp compile . && dotnet build tsp-output -warnaserror)
+          done
+          (cd example/versioned-api && npm install && npx tsp compile . --config tspconfig.yaml && dotnet build tsp-output/defaults -warnaserror)
 
-      - name: Compile the all-versions example
-        working-directory: example/all-versions
-        run: |
-          npm install
-          npx tsp compile .
+      # The supported floor is .NET 8, so the generated C# is exercised on both runtimes.
+      - name: Run the end-to-end tests on .NET 8
+        run: dotnet run --project e2e/CustomModels.Tests -f net8.0
 
-      - name: Run the end-to-end tests
-        run: dotnet run --project e2e/CustomModels.Tests
+      - name: Run the end-to-end tests on .NET 10
+        run: dotnet run --project e2e/CustomModels.Tests -f net10.0
 
   coverage:
     name: Coverage

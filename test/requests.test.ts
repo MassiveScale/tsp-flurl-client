@@ -161,7 +161,11 @@ describe("diagnostics", () => {
         (d) => d.code === "@massivescale/tsp-flurl-client/template-load-failed",
       ),
     );
-    ok(fileContent(results, "ItemsClient.g.cs").includes("class ItemsClient"));
+    ok(
+      fileContent(results, "ItemsEndpoint.g.cs").includes(
+        "class ItemsEndpoint",
+      ),
+    );
   });
 });
 
@@ -190,7 +194,7 @@ describe("scalar mapping", () => {
     ["duration", "TimeSpan"],
     ["url", "Uri"],
     ["numeric", "double"],
-    ["integer", "double"],
+    ["integer", "long"],
     ["float", "double"],
   ];
 

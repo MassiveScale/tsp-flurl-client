@@ -185,7 +185,7 @@ const EmitterOptionsSchema: JSONSchemaType<EmitterOptions> = {
           type: "string",
           nullable: true,
           description:
-            "Endpoint client implementation template (e.g. WidgetsClient).",
+            "Endpoint client implementation template (e.g. WidgetsEndpoint).",
         },
         csproj: {
           type: "string",
@@ -256,6 +256,24 @@ export const $lib = createTypeSpecLibrary({
       severity: "error",
       messages: {
         default: paramMessage`The ${"kind"} name "${"name"}" ${"reason"}.`,
+      },
+    },
+    "unsupported-nested-discriminator": {
+      severity: "error",
+      messages: {
+        default: paramMessage`The model "${"name"}" declares its own @discriminator but is also a variant of "${"parent"}", so a value would need two discriminators resolved. System.Text.Json can resolve only one per hierarchy: reading through the base type would return the wrong subtype, and writing a subtype would fail or omit a discriminator. Use a single discriminator for the whole hierarchy, or model the second level as an ordinary property.`,
+      },
+    },
+    "unsupported-encoding": {
+      severity: "warning",
+      messages: {
+        default: paramMessage`The ${"kind"} "${"name"}" uses @encode "${"encoding"}", which this emitter cannot produce or read. The default wire format is used instead, so it will not match what the API expects.`,
+      },
+    },
+    "unsupported-feature": {
+      severity: "error",
+      messages: {
+        default: paramMessage`${"feature"} in operation "${"operation"}" is not supported by this emitter, so the operation is not generated. ${"hint"}`,
       },
     },
     "name-collision": {

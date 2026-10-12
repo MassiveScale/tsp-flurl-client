@@ -1,3 +1,4 @@
+using System.Text.Json;
 using AwesomeAssertions;
 using Flurl.Http;
 using MassiveScale.CustomModels.Client;
@@ -150,5 +151,26 @@ public sealed class ReadingCustomModelsTests
 
         var failure = (await act.Should().ThrowAsync<FlurlHttpException>()).Which;
         (await failure.GetResponseStringAsync()).Should().Contain("nope");
+    }
+
+    [TestMethod]
+    public async Task Other_mapped_models_still_apply_inside_a_plain_instance_of_a_mapped_model()
+    {
+        var (client, handler) = Harness.Create(m => m.Map<Gadget, MyGadget>().Map<Owner, MyOwner>());
+        handler.RespondJson("""{"id":"1","owner":{"name":"o"},"tags":{},"raw":null,"bytes":""}""");
+
+        // The gadget itself is a plain Gadget, which the map would turn into a MyGadget when reading,
+        // so writing it takes a different path. Its owner is a custom MyOwner and must keep its extras.
+        await client.Gadgets.CreateAsync(new Gadget
+        {
+            Id = "1",
+            Owner = new MyOwner { Name = "o", Nickname = "ozzy" },
+            Tags = new Dictionary<string, string>(),
+            Raw = JsonSerializer.SerializeToElement((string?)null),
+            Bytes = [],
+        });
+
+        using var sent = JsonDocument.Parse(handler.Last.Body!);
+        sent.RootElement.GetProperty("owner").GetProperty("nickname").GetString().Should().Be("ozzy");
     }
 }

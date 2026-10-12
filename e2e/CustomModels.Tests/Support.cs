@@ -107,3 +107,15 @@ public record MyDog : Dog
     [JsonPropertyName("breed")]
     public string? Breed { get; init; }
 }
+
+public record MyOwner : Owner
+{
+    [JsonPropertyName("nickname")]
+    public string? Nickname { get; init; }
+}
+
+public record MyGadget : Gadget
+{
+    [JsonPropertyName("serial")]
+    public string? Serial { get; init; }
+}

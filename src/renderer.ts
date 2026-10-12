@@ -46,6 +46,8 @@ export type TemplateOverrides = Partial<Record<TemplateName, string>>;
 export interface PropertyView {
   /** Optional XML doc text (pre-escaped). Rendered as `/// <summary>...</summary>`. */
   doc?: string;
+  /** The wire name, XML-escaped, used for the generated summary when {@link doc} is absent. */
+  docName: string;
   /** Full C# type including optional `?`, e.g. `"string"`, `"int?"`, `"List<Pet>"`. */
   type: string;
   /** PascalCase property name. */
@@ -54,6 +56,8 @@ export interface PropertyView {
   jsonPropertyName: string;
   /** Default initializer expression (without `= ` and `;`), e.g. `"default!"`, `"[]"`. */
   defaultValue?: string;
+  /** `true` for a number that travels as a JSON string (`@encode("string")`); adds `[JsonNumberHandling(...)]`. */
+  numberAsString?: boolean;
 }
 
 /** One derived-type entry for a `[JsonDerivedType(typeof(...), "...")]` attribute. */
@@ -96,6 +100,8 @@ export interface RecordView {
 export interface EnumMemberView {
   /** Optional XML doc text (pre-escaped). */
   doc?: string;
+  /** The declared value in text form, XML-escaped, used for the generated summary when {@link doc} is absent. */
+  docValue: string;
   /** PascalCase member name. */
   name: string;
   /**
@@ -168,6 +174,19 @@ export interface QueryParamView {
   name: string;
   /** C# parameter that supplies the value. */
   variable: string;
+  /**
+   * `true` for an array sent as one comma-separated value (`tags=a,b`), which is what
+   * TypeSpec means by `explode: false`. Otherwise an array is repeated (`tags=a&tags=b`).
+   */
+  delimited?: boolean;
+}
+
+/** A cookie bound to a C# method parameter. */
+export interface CookieParamView {
+  /** Cookie name. */
+  name: string;
+  /** C# parameter that supplies the value. */
+  variable: string;
 }
 
 /** A header bound to a C# method parameter. */
@@ -198,6 +217,8 @@ export interface MethodView {
   queryParams: QueryParamView[];
   /** Header parameters in declaration order. */
   headerParams: HeaderParamView[];
+  /** Cookie parameters in declaration order. */
+  cookieParams: CookieParamView[];
   /** The request body, when the operation takes one. */
   body?: BodyView;
   /** The success response body, when the operation returns one. */
@@ -218,9 +239,9 @@ export interface EndpointInterfaceView {
   access: string;
 }
 
-/** View model for an endpoint client implementation (`WidgetsClient`). */
+/** View model for an endpoint client implementation (`WidgetsEndpoint`). */
 export interface EndpointClientView {
-  /** C# class name, e.g. `"WidgetsClient"`. */
+  /** C# class name, e.g. `"WidgetsEndpoint"`. */
   className: string;
   /** Interface the class implements, e.g. `"IWidgets"`. */
   interfaceName: string;
@@ -244,7 +265,7 @@ export interface FileView {
 export interface InterfaceEntry {
   /** C# interface name, e.g. `"IStores"`. */
   name: string;
-  /** C# implementation class name, e.g. `"StoresClient"`. */
+  /** C# implementation class name, e.g. `"StoresEndpoint"`. */
   clientName: string;
   /** Property name on the aggregate client class, e.g. `"Stores"`. */
   propertyName: string;
@@ -379,7 +400,10 @@ function loadTemplate(
   override: string | undefined,
 ): HandlebarsTemplateDelegate {
   const path = override ?? resolve(TEMPLATES_DIR, `${name}.hbs`);
-  const source = readFileSync(path, "utf-8");
+  // Line endings are part of the output. A template checked out with CRLF (Git's
+  // autocrlf on Windows, or a user's own override) must not leak into the generated
+  // C#, which is always written with LF.
+  const source = readFileSync(path, "utf-8").replace(/\r\n/g, "\n");
   return compileTemplate(env, source);
 }
 
@@ -388,16 +412,19 @@ function loadTemplate(
  *
  * @param doc - Pre-escaped doc text; may be multi-line.
  * @param extraLines - Additional pre-formatted doc lines placed after the summary.
- * @returns The `///` lines, or an empty array when there is nothing to document.
+ * @param fallback - Summary text to use when `doc` is absent.
+ * @returns The `///` lines, or an empty array when there is neither a doc nor a fallback.
  */
 function renderDocLines(
   doc: string | undefined,
   extraLines: string[] = [],
+  fallback?: string,
 ): string[] {
   const lines: string[] = [];
-  if (doc) {
+  const text = doc || fallback;
+  if (text) {
     lines.push("    /// <summary>");
-    for (const docLine of doc.split("\n")) {
+    for (const docLine of text.split("\n")) {
       lines.push(`    /// ${docLine}`);
     }
     lines.push("    /// </summary>");
@@ -418,6 +445,17 @@ function typeParamDoc(constraint: string): string {
 }
 
 /**
+ * The generated summary of a method whose operation has no documentation, so every
+ * public member still carries XML documentation.
+ *
+ * @param m - The method view.
+ * @returns The summary text (XML-safe: it names only identifiers and a verb).
+ */
+function methodSummary(m: MethodView): string {
+  return `Sends the <c>${m.httpMethod.toUpperCase()}</c> request of the <c>${m.methodName}</c> operation.`;
+}
+
+/**
  * Renders the interface members for one method: the declared signature and, when
  * the response holds a customizable model, the generic overload.
  *
@@ -426,13 +464,17 @@ function typeParamDoc(constraint: string): string {
  */
 function renderInterfaceMethod(m: MethodView): string {
   const lines = [
-    ...renderDocLines(m.doc),
+    ...renderDocLines(m.doc, [], methodSummary(m)),
     `    ${m.returnType} ${m.methodName}(${m.paramsText});`,
   ];
   if (m.generic) {
     lines.push(
       "",
-      ...renderDocLines(m.doc, [typeParamDoc(m.generic.constraint)]),
+      ...renderDocLines(
+        m.doc,
+        [typeParamDoc(m.generic.constraint)],
+        methodSummary(m),
+      ),
       `    ${m.generic.returnType} ${m.methodName}<TResult>(${m.paramsText})`,
       `        where TResult : ${m.generic.constraint};`,
     );
@@ -453,13 +495,21 @@ function renderRequestBody(m: MethodView, responseType: string): string[] {
     `${pad}var flurlRequest = _client.Request().AppendPathSegment($"${m.route}");`,
   ];
   for (const q of m.queryParams) {
+    const convert = q.delimited
+      ? "ClientRuntime.ToDelimitedQueryValue"
+      : "ClientRuntime.ToQueryValue";
     lines.push(
-      `${pad}flurlRequest.SetQueryParam("${escapeCsString(q.name)}", ClientRuntime.ToQueryValue(${q.variable}));`,
+      `${pad}flurlRequest.SetQueryParam("${escapeCsString(q.name)}", ${convert}(${q.variable}));`,
     );
   }
   for (const h of m.headerParams) {
     lines.push(
       `${pad}if (${h.variable} is not null) flurlRequest.WithHeader("${escapeCsString(h.name)}", ClientRuntime.ToWireString(${h.variable}));`,
+    );
+  }
+  for (const c of m.cookieParams) {
+    lines.push(
+      `${pad}if (${c.variable} is not null) flurlRequest.WithCookie("${escapeCsString(c.name)}", ClientRuntime.ToWireString(${c.variable}));`,
     );
   }
   lines.push(

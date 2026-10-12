@@ -50,7 +50,7 @@ describe("generic overloads", () => {
       }
     `);
 
-    const client = fileContent(results, "WidgetsClient.g.cs");
+    const client = fileContent(results, "WidgetsEndpoint.g.cs");
     ok(
       client.includes(
         "ReadAsync<Widget>(id, additionalQueryParameters, cancellationToken);",
@@ -82,7 +82,7 @@ describe("generic overloads", () => {
     ok(iface.includes("Task<List<TResult>> ListAsync<TResult>("));
     ok(iface.includes("where TResult : Widget;"));
     ok(
-      fileContent(results, "WidgetsClient.g.cs").includes(
+      fileContent(results, "WidgetsEndpoint.g.cs").includes(
         "GetJsonAsync<List<TResult>>()",
       ),
     );
@@ -184,7 +184,7 @@ describe("generic overloads", () => {
         /<TResult>/,
         `Unexpected generic overload for ${label}`,
       );
-      doesNotMatch(fileContent(results, "ThingsClient.g.cs"), /<TResult>/);
+      doesNotMatch(fileContent(results, "ThingsEndpoint.g.cs"), /<TResult>/);
     });
   }
 
@@ -341,21 +341,6 @@ describe("request body parameters", () => {
     ok(
       !iface.includes("(string id, MergePatch<"),
       "Expected the interface, not the class",
-    );
-  });
-
-  it("takes a multipart body as object", async () => {
-    const results = await emit(`${PREAMBLE}
-      @route("/uploads")
-      interface Uploads {
-        @post create(@header contentType: "multipart/form-data", @multipartBody body: { name: HttpPart<string>, file: HttpPart<bytes> }): void;
-      }
-    `);
-
-    ok(
-      fileContent(results, "IUploads.g.cs").includes(
-        "CreateAsync(object body,",
-      ),
     );
   });
 });

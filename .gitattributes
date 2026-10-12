@@ -1,0 +1,5 @@
+# Line endings are part of the output: generated C# and the templates it comes from
+# must not change with the checkout platform.
+* text=auto eol=lf
+*.png binary
+*.ico binary
