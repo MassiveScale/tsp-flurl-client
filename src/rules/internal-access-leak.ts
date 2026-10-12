@@ -18,7 +18,7 @@ import {
   isRecordModelType,
 } from "@typespec/compiler";
 import { getAccess } from "../decorators.js";
-import { flattenProperties } from "../models.js";
+import { flattenProperties, findDiscriminatedRoot } from "../models.js";
 
 /**
  * Unwraps `Array<T>` / `Record<T>` / `Union` wrapping and the type arguments of
@@ -66,6 +66,8 @@ export const internalAccessLeakRule = createRule({
   url: "https://github.com/MassiveScale/tsp-flurl-client#internal-access-leak",
   messages: {
     default: paramMessage`"${"referencingName"}" is public but its ${"kind"} type "${"internalTypeName"}" is marked @access(Access.internal); the generated C# will fail to compile (CS0053: inconsistent accessibility). Mark "${"internalTypeName"}" @access(Access.public), or mark the ${"container"} that declares "${"referencingName"}" @access(Access.internal) as well.`,
+    standalone: paramMessage`"${"referencingName"}" is a namespace-level operation, which is emitted as a public interface method, but its ${"kind"} type "${"internalTypeName"}" is marked @access(Access.internal); the generated C# will fail to compile (CS0053: inconsistent accessibility). Mark "${"internalTypeName"}" @access(Access.public), or move the operation into an interface marked @access(Access.internal).`,
+    base: paramMessage`"${"referencingName"}" is public but its base type "${"internalTypeName"}" is marked @access(Access.internal); the generated C# will fail to compile (CS0060: inconsistent accessibility of the base type). Mark "${"internalTypeName"}" @access(Access.public), or mark "${"referencingName"}" @access(Access.internal) as well.`,
   },
   create(context) {
     function checkReferencedTypes(
@@ -73,11 +75,13 @@ export const internalAccessLeakRule = createRule({
       referencingName: string,
       kind: string,
       target: Operation | ModelProperty,
+      standalone = false,
     ): void {
       for (const named of resolveNamedTypes(type)) {
         if (getAccess(context.program, named) === "internal") {
           context.reportDiagnostic({
             target,
+            messageId: standalone ? "standalone" : "default",
             format: {
               referencingName,
               kind,
@@ -106,6 +110,16 @@ export const internalAccessLeakRule = createRule({
           checkReferencedTypes(op.returnType, op.name, "return", op);
         }
       },
+      // An operation declared directly in a namespace is emitted as a public method
+      // of a public interface, and there is no container to mark internal. The ones
+      // in an interface are checked by the interface visitor above.
+      operation: (op: Operation) => {
+        if (op.interface) return;
+        for (const prop of op.parameters.properties.values()) {
+          checkReferencedTypes(prop.type, op.name, "parameter", prop, true);
+        }
+        checkReferencedTypes(op.returnType, op.name, "return", op, true);
+      },
       model: (model: Model) => {
         // A template instance such as `Page<Secret>` is emitted as the generic
         // `Page<T>`, whose declaration never names `Secret`. The leak is where the
@@ -114,6 +128,25 @@ export const internalAccessLeakRule = createRule({
 
         const modelAccess = getAccess(context.program, model) ?? "public";
         if (modelAccess === "internal") return;
+
+        // In a discriminated hierarchy the emitter keeps C# inheritance
+        // (`public record Dog : Pet`), and a base type must be at least as
+        // accessible as the type that derives from it.
+        const base = model.baseModel;
+        if (
+          base?.name &&
+          findDiscriminatedRoot(context.program, base) &&
+          getAccess(context.program, base) === "internal"
+        ) {
+          context.reportDiagnostic({
+            target: model,
+            messageId: "base",
+            format: {
+              referencingName: model.name,
+              internalTypeName: base.name,
+            },
+          });
+        }
 
         for (const [, prop] of flattenProperties(model)) {
           checkReferencedTypes(prop.type, prop.name, "property", prop);

@@ -93,6 +93,15 @@ interface Animals {
 
 TypeSpec lets an identifier contain almost anything once it is backtick-quoted, so the emitter checks every name it turns into a type, file, folder or member. A model, enum or interface name must be a valid C# type name (letters, digits and underscores, not starting with a digit, and not a C# keyword). A property, operation or parameter name must be a valid C# identifier. With `all-versions`, a version value must be safe as a folder name (letters, digits, dots, underscores and hyphens). A name that fails is reported as `invalid-name`, and a type with a bad name is not written. Give it a valid one with `@clientName`, which works on models, enums, interfaces, operations and properties (including parameters); the wire name is unaffected.
 
+Different source names can also become the same C# name, which C# rejects, so collisions are reported as `name-collision` (the later declaration is left out) or, for whole types and files, `output-name-collision`:
+
+- Properties: `foo` and `Foo`, or two `@clientName` values that differ only in the case of the first letter, and a property that shares its record's name (`model Owner { owner: string }`, which C# rejects as `CS0542`) or the name of a member every record has (`EqualityContract`, `Equals`, `ToString`, ...).
+- Operations: `read` and `Read` both become `ReadAsync`. Parameters: `foo` and `Foo` both become `foo`, and a parameter cannot be named `body` (when there is a request body), `cancellationToken`, `additionalQueryParameters`, `flurlRequest`, `flurlResponse` or `_client`, which the generated method already uses.
+- Types: two models or enums with the same name in different child namespaces (they are flattened into one C# namespace), two interfaces with the same name, and a model named like a generated type (`IItems`, `ItemsClient`, the aggregate client, its `...Extensions` class, or an enum's `...JsonConverter`). An interface cannot be named like the aggregate client, `FlurlClient` or `Create`, which are members of it.
+- With `all-versions`, two version values that sanitize to the same namespace segment (`1.0` and `1_0`).
+
+Rename one with `@clientName` to resolve any of them.
+
 Enum members have no `@clientName`, and their wire value travels separately, so an odd member name is sanitized instead (`my-member` becomes `My_member`, `2fast` becomes `_2fast`). Two members that sanitize to the same name are reported.
 
 #### `@access(Access.public | Access.internal)`
@@ -121,7 +130,7 @@ linter:
     - "@massivescale/tsp-flurl-client/recommended"
 ```
 
-The fix is either to mark the referenced type `@access(Access.public)` or to mark the interface (or, for a property, its model) `@access(Access.internal)` as well. Marking an _operation_ internal does not help: C# interface methods cannot carry an access modifier, so the rule still reports it.
+It also checks operations declared directly in a namespace, which are emitted as public interface methods, and a public `@discriminator` subtype of an internal base type (the emitter keeps C# inheritance there, which C# rejects as `CS0060`). The fix is either to mark the referenced type `@access(Access.public)` or to mark the interface (or, for a property, its model) `@access(Access.internal)` as well. Marking an _operation_ internal does not help: C# interface methods cannot carry an access modifier, so the rule still reports it.
 
 Then compile your TypeSpec definition:
 

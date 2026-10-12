@@ -258,6 +258,12 @@ export const $lib = createTypeSpecLibrary({
         default: paramMessage`The ${"kind"} name "${"name"}" ${"reason"}.`,
       },
     },
+    "name-collision": {
+      severity: "error",
+      messages: {
+        default: paramMessage`The C# ${"kind"} name "${"name"}" in ${"scope"} is produced by both ${"first"} and ${"second"}. Give one of them another name with @clientName.`,
+      },
+    },
     "invalid-option": {
       severity: "error",
       messages: {

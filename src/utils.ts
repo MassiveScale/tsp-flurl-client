@@ -20,6 +20,7 @@ import {
   isVoidType,
   isNeverType,
   isErrorModel,
+  getNamespaceFullName,
 } from "@typespec/compiler";
 import { getMergePatchSource } from "@typespec/http/experimental/merge-patch";
 import { getClientName } from "./decorators.js";
@@ -56,6 +57,22 @@ export const CLIENT_RUNTIME_HELPER_NAME = "ClientRuntime";
  * named `MergePatch<T>` produces the same text but must not pull in the helper.
  */
 export type UsedHelpers = Set<string>;
+
+/**
+ * The key a model or enum is collected under: its fully qualified name. Keying by
+ * simple name would let `A.Widget` and `B.Widget`, which are flattened into one C#
+ * namespace, silently replace each other before any collision could be reported.
+ * Keeping both lets the output-name reservation report the clash.
+ *
+ * @param declaration - The model or enum.
+ * @returns A key that is unique per declaration.
+ */
+export function declarationKey(declaration: Model | Enum): string {
+  const ns = declaration.namespace
+    ? getNamespaceFullName(declaration.namespace)
+    : "";
+  return ns ? `${ns}.${declaration.name}` : `${declaration.name}`;
+}
 
 /**
  * Maps a TypeSpec type to its C# type expression (e.g. `int32` → `int`,
@@ -107,7 +124,7 @@ export function mapType(
       const mergePatchSource = getMergePatchSource(program, m);
       if (mergePatchSource) {
         if (mergePatchSource.name) {
-          models.set(mergePatchSource.name, mergePatchSource);
+          models.set(declarationKey(mergePatchSource), mergePatchSource);
         }
 
         const targetCsType = mergePatchSource.name
@@ -131,19 +148,18 @@ export function mapType(
           return `List<${args[0]}>`;
         }
         const decl = m.namespace?.models.get(m.name);
-        if (decl) models.set(m.name, decl);
-        else models.set(m.name, m);
+        models.set(declarationKey(decl ?? m), decl ?? m);
         const csName = getClientName(program, decl ?? m) ?? m.name;
         return args.length > 0 ? `${csName}<${args.join(", ")}>` : csName;
       }
 
-      models.set(m.name, m);
+      models.set(declarationKey(m), m);
       return getClientName(program, m) ?? m.name;
     }
 
     case "Enum": {
       const e = type as Enum;
-      if (e.name) enums.set(e.name, e);
+      if (e.name) enums.set(declarationKey(e), e);
       return e.name ? (getClientName(program, e) ?? e.name) : "string";
     }
 

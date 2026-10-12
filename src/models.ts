@@ -26,7 +26,7 @@ import {
   DiscriminatorView,
 } from "./renderer.js";
 import { getClientName, getAccess } from "./decorators.js";
-import { checkName, reportInvalidName } from "./names.js";
+import { checkName, reportInvalidName, MemberScope } from "./names.js";
 import { toCsIdentifier } from "./identifiers.js";
 import {
   mapPropertyType,
@@ -35,8 +35,30 @@ import {
   toCsPropName,
   escapeCsString,
   isInVersion,
+  declarationKey,
   type UsedHelpers,
 } from "./utils.js";
+
+/**
+ * Names a C# record already uses for its own members, each with what uses it. A
+ * property cannot share its record's name (CS0542), and the others are members the
+ * compiler synthesizes or inherits from `object`.
+ *
+ * @param recordName - The record's C# name.
+ * @returns `[name, description]` pairs to reserve in the record's member scope.
+ */
+function recordReservedMembers(recordName: string): [string, string][] {
+  return [
+    [recordName, "the record itself, whose name a member cannot share"],
+    ["EqualityContract", "the record's generated EqualityContract"],
+    ["PrintMembers", "the record's generated PrintMembers"],
+    ["Deconstruct", "a method C# records can generate"],
+    ["Equals", "System.Object.Equals"],
+    ["GetHashCode", "System.Object.GetHashCode"],
+    ["ToString", "System.Object.ToString"],
+    ["GetType", "System.Object.GetType"],
+  ];
+}
 
 /**
  * Builds the renderer property views for a set of model properties: C# type,
@@ -55,8 +77,15 @@ function buildPropertyViews(
   models: Map<string, Model>,
   enums: Map<string, Enum>,
   usedHelpers: UsedHelpers,
+  recordName: string,
 ): PropertyView[] {
   const result: PropertyView[] = [];
+  const scope = new MemberScope(
+    program,
+    "property",
+    `record ${recordName}`,
+    recordReservedMembers(recordName),
+  );
   for (const [, prop] of props) {
     const propDoc = getDoc(program, prop);
     const csType = mapPropertyType(prop, program, models, enums, usedHelpers);
@@ -64,6 +93,9 @@ function buildPropertyViews(
     const declaredName = getClientName(program, prop) ?? prop.name;
     checkName(program, "property", declaredName, prop);
     const propName = toCsPropName(declaredName);
+    // Two properties can become the same C# name (`foo` and `Foo`), and a property
+    // cannot share its record's name or a member the record generates.
+    if (!scope.claim(propName, `"${prop.name}"`, prop)) continue;
     const defaultVal = prop.optional
       ? undefined
       : defaultForProperty(prop, csType);
@@ -207,6 +239,7 @@ export function buildRecord(
       models,
       enums,
       usedHelpers,
+      recordName,
     ),
     baseRecordName,
     discriminator,
@@ -269,7 +302,14 @@ export function buildFilteredRecord(
     recordName: name,
     genericSuffix: "",
     access,
-    properties: buildPropertyViews(props, program, models, enums, usedHelpers),
+    properties: buildPropertyViews(
+      props,
+      program,
+      models,
+      enums,
+      usedHelpers,
+      name,
+    ),
   };
 
   const body = renderer.renderRecord(recordView);
@@ -364,7 +404,7 @@ function defaultForProperty(
  * one carrying `@discriminator`. Returns that model along with its discriminator,
  * or `undefined` when `model` is not part of a discriminated hierarchy.
  */
-function findDiscriminatedRoot(
+export function findDiscriminatedRoot(
   program: Program,
   model: Model,
 ): { root: Model; discriminator: Discriminator } | undefined {
@@ -417,9 +457,9 @@ export function collectDerivedModels(
     const model = queue.pop()!;
     if (!findDiscriminatedRoot(program, model)) continue;
     for (const derived of model.derivedModels) {
-      if (!derived.name || models.has(derived.name)) continue;
+      if (!derived.name || models.has(declarationKey(derived))) continue;
       if (!isInVersion(program, derived, version)) continue;
-      models.set(derived.name, derived);
+      models.set(declarationKey(derived), derived);
       queue.push(derived);
     }
   }

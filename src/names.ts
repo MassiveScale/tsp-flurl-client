@@ -80,7 +80,7 @@ export function reportInvalidName(
     seen = new Set();
     reported.set(program, seen);
   }
-  const key = `${kind}\u0000${name}\u0000${reason}`;
+  const key = JSON.stringify([kind, name, reason]);
   if (seen.has(key)) return;
   seen.add(key);
   program.reportDiagnostic(
@@ -112,4 +112,114 @@ export function checkName(
   if (reason === undefined) return true;
   reportInvalidName(program, kind, name, reason, target);
   return false;
+}
+
+/**
+ * Names that already exist in a C# scope, and the names claimed in it so far. Two
+ * different source names can become the same C# name once casing and suffixes are
+ * applied (`foo` and `Foo`, `read` and `Read` once `Async` is added), and either
+ * can clash with something the generated code already declares there. C# rejects
+ * both, so they are reported here instead of being emitted.
+ */
+export class MemberScope {
+  private readonly owners = new Map<string, string>();
+  private readonly reserved: ReadonlyMap<string, string>;
+
+  /**
+   * @param program - The compiler program, used to report diagnostics.
+   * @param kind - What the names are, for the message: `property`, `method`, `parameter`.
+   * @param scope - Where they live, for the message, e.g. `record Widget`.
+   * @param reserved - Names the generated code already uses in this scope, each
+   *   with a description of what uses it.
+   */
+  constructor(
+    private readonly program: Program,
+    private readonly kind: string,
+    private readonly scope: string,
+    reserved: Iterable<readonly [string, string]> = [],
+  ) {
+    this.reserved = new Map(reserved);
+  }
+
+  /**
+   * Reports a clash between a name and one already used in the scope.
+   *
+   * @param name - The C# name.
+   * @param first - What already uses it.
+   * @param second - What is trying to use it.
+   * @param target - The declaration to point the diagnostic at.
+   */
+  private report(
+    name: string,
+    first: string,
+    second: string,
+    target: Type | typeof NoTarget,
+  ): void {
+    const key = JSON.stringify([
+      "collision",
+      this.kind,
+      this.scope,
+      name,
+      second,
+    ]);
+    let seen = reported.get(this.program);
+    if (!seen) {
+      seen = new Set();
+      reported.set(this.program, seen);
+    }
+    if (seen.has(key)) return;
+    seen.add(key);
+    this.program.reportDiagnostic(
+      createDiagnostic({
+        code: "name-collision",
+        target,
+        format: {
+          kind: this.kind,
+          name,
+          scope: this.scope,
+          first,
+          second,
+        },
+      }),
+    );
+  }
+
+  /**
+   * Claims a C# name for a declaration, reporting a collision when it is reserved
+   * or already claimed.
+   *
+   * @param name - The C# name the declaration will have.
+   * @param source - How to describe the declaration in a message, e.g. `"Foo"`.
+   * @param target - The declaration, used as the diagnostic target.
+   * @returns `true` when the name was free and is now claimed; `false` after reporting.
+   */
+  claim(name: string, source: string, target: Type | typeof NoTarget): boolean {
+    const existing = this.reserved.get(name) ?? this.owners.get(name);
+    if (existing !== undefined) {
+      this.report(name, existing, source, target);
+      return false;
+    }
+    this.owners.set(name, source);
+    return true;
+  }
+
+  /**
+   * Checks a name against the reserved names only, without claiming it. For names
+   * that other checks already keep unique among themselves.
+   *
+   * @param name - The C# name.
+   * @param source - How to describe the declaration in a message.
+   * @param target - The declaration, used as the diagnostic target.
+   * @returns `true` when the name is not reserved; `false` after reporting.
+   */
+  checkReserved(
+    name: string,
+    source: string,
+    target: Type | typeof NoTarget,
+  ): boolean {
+    const existing = this.reserved.get(name);
+    if (existing === undefined) return true;
+    this.report(name, existing, source, target);
+    return false;
+  }
 }

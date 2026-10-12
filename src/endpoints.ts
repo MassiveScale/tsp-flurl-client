@@ -37,7 +37,7 @@ import {
   FileView,
 } from "./renderer.js";
 import { getClientName, getAccess } from "./decorators.js";
-import { checkName } from "./names.js";
+import { checkName, MemberScope } from "./names.js";
 import {
   mapType,
   mapPropertyType,
@@ -279,8 +279,11 @@ export function buildEndpoint(
   additionalUsings: Set<string>,
 ): EndpointSources {
   const routePrefix = resolveRoutePrefix(rawRoutePrefix, version);
-  const methods = ops.map((op) =>
-    buildMethodView(
+  // `read` and `Read` both become `ReadAsync`, which C# would reject as a duplicate
+  // member (or an ambiguous overload), so the second is reported and left out.
+  const methodScope = new MemberScope(program, "method", `interface ${csName}`);
+  const methods = ops.flatMap((op) => {
+    const view = buildMethodView(
       op,
       program,
       models,
@@ -289,8 +292,15 @@ export function buildEndpoint(
       version,
       requestTypes,
       routePrefix,
-    ),
-  );
+    );
+    return methodScope.claim(
+      view.methodName,
+      `operation "${op.operation.name}"`,
+      op.operation,
+    )
+      ? [view]
+      : [];
+  });
 
   const interfaceView: EndpointInterfaceView = {
     interfaceName: csName,
@@ -393,6 +403,27 @@ function buildMethodView(
   const headerParams: HeaderParamView[] = [];
   const pathParams = new Map<string, string>();
 
+  // Parameter names must be unique, and must not collide with the parameters every
+  // method adds or the locals and fields its generated body uses.
+  const paramScope = new MemberScope(
+    program,
+    "parameter",
+    `operation ${baseMethodName}`,
+    [
+      [
+        "additionalQueryParameters",
+        "the extra query parameters every method accepts",
+      ],
+      ["cancellationToken", "the cancellation token every method accepts"],
+      ["flurlRequest", "a local variable of the generated method"],
+      ["flurlResponse", "a local variable of the generated method"],
+      ["_client", "the client field"],
+      ...(op.parameters.body
+        ? [["body", "the request body parameter"] as [string, string]]
+        : []),
+    ],
+  );
+
   for (const param of op.parameters.parameters) {
     // The body's media type decides Content-Type; a caller-supplied value would
     // only be a second source of truth for it.
@@ -413,6 +444,15 @@ function buildMethodView(
     );
     const paramName = getClientName(program, param.param) ?? param.param.name;
     checkName(program, "parameter", paramName, param.param);
+    if (
+      !paramScope.claim(
+        toCsParamName(paramName),
+        `parameter "${param.param.name}"`,
+        param.param,
+      )
+    ) {
+      continue;
+    }
     const csParam = escapeCsIdentifier(toCsParamName(paramName));
     const isOptional = param.param.optional;
     const nullableSuffix = isOptional && !csType.endsWith("?") ? "?" : "";

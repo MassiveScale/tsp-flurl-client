@@ -33,7 +33,7 @@ import { resolve } from "node:path";
 import { createRenderer, Renderer, TemplateOverrides } from "./renderer.js";
 import { EmitterOptions, createDiagnostic } from "./lib.js";
 import { isCsNamespace, isCsTypeName } from "./identifiers.js";
-import { checkName } from "./names.js";
+import { checkName, MemberScope } from "./names.js";
 import { getClientName, getAccess } from "./decorators.js";
 import { buildEndpoint, RequestType } from "./endpoints.js";
 import {
@@ -56,6 +56,7 @@ import { buildCsproj, deriveNugetVersion } from "./project.js";
 import {
   sanitizeVersionForNs,
   isInVersion,
+  declarationKey,
   MERGE_PATCH_HELPER_NAME,
   type UsedHelpers,
 } from "./utils.js";
@@ -468,22 +469,25 @@ async function emitService(
     (options["client-name"] !== undefined ? clientName : undefined);
   const allVersions = getAllVersions(program, serviceNs) ?? [];
 
-  // Group operations by container (Interface or Namespace)
+  // Group operations by container (Interface or Namespace). The container itself is
+  // the key, not its simple name: two interfaces called `Items` in different child
+  // namespaces are different declarations, and must each reach the output-name
+  // reservation instead of being merged into one client.
   const byContainer = new Map<
-    string,
+    Interface | Namespace,
     { name: string; container: Interface | Namespace; ops: HttpOperation[] }
   >();
   for (const op of operations) {
     const c = op.container;
-    const key =
-      c.kind === "Interface" ? c.name : `__ns_${(c as Namespace).name}`;
     const baseName =
       c.kind === "Interface"
         ? (getClientName(program, c) ?? c.name)
-        : serviceNs.name;
-    if (!byContainer.has(key))
-      byContainer.set(key, { name: baseName, container: c, ops: [] });
-    byContainer.get(key)!.ops.push(op);
+        : c === serviceNs
+          ? serviceNs.name
+          : c.name;
+    if (!byContainer.has(c))
+      byContainer.set(c, { name: baseName, container: c, ops: [] });
+    byContainer.get(c)!.ops.push(op);
   }
 
   const versionsToEmit = resolveTargetVersions(program, allVersions, options);
@@ -520,6 +524,22 @@ async function emitService(
     const usedHelpers: UsedHelpers = new Set();
     const requestTypes = new Map<string, RequestType>();
     const endpointNames: EndpointName[] = [];
+    // An endpoint is a property of the aggregate client, so its name cannot be the
+    // client's own name (a member cannot share its type's name) or one of the
+    // members the client generates.
+    const clientMembers = new MemberScope(
+      program,
+      "property",
+      `client ${clientName}`,
+      [
+        [
+          clientName,
+          "the client class itself, whose name a member cannot share",
+        ],
+        ["FlurlClient", "the client's Flurl client"],
+        ["Create", "the client's Create factory methods"],
+      ],
+    );
 
     for (const { name, container, ops } of byContainer.values()) {
       const vOps = ops.filter((op) =>
@@ -528,9 +548,18 @@ async function emitService(
       if (vOps.length === 0) continue;
       // The name becomes two class names and two file names.
       if (!checkName(program, "interface", name, container)) continue;
+      if (
+        !clientMembers.checkReserved(
+          name,
+          `interface "${container.name ?? name}"`,
+          container,
+        )
+      ) {
+        continue;
+      }
       const interfaceName = `I${name}`;
       const endpointClientName = `${name}Client`;
-      const label = `interface ${container.name ?? name} in ${nsFullName}`;
+      const label = `interface ${container.name ?? name} in ${getNamespaceFullName(container.kind === "Interface" ? (container.namespace ?? serviceNs) : container)}`;
       const claimed = [interfaceName, endpointClientName].map((file) =>
         tryReserveModelOutputName(
           program,
@@ -543,6 +572,21 @@ async function emitService(
       // Both names are always claimed (so every clash is reported); the interface
       // is only emitted when it won both files.
       if (claimed.includes(false)) continue;
+      // The endpoint types live in the same C# namespace as the models, so a model
+      // with one of their names would be a duplicate type.
+      const typesFree = [
+        [interfaceName, `the ${interfaceName} endpoint interface`],
+        [endpointClientName, `the ${endpointClientName} endpoint client`],
+      ].map(([typeName, owner]) =>
+        tryReserveModelOutputName(
+          program,
+          modelOutputOwners,
+          typeName,
+          owner,
+          NoTarget,
+        ),
+      );
+      if (typesFree.includes(false)) continue;
       const access = getAccess(program, container) ?? "public";
       endpointNames.push({
         interfaceName,
@@ -612,7 +656,24 @@ async function emitService(
       );
     }
 
+    // The aggregate client and its extensions class are types in the same namespace
+    // as the models, too.
+    const aggregateFree =
+      endpointNames.length === 0 ||
+      [clientName, `${clientName}Extensions`]
+        .map((typeName) =>
+          tryReserveModelOutputName(
+            program,
+            modelOutputOwners,
+            typeName,
+            `the ${typeName} client type`,
+            NoTarget,
+          ),
+        )
+        .every(Boolean);
+
     if (
+      aggregateFree &&
       endpointNames.length > 0 &&
       tryReserveModelOutputName(
         program,
@@ -644,7 +705,7 @@ async function emitService(
           program,
           modelOutputOwners,
           recordFileName,
-          `model ${model.name!}`,
+          `model ${declarationKey(model)}`,
           model,
         )
       ) {
@@ -677,7 +738,19 @@ async function emitService(
           program,
           modelOutputOwners,
           enumFileName,
-          `enum ${e.name}`,
+          `enum ${declarationKey(e)}`,
+          e,
+        )
+      ) {
+        continue;
+      }
+      // The enum's generated converter is a type in the same namespace too.
+      if (
+        !tryReserveModelOutputName(
+          program,
+          modelOutputOwners,
+          `${enumFileName}JsonConverter`,
+          `the converter for enum ${declarationKey(e)}`,
           e,
         )
       ) {
@@ -715,6 +788,10 @@ async function emitService(
     }
   };
 
+  // Two version values can sanitize to the same namespace segment (`1.0` and
+  // `1_0`), which would put both versions' types in one namespace.
+  const versionScope = new MemberScope(program, "namespace", `${baseNs}`);
+
   if (useVersionedFolders) {
     // Every version is emitted on its own: its own folder, namespace, and models,
     // so each version's types have exactly that version's shape.
@@ -722,7 +799,13 @@ async function emitService(
       // The version value is a folder name.
       if (!checkName(program, "version", version.value, NoTarget)) continue;
       const vDir = resolvePath(outputDir, version.value);
-      const vNs = `${baseNs}.${sanitizeVersionForNs(version.value)}`;
+      const vSegment = sanitizeVersionForNs(version.value);
+      if (
+        !versionScope.claim(vSegment, `version "${version.value}"`, NoTarget)
+      ) {
+        continue;
+      }
+      const vNs = `${baseNs}.${vSegment}`;
       await emitUnit({
         dir: vDir,
         endpointNs: vNs,
