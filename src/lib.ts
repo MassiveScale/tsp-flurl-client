@@ -1,7 +1,11 @@
 import {
   createTypeSpecLibrary,
+  getSourceLocation,
   JSONSchemaType,
+  NoTarget,
   paramMessage,
+  type Diagnostic,
+  type Program,
 } from "@typespec/compiler";
 import type { TemplateOverrides } from "./renderer.js";
 
@@ -298,6 +302,7 @@ export const $lib = createTypeSpecLibrary({
       severity: "error",
       messages: {
         default: paramMessage`Generated file name collision for "${"name"}.g.cs": ${"first"} and ${"second"}.`,
+        case: paramMessage`Generated file names "${"firstName"}.g.cs" and "${"name"}.g.cs" differ only in case, which is the same file on Windows and macOS: ${"first"} and ${"second"}. Give one of them another name with @clientName.`,
       },
     },
   },
@@ -307,3 +312,37 @@ export const $lib = createTypeSpecLibrary({
 });
 
 export const { reportDiagnostic, createDiagnostic } = $lib;
+
+/** The diagnostics already reported while emitting, per program. */
+const reportedOnce = new WeakMap<Program, Set<string>>();
+
+/**
+ * Reports a diagnostic unless the same one was already reported for the same
+ * place in the source. The emitter visits a declaration once for every API version
+ * it emits, and each version works on its own projected copy of the declaration,
+ * so the copies are matched by the source they come from rather than by identity.
+ *
+ * @param program - The compiler program.
+ * @param diagnostic - The diagnostic to report.
+ */
+export function reportOnce(program: Program, diagnostic: Diagnostic): void {
+  let seen = reportedOnce.get(program);
+  if (!seen) {
+    seen = new Set();
+    reportedOnce.set(program, seen);
+  }
+  const target = diagnostic.target;
+  const location =
+    target === NoTarget
+      ? undefined
+      : getSourceLocation(target, { locateId: true });
+  const key = JSON.stringify([
+    diagnostic.code,
+    diagnostic.message,
+    location?.file.path,
+    location?.pos,
+  ]);
+  if (seen.has(key)) return;
+  seen.add(key);
+  program.reportDiagnostic(diagnostic);
+}

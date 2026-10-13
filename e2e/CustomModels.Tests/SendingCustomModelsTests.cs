@@ -107,4 +107,48 @@ public sealed class SendingCustomModelsTests
 
         handler.Last.Body.Should().Be("""{"raw":null}""");
     }
+
+    [TestMethod]
+    public async Task A_mapped_subtype_of_a_discriminated_model_is_sent_with_its_discriminator()
+    {
+        var (client, handler) = Harness.Create(m => m.Map<Dog, MyDog>());
+        handler.RespondJson("""{"kind":"dog","name":"rex","isBarker":true}""");
+
+        await client.Pets.CreateAsync(new MyDog { Name = "rex", IsBarker = true, Breed = "lab" });
+
+        handler.Last.Body.Should().Contain("\"breed\":\"lab\"");
+        CountOf(handler.Last.Body!, "\"kind\":\"dog\"").Should().Be(1, "the discriminator is written exactly once");
+    }
+
+    [TestMethod]
+    public async Task A_mapped_subtype_in_a_list_of_its_base_is_sent_with_its_discriminator_once()
+    {
+        var (client, handler) = Harness.Create(m => m.Map<Dog, MyDog>());
+        handler.RespondJson("[]");
+
+        await client.Pets.CreateManyAsync(
+            [new MyDog { Name = "rex", IsBarker = true, Breed = "lab" }, new Cat { Name = "tom", IsPurrer = true }]);
+
+        using var sent = JsonDocument.Parse(handler.Last.Body!);
+        sent.RootElement[0].GetProperty("kind").GetString().Should().Be("dog");
+        sent.RootElement[0].GetProperty("breed").GetString().Should().Be("lab");
+        sent.RootElement[1].GetProperty("kind").GetString().Should().Be("cat");
+        CountOf(handler.Last.Body!, "\"kind\":\"dog\"").Should().Be(1);
+    }
+
+    [TestMethod]
+    public async Task A_mapped_subtype_is_still_read_through_its_base_after_being_sent()
+    {
+        var (client, handler) = Harness.Create(m => m.Map<Dog, MyDog>());
+        handler.RespondJson("""{"kind":"dog","name":"rex","isBarker":true}""");
+        await client.Pets.CreateAsync(new MyDog { Name = "rex", IsBarker = true, Breed = "lab" });
+
+        handler.RespondJson("""[{"kind":"dog","name":"rex","isBarker":true,"breed":"lab"}]""");
+        var pets = await client.Pets.ListAsync();
+
+        pets[0].Should().BeOfType<MyDog>().Which.Breed.Should().Be("lab");
+    }
+
+    private static int CountOf(string text, string value) =>
+        (text.Length - text.Replace(value, string.Empty).Length) / value.Length;
 }

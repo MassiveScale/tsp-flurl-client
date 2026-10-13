@@ -15,6 +15,7 @@ import {
   getDiscriminatedUnionFromInheritance,
   type Discriminator,
 } from "@typespec/compiler";
+import { isVisible, type Visibility } from "@typespec/http";
 import type { Version } from "@typespec/versioning";
 import {
   Renderer,
@@ -29,7 +30,7 @@ import { getClientName, getAccess } from "./decorators.js";
 import { checkName, reportInvalidName, MemberScope } from "./names.js";
 import { toCsIdentifier } from "./identifiers.js";
 import { checkEncoding } from "./encoding.js";
-import { createDiagnostic } from "./lib.js";
+import { createDiagnostic, reportOnce } from "./lib.js";
 import {
   mapPropertyType,
   escapeXml,
@@ -159,6 +160,8 @@ function versionProps(
  *   exist in it (`@added` later, or `@removed`) are left out. Omit it when the API
  *   is unversioned or every version is emitted together, in which case the record
  *   carries the properties of all versions.
+ * @param request - When set, renders the model as a request record of a
+ *   discriminated hierarchy (see {@link RequestRecordContext}) instead of as the model.
  * @returns The full C# source of the generated record file.
  */
 export function buildRecord(
@@ -172,12 +175,15 @@ export function buildRecord(
   abstractDiscriminatedBase: boolean,
   additionalUsings: Set<string>,
   version?: Version,
+  request?: RequestRecordContext,
 ): string {
   const typeParams = collectTypeParams(model);
   const genericSuffix =
     typeParams.length > 0 ? `<${typeParams.join(", ")}>` : "";
   const doc = getDoc(program, model);
-  const recordName = getClientName(program, model) ?? model.name!;
+  const nameOf = (m: Model): string =>
+    request ? request.nameOf(m) : (getClientName(program, m) ?? m.name!);
+  const recordName = nameOf(model);
 
   // Models with a discriminated ancestor inherit from that ancestor's record in
   // C# (rather than flattening its properties) so `[JsonDerivedType]` on the
@@ -186,7 +192,7 @@ export function buildRecord(
     ? findDiscriminatedRoot(program, model.baseModel)
     : undefined;
   const baseRecordName = parentDiscriminated
-    ? (getClientName(program, model.baseModel!) ?? model.baseModel!.name)
+    ? nameOf(model.baseModel!)
     : undefined;
   const propsSource = parentDiscriminated
     ? ownProperties(model, parentDiscriminated.discriminator.propertyName)
@@ -197,8 +203,10 @@ export function buildRecord(
   // discriminator of its own would need two discriminators resolved, which
   // System.Text.Json cannot do. It is reported rather than generated into models
   // that read as the wrong subtype or throw when written.
-  if (selfDiscriminator && parentDiscriminated) {
-    program.reportDiagnostic(
+  // A request record mirrors a model already checked when it was generated.
+  if (selfDiscriminator && parentDiscriminated && !request) {
+    reportOnce(
+      program,
       createDiagnostic({
         code: "unsupported-nested-discriminator",
         target: model,
@@ -218,6 +226,12 @@ export function buildRecord(
   if (selfDiscriminator) {
     propsSource.delete(selfDiscriminator.propertyName);
   }
+  if (request) {
+    for (const [name, prop] of propsSource) {
+      if (!isVisible(program, prop, request.visibility))
+        propsSource.delete(name);
+    }
+  }
   let discriminator: DiscriminatorView | undefined;
   let isAbstract = false;
   if (selfDiscriminator) {
@@ -232,7 +246,7 @@ export function buildRecord(
           isInVersion(program, derivedModel, version),
         )
         .map(([value, derivedModel]) => ({
-          typeName: getClientName(program, derivedModel) ?? derivedModel.name!,
+          typeName: nameOf(derivedModel),
           value: escapeCsString(value),
         }))
         .sort((a, b) => a.value.localeCompare(b.value)),
@@ -424,6 +438,47 @@ function defaultForProperty(
 }
 
 /**
+ * How a model of a discriminated hierarchy is rendered as a request record: only
+ * the properties visible in the request, under the request record's name. Every
+ * model of the hierarchy is rendered this way, so the request records keep the C#
+ * inheritance and `[JsonDerivedType]` list that write the discriminator.
+ */
+export interface RequestRecordContext {
+  /** The operation's request visibility. */
+  visibility: Visibility;
+  /** The request record name of a model of the hierarchy, e.g. `Dog` to `DogCreateRequest`. */
+  nameOf: (model: Model) => string;
+}
+
+/**
+ * Lists a discriminated hierarchy: its root and every model derived from it,
+ * however deep, that exists in the version being emitted.
+ *
+ * @param program - The compiler program.
+ * @param root - The model carrying `@discriminator`.
+ * @param version - The API version being emitted, or `undefined` when unversioned.
+ * @returns The root followed by its descendants.
+ */
+export function hierarchyOf(
+  program: Program,
+  root: Model,
+  version: Version | undefined,
+): Model[] {
+  const members: Model[] = [];
+  const visit = (model: Model): void => {
+    if (members.includes(model) || !isInVersion(program, model, version)) {
+      return;
+    }
+    members.push(model);
+    for (const derived of model.derivedModels) {
+      if (derived.name) visit(derived);
+    }
+  };
+  visit(root);
+  return members;
+}
+
+/**
  * Walks `model` and its `extends` ancestors (inclusive) looking for the nearest
  * one carrying `@discriminator`. Returns that model along with its discriminator,
  * or `undefined` when `model` is not part of a discriminated hierarchy.
@@ -490,14 +545,24 @@ export function collectDerivedModels(
 }
 
 /**
- * Collects the distinct template parameter names referenced (directly or
- * transitively) by a model's own properties, used to build the record's generic
- * `<...>` suffix.
+ * The type parameters of the record generated for a model, used to build its
+ * generic `<...>` suffix.
+ *
+ * For a template declaration these are all of its template parameters, in
+ * declaration order, including one no property uses: every reference to the
+ * template passes one argument per parameter (`Tagged<Item, string>` for
+ * `model Tagged<T, U>`), so the record must declare the same number. Otherwise they
+ * are the distinct template parameters the model's properties reference.
  *
  * @param model - The model to inspect.
- * @returns The unique template parameter names, in first-seen order.
+ * @returns The type parameter names, in order.
  */
 function collectTypeParams(model: Model): string[] {
+  const declared = (
+    model.node as { templateParameters?: { id: { sv: string } }[] } | undefined
+  )?.templateParameters;
+  if (declared && declared.length > 0) return declared.map((p) => p.id.sv);
+
   const params: string[] = [];
   const seen = new Set<Type>();
   for (const [, prop] of model.properties) {

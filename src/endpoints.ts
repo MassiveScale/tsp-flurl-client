@@ -44,7 +44,7 @@ import {
   classifyEncoding,
   reportUnsupportedEncoding,
 } from "./encoding.js";
-import { createDiagnostic } from "./lib.js";
+import { createDiagnostic, reportOnce } from "./lib.js";
 import {
   mapType,
   mapPropertyType,
@@ -61,7 +61,11 @@ import {
   MERGE_PATCH_INTERFACE_NAME,
   type UsedHelpers,
 } from "./utils.js";
-import { flattenProperties } from "./models.js";
+import {
+  findDiscriminatedRoot,
+  flattenProperties,
+  hierarchyOf,
+} from "./models.js";
 
 /**
  * A visibility-filtered request payload synthesized for a write operation whose
@@ -80,6 +84,20 @@ export interface RequestType {
    * built from an internal model can still reference other internal types.
    */
   access: string;
+  /**
+   * Set when the body is part of a `@discriminator` hierarchy: the record is one of
+   * a set of request records mirroring that hierarchy (`PetCreateRequest`,
+   * `DogCreateRequest`, ...), rendered from `model` so it keeps its base record and
+   * `[JsonDerivedType]` list, and so still writes the discriminator.
+   */
+  hierarchy?: {
+    /** The model this record mirrors. */
+    model: Model;
+    /** The operation's request visibility. */
+    visibility: Visibility;
+    /** What every record of the hierarchy appends to its model's name, e.g. `CreateRequest`. */
+    suffix: string;
+  };
 }
 
 /** The two C# source files generated for one operation container. */
@@ -155,64 +173,80 @@ function sameRequestShape(a: RequestType, b: RequestType): boolean {
 }
 
 /**
- * Names and registers the request record for an operation's body. Visibility is
- * resolved per operation (`@parameterVisibility` can differ between two creates of
- * the same model), so a record is shared only when its properties match. The
- * names tried, in order, are `{Model}{Verb}Request` (`WidgetCreateRequest`),
- * `{Model}{Operation}Request` (`WidgetCreateDraftRequest`), and
- * `{Model}{Container}{Operation}Request`. When every one is already a record with
- * different properties, a `name-collision` is reported.
+ * Names and registers the request records for an operation's body: one record for
+ * a plain model, or one for every model of a `@discriminator` hierarchy. All of
+ * them share one suffix, so `Pet`, `Dog` and `Cat` become `PetCreateRequest`,
+ * `DogCreateRequest` and `CatCreateRequest`.
+ *
+ * Visibility is resolved per operation (`@parameterVisibility` can differ between
+ * two creates of the same model), so a record is shared only when its properties
+ * match. The suffixes tried, in order, are `{Verb}Request` (`CreateRequest`),
+ * `{Operation}Request` (`CreateDraftRequest`), and `{Container}{Operation}Request`.
+ * A suffix is used only when every record it names is free or already identical.
+ * When none is, a `name-collision` is reported.
  *
  * @param program - The compiler program, used to report diagnostics.
- * @param op - The operation the record is for.
- * @param bodyModel - The body model the record is filtered from.
+ * @param op - The operation the records are for.
  * @param operationName - The operation's effective (client) name.
- * @param requestType - The record, with its properties already filtered.
+ * @param records - The records to register, each with its model and properties.
  * @param requestTypes - The records registered so far for this unit.
- * @returns The record's name, or `undefined` after reporting a collision.
+ * @returns The suffix used, or `undefined` after reporting a collision.
  */
-function claimRequestType(
+function claimRequestTypes(
   program: Program,
   op: HttpOperation,
-  bodyModel: Model,
   operationName: string,
-  requestType: RequestType,
+  records: { model: Model; requestType: RequestType }[],
   requestTypes: Map<string, RequestType>,
 ): string | undefined {
-  // Named after the model's effective (client) name, so renaming `Widget` to
-  // `Product` gives `ProductCreateRequest`, and two same-named models with
-  // different client names get different records.
-  const modelName = getClientName(program, bodyModel) ?? bodyModel.name;
   const container = op.container;
   const containerName =
     container.kind === "Interface"
       ? (getClientName(program, container) ?? container.name)
       : container.name;
   const operation = capitalize(operationName);
-  const candidates = [
+  const suffixes = [
     ...new Set([
-      `${modelName}${requestTypeSuffix(op.verb)}Request`,
-      `${modelName}${operation}Request`,
-      `${modelName}${capitalize(containerName)}${operation}Request`,
+      `${requestTypeSuffix(op.verb)}Request`,
+      `${operation}Request`,
+      `${capitalize(containerName)}${operation}Request`,
     ]),
   ];
+  // Named after each model's effective (client) name, so renaming `Widget` to
+  // `Product` gives `ProductCreateRequest`, and two same-named models with
+  // different client names get different records.
+  const nameOf = (model: Model, suffix: string): string =>
+    `${getClientName(program, model) ?? model.name}${suffix}`;
 
-  for (const name of candidates) {
-    const existing = requestTypes.get(name);
-    if (!existing) {
-      requestTypes.set(name, { ...requestType, name });
-      return name;
+  for (const suffix of suffixes) {
+    const usable = records.every(({ model, requestType }) => {
+      const existing = requestTypes.get(nameOf(model, suffix));
+      return !existing || sameRequestShape(existing, requestType);
+    });
+    if (!usable) continue;
+    for (const { model, requestType } of records) {
+      const name = nameOf(model, suffix);
+      if (requestTypes.has(name)) continue;
+      requestTypes.set(name, {
+        ...requestType,
+        name,
+        hierarchy: requestType.hierarchy && {
+          ...requestType.hierarchy,
+          suffix,
+        },
+      });
     }
-    if (sameRequestShape(existing, requestType)) return name;
+    return suffix;
   }
 
-  program.reportDiagnostic(
+  reportOnce(
+    program,
     createDiagnostic({
       code: "name-collision",
       target: op.operation,
       format: {
         kind: "request record",
-        name: candidates[candidates.length - 1],
+        name: nameOf(records[0].model, suffixes[suffixes.length - 1]),
         scope: "the generated models",
         first:
           "another operation whose request has different visible properties",
@@ -485,9 +519,10 @@ function buildMethodView(
   requestTypes: Map<string, RequestType>,
   routePrefix: string,
 ): MethodView | undefined {
-  const unsupported = findUnsupportedPayload(op);
+  const unsupported = findUnsupportedPayload(op, program);
   if (unsupported) {
-    program.reportDiagnostic(
+    reportOnce(
+      program,
       createDiagnostic({
         code: "unsupported-feature",
         target: op.operation,
@@ -625,28 +660,35 @@ function buildMethodView(
           op.operation,
           op.verb,
         );
-        if (hasHiddenProperties(bodyModel, visibility, program)) {
-          const requestType: RequestType = {
-            name: "",
-            doc: getDoc(program, bodyModel),
-            access: getAccess(program, bodyModel) ?? "public",
-            props: filterPropsForRequest(
-              bodyModel,
-              visibility,
-              version,
-              program,
-            ),
-          };
-          const requestTypeName = claimRequestType(
+        // A body in a `@discriminator` hierarchy is filtered as a whole hierarchy,
+        // so the caller can still pass any subtype and its discriminator is written;
+        // a single flat record would lose both.
+        const discriminated = findDiscriminatedRoot(program, bodyModel);
+        const members = discriminated
+          ? hierarchyOf(program, discriminated.root, version)
+          : [bodyModel];
+        if (members.some((m) => hasHiddenProperties(m, visibility, program))) {
+          const records = members.map((model) => ({
+            model,
+            requestType: {
+              name: "",
+              doc: getDoc(program, model),
+              access: getAccess(program, model) ?? "public",
+              props: filterPropsForRequest(model, visibility, version, program),
+              hierarchy: discriminated
+                ? { model, visibility, suffix: "" }
+                : undefined,
+            } satisfies RequestType,
+          }));
+          const suffix = claimRequestTypes(
             program,
             op,
-            bodyModel,
             baseMethodName,
-            requestType,
+            records,
             requestTypes,
           );
-          if (requestTypeName === undefined) return undefined;
-          bodyType = requestTypeName;
+          if (suffix === undefined) return undefined;
+          bodyType = `${getClientName(program, bodyModel) ?? bodyModel.name}${suffix}`;
         }
       }
     }
@@ -659,6 +701,8 @@ function buildMethodView(
       "request",
     ) as PayloadKind;
     checkBodyEncoding(program, bodyInfo, kind);
+    // `@body body?: Widget` may be left out, in which case no body is sent at all.
+    const optionalBody = bodyInfo.property?.optional === true;
     body = {
       variable: "body",
       kind,
@@ -666,8 +710,14 @@ function buildMethodView(
         kind === "json"
           ? jsonMediaType(contentTypes)
           : (contentTypes[0] ?? "application/octet-stream"),
+      optional: optionalBody,
     };
-    requiredParams.push({ decl: `${bodyType} body`, name: "body" });
+    if (optionalBody) {
+      const nullable = bodyType.endsWith("?") ? bodyType : `${bodyType}?`;
+      optionalParams.unshift({ decl: `${nullable} body = null`, name: "body" });
+    } else {
+      requiredParams.push({ decl: `${bodyType} body`, name: "body" });
+    }
   }
 
   const allParams = [
@@ -879,13 +929,16 @@ function resolveResponse(
     mayBeEmpty && !csType.endsWith("?") ? `${csType}?` : csType;
 
   // Every body is mapped, so the models of each are generated and can be read from
-  // the JsonElement with Deserialize<T>.
+  // the JsonElement with Deserialize<T>. Bodies are compared by the C# type they map
+  // to, so `Item` and `Item | null` are one shape (`Item?`), as are two identical
+  // anonymous shapes.
   const mapped = bodies.map((body) =>
     resolveBodyType(body, program, models, enums, usedHelpers),
   );
-  if (new Set(bodies.map((body) => body.type)).size > 1) {
+  if (new Set(mapped.map(withoutNullable)).size > 1) {
     return { view: { kind: "json", type: optional("JsonElement") } };
   }
+  const anyNullable = mapped.some((csType) => csType.endsWith("?"));
 
   const body = bodies[0];
   const kind = classifyPayload(
@@ -895,14 +948,16 @@ function resolveResponse(
   ) as PayloadKind;
   checkBodyEncoding(program, body, kind);
 
-  const view: ResponseView = { kind, type: optional(mapped[0]) };
+  const resultType = anyNullable ? `${withoutNullable(mapped[0])}?` : mapped[0];
+  const view: ResponseView = { kind, type: optional(resultType) };
   const slot =
     kind === "json"
       ? findModelSlot(body.type, program, models, enums, usedHelpers)
       : undefined;
   if (!slot) return { view };
 
-  const responseType = optional(slot.wrap("TResult"));
+  const wrapped = slot.wrap("TResult");
+  const responseType = optional(anyNullable ? `${wrapped}?` : wrapped);
   return {
     view,
     generic: {
@@ -911,6 +966,31 @@ function resolveResponse(
       responseType,
     },
   };
+}
+
+/**
+ * Removes a trailing nullable marker from a C# type.
+ *
+ * @param csType - A C# type such as `Widget?`.
+ * @returns The type without its `?`.
+ */
+function withoutNullable(csType: string): string {
+  return csType.endsWith("?") ? csType.slice(0, -1) : csType;
+}
+
+/**
+ * The C# type a body maps to, ignoring nullability, used to tell whether two
+ * success responses carry the same shape. Mapped with throwaway accumulators, since
+ * this only compares and must not add anything to the output.
+ *
+ * @param body - The body.
+ * @param program - The compiler program.
+ * @returns The C# type without a trailing `?`.
+ */
+function bodyShape(body: SingleBody, program: Program): string {
+  return withoutNullable(
+    resolveBodyType(body, program, new Map(), new Map(), new Set()),
+  );
 }
 
 /** A body that is a single payload, which is every body that reaches the mapping. */
@@ -1067,9 +1147,13 @@ function isSuccessStatus(
  *   can only be held as a `JsonElement`.
  *
  * @param op - The HTTP operation.
+ * @param program - The compiler program.
  * @returns A description of the unsupported feature, or `undefined` when all is supported.
  */
-function findUnsupportedPayload(op: HttpOperation): string | undefined {
+function findUnsupportedPayload(
+  op: HttpOperation,
+  program: Program,
+): string | undefined {
   const body = op.parameters.body;
   if (body && body.bodyKind !== "single") {
     return body.bodyKind === "multipart"
@@ -1104,7 +1188,7 @@ function findUnsupportedPayload(op: HttpOperation): string | undefined {
       : `A response body sent as ${unreadable.contentTypes.join(", ")} that is not bytes or text`;
   }
   if (
-    new Set(bodies.map((b) => b.type)).size > 1 &&
+    new Set(bodies.map((b) => bodyShape(b, program))).size > 1 &&
     kinds.some((kind) => kind !== "json")
   ) {
     return "Success responses with different bodies that are not all JSON";

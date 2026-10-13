@@ -336,7 +336,10 @@ internal static class ClientRuntime
             return;
         }
 
-        // A mapped replacement is registered under the base type by the swap above.
+        // A mapped replacement is registered under the base type by the swap above, and System.Text.Json
+        // writes its discriminator through that registration even when it is sent on its own (a request
+        // body is serialized as object, which resolves the nearest polymorphic ancestor). Registering it
+        // here as well would write the discriminator twice.
         if (models.IsCustomType(typeInfo.Type)) return;
 
         if (FindRegistration(typeInfo.Type) is { } registration && registration.Registered != typeInfo.Type)

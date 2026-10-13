@@ -64,6 +64,20 @@ interface Widgets {
   @route("labels") @added(Versions.v2) @get labels(): Label[];
 }
 
+/** Renamed, retyped and made optional in v2, so v1 must keep its original shape. */
+@renamedFrom(Versions.v2, "Gadget")
+model Gizmo {
+  @renamedFrom(Versions.v2, "title") name: string;
+  @typeChangedFrom(Versions.v2, int32) size: string;
+  @madeOptional(Versions.v2) note?: string;
+}
+
+@route("/gizmos")
+interface Gizmos {
+  @get read(@query @renamedFrom(Versions.v2, "q") search: string): Gizmo;
+  @returnTypeChangedFrom(Versions.v2, int32) @route("count") @get count(): string;
+}
+
 @route("/pets")
 interface Pets {
   @get list(): Pet[];

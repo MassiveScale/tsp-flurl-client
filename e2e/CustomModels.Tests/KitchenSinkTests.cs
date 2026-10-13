@@ -346,4 +346,68 @@ public sealed class KitchenSinkTests
         await client.Text.SetIdAsync(id);
         handler.Last.Body.Should().Be("0f8fad5b-d9cb-469f-a165-70867728950e");
     }
+
+    [TestMethod]
+    public async Task A_filtered_request_for_a_discriminated_body_keeps_its_subtypes_and_discriminator()
+    {
+        var (client, handler) = Create();
+        handler.RespondJson("""{"type":"car","id":"1","wheels":4,"vin":"V","seats":5}""");
+
+        var created = await client.Vehicles.CreateAsync(new CarCreateRequest { Wheels = 4, Seats = 5 });
+
+        using var sent = JsonDocument.Parse(handler.Last.Body!);
+        sent.RootElement.GetProperty("type").GetString().Should().Be("car");
+        sent.RootElement.GetProperty("seats").GetInt32().Should().Be(5);
+        sent.RootElement.TryGetProperty("id", out _).Should().BeFalse("id is read-only");
+        sent.RootElement.TryGetProperty("vin", out _).Should().BeFalse("vin is read-only");
+        created.Should().BeOfType<Car>().Which.Vin.Should().Be("V");
+    }
+
+    [TestMethod]
+    public async Task A_filtered_request_for_a_subtype_is_sent_with_its_discriminator()
+    {
+        var (client, handler) = Create();
+        handler.RespondJson("""{"type":"car","id":"1","wheels":4,"vin":"V","seats":5}""");
+
+        await client.Vehicles.CreateCarAsync(new CarCreateRequest { Wheels = 4, Seats = 5 });
+
+        using var sent = JsonDocument.Parse(handler.Last.Body!);
+        sent.RootElement.GetProperty("type").GetString().Should().Be("car");
+        CountOf(handler.Last.Body!, "\"type\"").Should().Be(1);
+    }
+
+    [TestMethod]
+    public async Task A_custom_subtype_of_a_filtered_request_keeps_its_extra_properties_and_discriminator()
+    {
+        var (client, handler) = Create();
+        handler.RespondJson("""{"type":"car","id":"1","wheels":4,"vin":"V","seats":5}""");
+
+        await client.Vehicles.CreateCarAsync(new MyCarRequest { Wheels = 4, Seats = 5, Colour = "red" });
+
+        using var sent = JsonDocument.Parse(handler.Last.Body!);
+        sent.RootElement.GetProperty("type").GetString().Should().Be("car");
+        sent.RootElement.GetProperty("colour").GetString().Should().Be("red");
+    }
+
+    [TestMethod]
+    public async Task An_omitted_optional_body_sends_no_content()
+    {
+        var (client, handler) = Create();
+
+        await client.Vehicles.MaybeCreateAsync();
+        handler.Last.Body.Should().BeNull();
+
+        await client.Vehicles.MaybeCreateAsync(new BikeCreateRequest { Wheels = 2 });
+        using var sent = JsonDocument.Parse(handler.Last.Body!);
+        sent.RootElement.GetProperty("type").GetString().Should().Be("bike");
+    }
+
+    private static int CountOf(string text, string value) =>
+        (text.Length - text.Replace(value, string.Empty).Length) / value.Length;
+
+    private record MyCarRequest : CarCreateRequest
+    {
+        [System.Text.Json.Serialization.JsonPropertyName("colour")]
+        public string? Colour { get; init; }
+    }
 }

@@ -149,6 +149,8 @@ export interface BodyView {
   kind: PayloadKind;
   /** Media type to send for `bytes` / `text` bodies. */
   contentType: string;
+  /** `true` for `@body body?: T`: a `null` argument sends no body at all. */
+  optional?: boolean;
 }
 
 /** The success response body of an endpoint method. */
@@ -540,6 +542,10 @@ function renderRequestBody(m: MethodView, responseType: string): string[] {
     send = `await flurlRequest.SendAsync(${verb}, ClientRuntime.BytesContent(${m.body.variable}, "${escapeCsString(m.body.contentType)}"), cancellationToken: cancellationToken)`;
   } else {
     send = `await flurlRequest.SendAsync(${verb}, ClientRuntime.TextContent(ClientRuntime.ToWireString(${m.body.variable}), "${escapeCsString(m.body.contentType)}"), cancellationToken: cancellationToken)`;
+  }
+  if (m.body?.optional) {
+    // An omitted optional body sends no content, rather than a JSON `null`.
+    send = `${m.body.variable} is null ? await flurlRequest.SendAsync(${verb}, cancellationToken: cancellationToken).ConfigureAwait(false) : ${send}`;
   }
   lines.push(`${pad}using var flurlResponse = ${send}.ConfigureAwait(false);`);
 

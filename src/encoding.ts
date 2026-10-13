@@ -9,7 +9,7 @@ import {
   type Program,
   type Scalar,
 } from "@typespec/compiler";
-import { createDiagnostic } from "./lib.js";
+import { createDiagnostic, reportOnce } from "./lib.js";
 import { builtinScalarName } from "./utils.js";
 
 /** How the generated client treats a property or parameter's `@encode`. */
@@ -82,14 +82,9 @@ export function classifyEncoding(
 }
 
 /**
- * The declarations already warned about, per program. A model, parameter, or body
- * is visited once for every API version emitted, and its warning belongs to the
- * declaration, so it is reported only the first time.
- */
-const reported = new WeakMap<Program, WeakSet<ModelProperty>>();
-
-/**
- * Reports `unsupported-encoding` for a declaration, once.
+ * Reports `unsupported-encoding` for a declaration. A declaration is visited once
+ * for every API version emitted, and the warning belongs to the declaration, so it
+ * is reported only the first time (see `reportOnce`).
  *
  * @param program - The compiler program, used to report.
  * @param prop - The property, parameter, or body property.
@@ -102,14 +97,8 @@ export function reportUnsupportedEncoding(
   kind: "property" | "parameter" | "body",
   encoding: string,
 ): void {
-  let seen = reported.get(program);
-  if (!seen) {
-    seen = new WeakSet();
-    reported.set(program, seen);
-  }
-  if (seen.has(prop)) return;
-  seen.add(prop);
-  program.reportDiagnostic(
+  reportOnce(
+    program,
     createDiagnostic({
       code: "unsupported-encoding",
       target: prop,

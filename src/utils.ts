@@ -21,6 +21,7 @@ import {
   isNeverType,
   isErrorModel,
   getNamespaceFullName,
+  type Namespace,
 } from "@typespec/compiler";
 import { getMergePatchSource } from "@typespec/http/experimental/merge-patch";
 import { getClientName } from "./decorators.js";
@@ -121,7 +122,9 @@ export function mapType(
       // (unbacked) literal name as a phantom C# type, and record that the helper class now has
       // to be emitted. This is the only place that signal is raised, so a user model that is
       // itself named `MergePatch<T>` never drags the helper in.
-      const mergePatchSource = getMergePatchSource(program, m);
+      const recordedSource = getMergePatchSource(program, m);
+      const mergePatchSource =
+        recordedSource && atVersion(program, recordedSource);
       if (mergePatchSource) {
         if (mergePatchSource.name) {
           models.set(declarationKey(mergePatchSource), mergePatchSource);
@@ -137,17 +140,14 @@ export function mapType(
 
       // Template instance
       if (m.templateMapper?.args) {
-        const args = m.templateMapper.args
-          .filter(
-            (a): a is Type =>
-              (a as { entityKind?: string }).entityKind === "Type",
-          )
-          .map((a) => mapType(a, program, models, enums, usedHelpers));
+        const decl = m.namespace?.models.get(m.name);
+        const args = templateArguments(program, m, decl).map((a) =>
+          mapType(a, program, models, enums, usedHelpers),
+        );
         // Array<T> represented as a template instance (unresolved element type) → List<T>
         if (m.name === "Array" && args.length === 1) {
           return `List<${args[0]}>`;
         }
-        const decl = m.namespace?.models.get(m.name);
         models.set(declarationKey(decl ?? m), decl ?? m);
         const csName = getClientName(program, decl ?? m) ?? m.name;
         return args.length > 0 ? `${csName}<${args.join(", ")}>` : csName;
@@ -192,6 +192,132 @@ export function mapType(
     default:
       return "object";
   }
+}
+
+/** The service namespace each program is currently emitting, original and projected. */
+const projections = new WeakMap<
+  Program,
+  { original: Namespace; projected: Namespace }
+>();
+
+/**
+ * Sets (or, with `undefined`, clears) the version projection the emitter is
+ * working in. TypeSpec's versioning mutators copy a service onto one API version,
+ * but a few references recorded at check time still point at the original,
+ * unprojected declarations: the source model of a synthesized `MergePatchUpdate<T>`,
+ * and a template instance's recorded arguments. While a projection is set, those
+ * are resolved to their projected copies (see {@link atVersion}).
+ *
+ * @param program - The compiler program.
+ * @param projection - The original and projected service namespaces.
+ */
+export function setProjection(
+  program: Program,
+  projection: { original: Namespace; projected: Namespace } | undefined,
+): void {
+  if (projection && projection.original !== projection.projected) {
+    projections.set(program, projection);
+  } else {
+    projections.delete(program);
+  }
+}
+
+/**
+ * Resolves a model declared in the service to its copy in the current version
+ * projection, found by its namespace path and the declaration it was copied from. A model outside the service, or
+ * already projected, or with no copy in this version, is returned as it is.
+ *
+ * @param program - The compiler program.
+ * @param model - The model.
+ * @returns The projected model, or `model`.
+ */
+export function atVersion(program: Program, model: Model): Model {
+  const projection = projections.get(program);
+  if (!projection || !model.name || model.templateMapper) return model;
+  const path: string[] = [];
+  let ns = model.namespace;
+  while (ns && ns !== projection.original) {
+    path.unshift(ns.name);
+    ns = ns.namespace;
+  }
+  if (!ns) return model;
+  let target: Namespace | undefined = projection.projected;
+  for (const segment of path) target = target?.namespaces.get(segment);
+  // Matched by the declaration it was copied from, not by name: `@renamedFrom`
+  // gives the copy the name the model had in that version.
+  for (const candidate of target?.models.values() ?? []) {
+    if (candidate.node === model.node) return candidate;
+  }
+  return model;
+}
+
+/**
+ * The type arguments of a template instance such as `Page<Widget>`, in the order
+ * of the declaration's template parameters.
+ *
+ * They are read from the instance's properties wherever the declaration uses a
+ * parameter (`items: T[]` against `items: Widget[]` binds `T` to `Widget`). When a
+ * service is projected onto an API version, the instance's properties are that
+ * version's types but its recorded `templateMapper` arguments are not, so mapping
+ * those would bring a second copy of `Widget` into the same output. The recorded
+ * argument is used only for a parameter no property mentions.
+ *
+ * @param program - The compiler program.
+ * @param instance - The template instance.
+ * @param decl - The template declaration, when found.
+ * @returns The type arguments.
+ */
+function templateArguments(
+  program: Program,
+  instance: Model,
+  decl: Model | undefined,
+): Type[] {
+  const recorded = (instance.templateMapper?.args ?? []).filter(
+    (a): a is Type => (a as { entityKind?: string }).entityKind === "Type",
+  );
+  const parameters = (
+    decl?.node as { templateParameters?: { id: { sv: string } }[] } | undefined
+  )?.templateParameters;
+  if (!decl || !parameters) return recorded;
+
+  const bound = new Map<string, Type>();
+  const seen = new Set<Type>();
+  const unify = (declared: Type, actual: Type): void => {
+    if (declared.kind === "TemplateParameter") {
+      const name = (declared.node as { id?: { sv: string } } | undefined)?.id
+        ?.sv;
+      if (name !== undefined && !bound.has(name)) bound.set(name, actual);
+      return;
+    }
+    // Only structure that belongs to this instance is walked: arrays, records,
+    // anonymous models, unions, and nested template instances such as `List<T>`.
+    if (seen.has(declared)) return;
+    seen.add(declared);
+    if (declared.kind === "Model" && actual.kind === "Model") {
+      if (declared.indexer && actual.indexer) {
+        unify(declared.indexer.value, actual.indexer.value);
+      }
+      if (!declared.name || declared.templateMapper) {
+        for (const [name, prop] of declared.properties) {
+          const other = actual.properties.get(name);
+          if (other) unify(prop.type, other.type);
+        }
+      }
+    } else if (declared.kind === "Union" && actual.kind === "Union") {
+      for (const [key, variant] of declared.variants) {
+        const other = actual.variants.get(key);
+        if (other) unify(variant.type, other.type);
+      }
+    }
+  };
+  for (const [name, prop] of decl.properties) {
+    const other = instance.properties.get(name);
+    if (other) unify(prop.type, other.type);
+  }
+  return parameters.map((p, i) => {
+    const arg = bound.get(p.id.sv) ?? recorded[i];
+    return arg?.kind === "Model" ? atVersion(program, arg) : arg;
+  });
 }
 
 /**

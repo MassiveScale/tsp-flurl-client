@@ -197,4 +197,48 @@ public sealed class AllVersionsTests
         [System.Text.Json.Serialization.JsonPropertyName("sku")]
         public string? Sku { get; init; }
     }
+
+    [TestMethod]
+    public void A_renamed_retyped_or_made_optional_model_keeps_each_versions_shape()
+    {
+        typeof(V1.Gadget).GetProperty("Title")!.PropertyType.Should().Be(typeof(string));
+        typeof(V1.Gadget).GetProperty("Size")!.PropertyType.Should().Be(typeof(int));
+        typeof(V1.Gadget).GetProperty("Name").Should().BeNull();
+        typeof(V1.Gadget).Assembly.GetType($"{Root}.V1_0.Gizmo").Should().BeNull();
+
+        typeof(V2.Gizmo).GetProperty("Name")!.PropertyType.Should().Be(typeof(string));
+        typeof(V2.Gizmo).GetProperty("Size")!.PropertyType.Should().Be(typeof(string));
+        typeof(V2.Gizmo).Assembly.GetType($"{Root}.V2_0.Gadget").Should().BeNull();
+
+        var nullability = new NullabilityInfoContext();
+        nullability.Create(typeof(V1.Gadget).GetProperty("Note")!).ReadState
+            .Should().Be(NullabilityState.NotNull, "note is required in v1");
+        nullability.Create(typeof(V2.Gizmo).GetProperty("Note")!).ReadState
+            .Should().Be(NullabilityState.Nullable, "note was made optional in v2");
+    }
+
+    [TestMethod]
+    public async Task Renamed_parameters_and_changed_return_types_follow_each_version()
+    {
+        var (v1, v1Handler) = Create(f => V1.AllVersionsClient.Create(f));
+        v1Handler.RespondJson("""{"title":"t","size":3,"note":"n"}""");
+        var gadget = await v1.Gizmos.ReadAsync("x");
+        v1Handler.Last.Uri.Query.Should().Be("?q=x");
+        gadget.Title.Should().Be("t");
+        gadget.Size.Should().Be(3);
+
+        var (v2, v2Handler) = Create(f => V2.AllVersionsClient.Create(f));
+        v2Handler.RespondJson("""{"name":"n","size":"large"}""");
+        var gizmo = await v2.Gizmos.ReadAsync("x");
+        v2Handler.Last.Uri.Query.Should().Be("?search=x");
+        gizmo.Size.Should().Be("large");
+
+        v1Handler.RespondText("42");
+        int v1Count = await v1.Gizmos.CountAsync();
+        v1Count.Should().Be(42);
+
+        v2Handler.RespondText("about forty");
+        string v2Count = await v2.Gizmos.CountAsync();
+        v2Count.Should().Be("about forty");
+    }
 }

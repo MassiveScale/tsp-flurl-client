@@ -98,6 +98,7 @@ Different source names can also become the same C# name, which C# rejects, so co
 - Properties: `foo` and `Foo`, or two `@clientName` values that differ only in the case of the first letter, and a property that shares its record's name (`model Owner { owner: string }`, which C# rejects as `CS0542`) or the name of a member every record has (`EqualityContract`, `Equals`, `ToString`, ...).
 - Operations: `read` and `Read` both become `ReadAsync`. Parameters: `foo` and `Foo` both become `foo`, and a parameter cannot be named `body` (when there is a request body), `cancellationToken`, `additionalQueryParameters`, `flurlRequest`, `flurlResponse` or `_client`, which the generated method already uses.
 - Types: two models or enums with the same name in different child namespaces (they are flattened into one C# namespace), two interfaces with the same name, and a model named like a generated type (`IItems`, `ItemsEndpoint`, the aggregate client, its `...Extensions` class, or an enum's `...JsonConverter`). An interface cannot be named like the aggregate client, `FlurlClient` or `Create`, which are members of it.
+- File names that differ only in case (`Widget` and `widget`), which are the same file on Windows and macOS.
 - With `all-versions`, two version values that sanitize to the same namespace segment (`1.0` and `1_0`).
 
 Rename one with `@clientName` to resolve any of them.
@@ -360,16 +361,17 @@ List<MyDog> dogs = await api.Pets.ListAsync<MyDog>();
 
 ### What to know
 
-| Situation                                                                       | Behaviour                                                                                                                       |
-| ------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
-| A derived model is a property or list item of a model you send                  | Its extra properties are sent only if the type is in the model map. Otherwise it is serialized as the declared type.            |
-| A custom subtype of a discriminated model is nested under its base type         | It must be in the model map. Without it, `System.Text.Json` throws `NotSupportedException`, rather than silently dropping data. |
-| `models.Map<Pet, MyPet>()` where `Pet` is the base of a discriminated hierarchy | Rejected with `InvalidOperationException`. Map one of its derived models instead.                                               |
-| A custom type that does not derive from the model, or is abstract               | Rejected with `ArgumentException` when registered.                                                                              |
-| A mapped discriminated subtype is read directly (`ReadAsync` of `Dog`)          | The map applies when it is read through its base type. Use the generic overload to read it directly.                            |
-| Request bodies with hidden properties (`@visibility`)                           | The request type is a record of its own (`WidgetCreateRequest`). Derive from that to add properties to the request.             |
-| Two operations send the same model with different visible properties            | Each gets its own record: `WidgetCreateRequest`, then `WidgetCreateDraftRequest`, then `Widget{Interface}CreateDraftRequest`.   |
-| A model set on a `MergePatch<T>` (`Set(g => g.Owner, new MyOwner { ... })`)     | It is written as its runtime type, like a request body, so the derived type's extra properties are sent.                        |
+| Situation                                                                       | Behaviour                                                                                                                                                                                                                                |
+| ------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| A derived model is a property or list item of a model you send                  | Its extra properties are sent only if the type is in the model map. Otherwise it is serialized as the declared type.                                                                                                                     |
+| A custom subtype of a discriminated model is nested under its base type         | It must be in the model map. Without it, `System.Text.Json` throws `NotSupportedException`, rather than silently dropping data.                                                                                                          |
+| `models.Map<Pet, MyPet>()` where `Pet` is the base of a discriminated hierarchy | Rejected with `InvalidOperationException`. Map one of its derived models instead.                                                                                                                                                        |
+| A custom type that does not derive from the model, or is abstract               | Rejected with `ArgumentException` when registered.                                                                                                                                                                                       |
+| A mapped discriminated subtype is read directly (`ReadAsync` of `Dog`)          | The map applies when it is read through its base type. Use the generic overload to read it directly.                                                                                                                                     |
+| Request bodies with hidden properties (`@visibility`)                           | The request type is a record of its own (`WidgetCreateRequest`). Derive from that to add properties to the request.                                                                                                                      |
+| Two operations send the same model with different visible properties            | Each gets its own record: `WidgetCreateRequest`, then `WidgetCreateDraftRequest`, then `Widget{Interface}CreateDraftRequest`.                                                                                                            |
+| The body is part of a `@discriminator` hierarchy with hidden properties         | The request records mirror the hierarchy (`PetCreateRequest`, with `DogCreateRequest` and `CatCreateRequest` derived from it), so any subtype can be passed and its discriminator is written. Derive from one of them to add properties. |
+| A model set on a `MergePatch<T>` (`Set(g => g.Owner, new MyOwner { ... })`)     | It is written as its runtime type, like a request body, so the derived type's extra properties are sent.                                                                                                                                 |
 
 ## Requirements
 
@@ -389,6 +391,7 @@ List<MyDog> dogs = await api.Pets.ListAsync<MyDog>();
 - A scalar body or response (`string`, `int32`, `boolean`, `utcDateTime`, `duration`, `decimal`, ...) is `text/plain` in TypeSpec unless declared otherwise, so it is sent as its wire text (`42`, `true`, `2024-01-02T03:04:05.0000000+00:00`, `PT1H`) and read back by parsing that text. A union of scalars read as text is a `JsonElement` holding the number, boolean, or string that arrived. Text that is not a valid value throws `FormatException`. Text is encoded with the charset its media type declares (`text/plain; charset=iso-8859-1`), and UTF-8 otherwise.
 - A JSON body is sent as `application/json` when the operation accepts it, and otherwise with the JSON media type it declares (`application/vnd.acme+json`, `application/problem+json`), through the same serializer and model map.
 - When an operation has a success response without a body (`Widget | void` is a 200 or a 204), the method returns a nullable type (`Widget?`, `TResult?`, `int?`), which is `null` when no body arrives.
+- An optional body (`@body body?: Widget`) is an optional parameter (`Widget? body = null`); when it is left out, the request is sent with no body at all rather than a JSON `null`.
 - When an operation's success responses carry different bodies (a 200 `Item` and a 201 `CreatedItem`), the method returns a `JsonElement` holding whichever arrived, since one C# return type cannot be both; read it with `Deserialize<Item>()` or `Deserialize<CreatedItem>()` depending on the status you expect. When they all carry the same body, the method returns that type.
 - A response declared as both JSON and text (`application/json` or `text/plain`) is read according to the `Content-Type` the server actually sends. A request declared with several media types is sent as JSON, since the client chooses.
 - A body declared by a property (`@body @format("uuid") id: string`, `@body @encode("string") flag: boolean`) honours that property's `@format` and `@encode`, as any other property does. An `@encode` the client cannot produce is reported as `unsupported-encoding`, once per declaration however many versions are emitted.
@@ -570,6 +573,8 @@ npm run format:check  # check formatting without writing
 ## Multiple API versions
 
 By default only the latest declared version is emitted (or the one named by `target-version`), into the root namespace. Set `all-versions: true` to emit every version side by side (an API with no `@versioned` declaration has only one "version" and is emitted normally, with no version folder):
+
+Each version is emitted from TypeSpec's projection of the service onto that version, so every declaration has exactly the shape it has there: not only whether it exists (`@added`, `@removed`), but its name (`@renamedFrom`), its type (`@typeChangedFrom`, `@returnTypeChangedFrom`), and whether it is optional (`@madeOptional`, `@madeRequired`). A v1 client for a model renamed in v2 uses the v1 name, and a parameter renamed in v2 is sent under its v1 name. Diagnostics about a declaration are reported once, however many versions are emitted.
 
 ```
 <output-dir>/

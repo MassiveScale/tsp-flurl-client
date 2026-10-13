@@ -99,6 +99,7 @@ interface Widgets {
 interface Pets {
   @get list(): Pet[];
   @post create(@body body: Pet): Pet;
+  @route("bulk") @post createMany(@body body: Pet[]): Pet[];
 }
 
 @route("/files")

@@ -25,13 +25,22 @@ import {
   isService,
   NoTarget,
 } from "@typespec/compiler";
-import { getAllHttpServices, HttpOperation } from "@typespec/http";
-import { getAllVersions, Version } from "@typespec/versioning";
+import { unsafe_mutateSubgraphWithNamespace } from "@typespec/compiler/experimental";
+import {
+  getAllHttpServices,
+  getHttpService,
+  HttpOperation,
+} from "@typespec/http";
+import {
+  getAllVersions,
+  getVersioningMutators,
+  Version,
+} from "@typespec/versioning";
 import { spawnSync, type SpawnSyncReturns } from "node:child_process";
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { createRenderer, Renderer, TemplateOverrides } from "./renderer.js";
-import { EmitterOptions, createDiagnostic } from "./lib.js";
+import { EmitterOptions, createDiagnostic, reportOnce } from "./lib.js";
 import { isCsNamespace, isCsTypeName } from "./identifiers.js";
 import { checkName, MemberScope } from "./names.js";
 import { getClientName, getAccess } from "./decorators.js";
@@ -59,6 +68,7 @@ import {
   declarationKey,
   MERGE_PATCH_HELPER_NAME,
   type UsedHelpers,
+  setProjection,
 } from "./utils.js";
 
 /** For each helper, the C# namespaces that need a copy of it. */
@@ -66,6 +76,8 @@ type HelperNamespaces = Map<HelperName, Set<string>>;
 
 /** Records which declaration first claimed a given output file name, for collision reporting. */
 type OutputNameOwner = {
+  /** The name as the first claimant spelled it. */
+  name: string;
   /** Human-readable label of the claiming declaration (e.g. `model Widget`). */
   label: string;
 };
@@ -182,7 +194,8 @@ function buildRenderer(program: Program, options: EmitterOptions): Renderer {
   try {
     return createRenderer(overrides);
   } catch (e) {
-    program.reportDiagnostic(
+    reportOnce(
+      program,
       createDiagnostic({
         code: "template-load-failed",
         target: NoTarget,
@@ -339,7 +352,8 @@ export function runDotnetFormat(
       result.error?.message ||
       result.stderr?.trim() ||
       `exited with code ${result.status}`;
-    program.reportDiagnostic(
+    reportOnce(
+      program,
       createDiagnostic({
         code: "dotnet-format-failed",
         target: NoTarget,
@@ -424,7 +438,8 @@ function validateOptions(program: Program, options: EmitterOptions): boolean {
   }
 
   for (const format of problems) {
-    program.reportDiagnostic(
+    reportOnce(
+      program,
       createDiagnostic({ code: "invalid-option", target: NoTarget, format }),
     );
   }
@@ -481,7 +496,8 @@ function validateNames(
   }
 
   for (const format of problems) {
-    program.reportDiagnostic(
+    reportOnce(
+      program,
       createDiagnostic({ code: "invalid-option", target: NoTarget, format }),
     );
   }
@@ -548,27 +564,6 @@ async function emitService(
     (options["client-name"] !== undefined ? clientName : undefined);
   const allVersions = getAllVersions(program, serviceNs) ?? [];
 
-  // Group operations by container (Interface or Namespace). The container itself is
-  // the key, not its simple name: two interfaces called `Items` in different child
-  // namespaces are different declarations, and must each reach the output-name
-  // reservation instead of being merged into one client.
-  const byContainer = new Map<
-    Interface | Namespace,
-    { name: string; container: Interface | Namespace; ops: HttpOperation[] }
-  >();
-  for (const op of operations) {
-    const c = op.container;
-    const baseName =
-      c.kind === "Interface"
-        ? (getClientName(program, c) ?? c.name)
-        : c === serviceNs
-          ? serviceNs.name
-          : c.name;
-    if (!byContainer.has(c))
-      byContainer.set(c, { name: baseName, container: c, ops: [] });
-    byContainer.get(c)!.ops.push(op);
-  }
-
   const versionsToEmit = resolveTargetVersions(program, allVersions, options);
   if (versionsToEmit === null) return; // diagnostic already reported
 
@@ -600,6 +595,20 @@ async function emitService(
     version: Version | undefined;
   }): Promise<void> => {
     const { dir, endpointNs, modelNs, modelsDir, version } = unit;
+    // Every declaration takes the shape it has in this version: its name
+    // (`@renamedFrom`), its type (`@typeChangedFrom`, `@returnTypeChangedFrom`), and
+    // whether it is optional (`@madeOptional`, `@madeRequired`), not just whether it
+    // exists.
+    const projected = projectService(program, serviceNs, operations, version);
+    const byContainer = groupByContainer(
+      program,
+      projected.namespace,
+      projected.operations,
+    );
+    setProjection(program, {
+      original: serviceNs,
+      projected: projected.namespace,
+    });
     const models = new Map<string, Model>();
     const enums = new Map<string, Enum>();
     const modelOutputOwners = new Map<string, OutputNameOwner>();
@@ -665,7 +674,7 @@ async function emitService(
       }
       const interfaceName = `I${name}`;
       const endpointClientName = `${name}Endpoint`;
-      const label = `interface ${container.name ?? name} in ${getNamespaceFullName(container.kind === "Interface" ? (container.namespace ?? serviceNs) : container)}`;
+      const label = `interface ${container.name ?? name} in ${getNamespaceFullName(container.kind === "Interface" ? (container.namespace ?? projected.namespace) : container)}`;
       const claimed = [interfaceName, endpointClientName].map((file) =>
         tryReserveModelOutputName(
           program,
@@ -748,19 +757,37 @@ async function emitService(
       await writeFile(
         program,
         resolvePath(modelsDir, `${rt.name}.g.cs`),
-        buildFilteredRecord(
-          rt.name,
-          rt.doc,
-          rt.props,
-          modelNs,
-          program,
-          models,
-          enums,
-          usedHelpers,
-          renderer,
-          additionalUsings,
-          rt.access,
-        ),
+        rt.hierarchy
+          ? buildRecord(
+              rt.hierarchy.model,
+              modelNs,
+              program,
+              models,
+              enums,
+              usedHelpers,
+              renderer,
+              options["abstract-discriminated-base"] !== false,
+              additionalUsings,
+              version,
+              {
+                visibility: rt.hierarchy.visibility,
+                nameOf: (m) =>
+                  `${getClientName(program, m) ?? m.name}${rt.hierarchy!.suffix}`,
+              },
+            )
+          : buildFilteredRecord(
+              rt.name,
+              rt.doc,
+              rt.props,
+              modelNs,
+              program,
+              models,
+              enums,
+              usedHelpers,
+              renderer,
+              additionalUsings,
+              rt.access,
+            ),
       );
     }
 
@@ -950,6 +977,8 @@ async function emitService(
     });
   }
 
+  setProjection(program, undefined);
+
   // Emit project file
   if (options["emit-project-file"] !== false) {
     const csprojPath = resolvePath(outputDir, `${projectName}.csproj`);
@@ -993,6 +1022,9 @@ function relativeTo(outputDir: string, file: string): string {
  * the same name reports an `output-name-collision` diagnostic and returns
  * `false` so the caller skips emitting the clashing file.
  *
+ * Names are compared ignoring case: `Widget.g.cs` and `widget.g.cs` are the same
+ * file on Windows and macOS, so one would silently overwrite the other there.
+ *
  * @param program - The compiler program, used to report diagnostics.
  * @param owners - Map of already-claimed output names to their first owner.
  * @param name - The output file base name being claimed.
@@ -1008,24 +1040,116 @@ function tryReserveModelOutputName(
   ownerLabel: string,
   target: Type | typeof NoTarget,
 ): boolean {
-  const existing = owners.get(name);
+  const key = name.toLowerCase();
+  const existing = owners.get(key);
   if (!existing) {
-    owners.set(name, { label: ownerLabel });
+    owners.set(key, { name, label: ownerLabel });
     return true;
   }
 
-  program.reportDiagnostic(
-    createDiagnostic({
-      code: "output-name-collision",
-      target,
-      format: {
-        name,
-        first: existing.label,
-        second: ownerLabel,
-      },
-    }),
+  reportOnce(
+    program,
+    existing.name === name
+      ? createDiagnostic({
+          code: "output-name-collision",
+          target,
+          format: {
+            firstName: existing.name,
+            name,
+            first: existing.label,
+            second: ownerLabel,
+          },
+        })
+      : createDiagnostic({
+          code: "output-name-collision",
+          messageId: "case",
+          target,
+          format: {
+            firstName: existing.name,
+            name,
+            first: existing.label,
+            second: ownerLabel,
+          },
+        }),
   );
   return false;
+}
+
+/**
+ * Projects a service onto one API version with TypeSpec's versioning mutators, so
+ * every declaration reached from its operations has that version's name, type, and
+ * optionality, and returns the projected namespace with its HTTP operations.
+ *
+ * An unversioned service is returned as it is. A service that is not versioned but
+ * uses a specific version of a versioned library (`@useDependency`) is projected
+ * onto that dependency's version.
+ *
+ * @param program - The compiler program.
+ * @param serviceNs - The service namespace.
+ * @param operations - The service's operations, used when there is nothing to project.
+ * @param version - The API version to project onto, or `undefined` when unversioned.
+ * @returns The namespace and operations to emit.
+ */
+function projectService(
+  program: Program,
+  serviceNs: Namespace,
+  operations: HttpOperation[],
+  version: Version | undefined,
+): { namespace: Namespace; operations: HttpOperation[] } {
+  const mutators = getVersioningMutators(program, serviceNs);
+  const mutator =
+    mutators?.kind === "transient"
+      ? mutators.mutator
+      : mutators?.snapshots.find((s) => s.version.name === version?.name)
+          ?.mutator;
+  if (!mutator) return { namespace: serviceNs, operations };
+
+  const namespace = unsafe_mutateSubgraphWithNamespace(
+    program,
+    [mutator],
+    serviceNs,
+  ).type as Namespace;
+  // The unprojected service was already validated, and its diagnostics reported.
+  const [service] = getHttpService(program, namespace);
+  return { namespace, operations: service.operations };
+}
+
+/**
+ * Groups operations by the interface or namespace that declares them. The
+ * container itself is the key, not its simple name: two interfaces called `Items`
+ * in different child namespaces are different declarations, and must each reach
+ * the output-name reservation instead of being merged into one client.
+ *
+ * @param program - The compiler program.
+ * @param serviceNs - The service namespace, whose own operations take its name.
+ * @param operations - The operations to group.
+ * @returns The groups in declaration order, each with the client name it takes.
+ */
+function groupByContainer(
+  program: Program,
+  serviceNs: Namespace,
+  operations: HttpOperation[],
+): Map<
+  Interface | Namespace,
+  { name: string; container: Interface | Namespace; ops: HttpOperation[] }
+> {
+  const byContainer = new Map<
+    Interface | Namespace,
+    { name: string; container: Interface | Namespace; ops: HttpOperation[] }
+  >();
+  for (const op of operations) {
+    const c = op.container;
+    const name =
+      c.kind === "Interface"
+        ? (getClientName(program, c) ?? c.name)
+        : c === serviceNs
+          ? serviceNs.name
+          : c.name;
+    if (!byContainer.has(c))
+      byContainer.set(c, { name, container: c, ops: [] });
+    byContainer.get(c)!.ops.push(op);
+  }
+  return byContainer;
 }
 
 /**
@@ -1055,7 +1179,8 @@ function resolveTargetVersions(
   // Unversioned API: target-version is unsatisfiable.
   if (versions.length === 0) {
     if (targetValue) {
-      program.reportDiagnostic(
+      reportOnce(
+        program,
         createDiagnostic({
           code: "version-not-found",
           target: NoTarget,
@@ -1074,7 +1199,8 @@ function resolveTargetVersions(
   if (targetValue) {
     const found = versions.find((v) => v.value === targetValue);
     if (!found) {
-      program.reportDiagnostic(
+      reportOnce(
+        program,
         createDiagnostic({
           code: "version-not-found",
           target: NoTarget,

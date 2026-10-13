@@ -89,6 +89,11 @@ model Envelope<T> {
   data: T;
 }
 
+/** A generic model with a parameter no property uses, so every reference still passes two arguments. */
+model Tagged<T, Tag> {
+  value: T;
+}
+
 /** A generic model renamed for C#. */
 @clientName("Bundle")
 model Box<T> {
@@ -138,6 +143,31 @@ model Poodle extends Dog {
 
 model Cat extends Animal {
   kind: "cat";
+}
+
+/** A discriminated hierarchy with read-only properties, so its requests are filtered as a hierarchy. */
+@discriminator("type")
+model Vehicle {
+  @visibility(Lifecycle.Read) id: string;
+  type: string;
+  wheels: int32;
+}
+
+model Car extends Vehicle {
+  type: "car";
+  @visibility(Lifecycle.Read) vin: string;
+  seats: int32;
+}
+
+model Bike extends Vehicle {
+  type: "bike";
+}
+
+@route("/vehicles")
+interface Vehicles {
+  @post create(@body body: Vehicle): Vehicle;
+  @route("cars") @post createCar(@body body: Car): Car;
+  @route("optional") @post maybeCreate(@body body?: Vehicle): void;
 }
 
 @error
@@ -195,6 +225,7 @@ interface Misc {
   @route("vendor") @post vendor(@header contentType: "application/vnd.acme+json", @body body: Derived): Derived;
   @route("optional") @get optional(): Derived | void;
   @route("box") @get box(): Box<Derived>;
+  @route("tagged") @get tagged(): Tagged<Derived, string>;
   @route("upsert") @post upsert(): { @statusCode _: 200; @body body: Derived } | { @statusCode _: 201; @body body: Spread };
   @route("label") @get label(): { @header contentType: "application/json" | "text/plain"; @body body: string };
   @route("latin") @post latin(@header contentType: "text/plain; charset=iso-8859-1", @body body: string): void;
