@@ -49,6 +49,12 @@ enum Color {
   `dark-green`,
 }
 
+enum Magnitude {
+  one: 1,
+  huge: 100000000000000000000,
+  tiny: 0.5,
+}
+
 enum Level {
   low: 1,
   high: 2,
@@ -172,6 +178,8 @@ interface Misc {
   @route("cookies") @get cookies(@cookie session: string, @cookie flavour?: string): string;
   @route("lists") @get lists(@query tags?: string[], @query(#{ explode: true }) labels?: string[], @query(#{ explode: false }) csv?: string[]): string;
   @route("fail") @get fail(): string | ApiError;
+  @route("blob") @get blob(@query data: bytes, @header("X-Blob") token: bytes): string;
+  @route("magnitude") @get magnitude(): Magnitude;
 }
 
 @clientName("Pings")

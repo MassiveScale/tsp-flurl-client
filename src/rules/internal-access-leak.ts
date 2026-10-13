@@ -21,7 +21,7 @@ import { getAccess } from "../decorators.js";
 import { flattenProperties, findDiscriminatedRoot } from "../models.js";
 
 /**
- * Unwraps `Array<T>` / `Record<T>` / `Union` wrapping and the type arguments of
+ * Unwraps `Array<T>` / `Record<T>` / nullable `Union` wrapping and the type arguments of
  * template instances (mirroring how `mapType` in `../utils.ts` treats these
  * wrapper kinds) to find the named `Model`/`Enum` type(s) actually referenced.
  * Anonymous models, scalars, and
@@ -49,10 +49,15 @@ function resolveNamedTypes(type: Type): (Model | Enum)[] {
     }
     case "Enum":
       return type.name ? [type] : [];
-    case "Union":
-      return [...type.variants.values()].flatMap((variant) =>
-        resolveNamedTypes(variant.type),
-      );
+    case "Union": {
+      // Mirrors `mapUnion`: only a union with a single non-null variant (an optional
+      // `T | null`) is emitted as that type. A union of several variants is a
+      // `JsonElement` or `string` and names no model or enum in the signature.
+      const present = [...type.variants.values()]
+        .map((variant) => variant.type)
+        .filter((t) => !(t.kind === "Intrinsic" && t.name === "null"));
+      return present.length === 1 ? resolveNamedTypes(present[0]) : [];
+    }
     default:
       return [];
   }

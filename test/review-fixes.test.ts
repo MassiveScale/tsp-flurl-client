@@ -1,5 +1,7 @@
 import { ok, strictEqual } from "node:assert";
 import { describe, it } from "node:test";
+import { buildCsproj } from "../src/project.js";
+import { createRenderer } from "../src/renderer.js";
 import { escapeCsString, sanitizeVersionForNs } from "../src/utils.js";
 import { emit, emitWithDiagnostics, fileContent } from "./host.js";
 
@@ -190,19 +192,19 @@ describe("project file escaping", () => {
     ok(!csproj.includes("<Evil/>"), "A closing tag must not inject elements");
   });
 
-  it("escapes the target framework", async () => {
-    const results = await emit(
-      `${PREAMBLE}
-      @route("/items") interface Items { @get list(): string[]; }
-    `,
-      { "net-version": "net8.0&x" },
+  it("escapes the target framework", () => {
+    const csproj = buildCsproj(
+      "Acme",
+      "net8.0&x",
+      false,
+      "1.0.0",
+      "d",
+      undefined,
+      {},
+      createRenderer(),
     );
 
-    ok(
-      fileContent(results, ".csproj").includes(
-        "<TargetFramework>net8.0&amp;x</TargetFramework>",
-      ),
-    );
+    ok(csproj.includes("<TargetFramework>net8.0&amp;x</TargetFramework>"));
   });
 });
 

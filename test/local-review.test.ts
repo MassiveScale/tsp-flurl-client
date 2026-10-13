@@ -500,3 +500,152 @@ describe("@encode(string) where it does not apply", () => {
     });
   }
 });
+
+describe("all-versions on an unversioned API", () => {
+  it("emits the API as a normal unversioned unit instead of only a project file", async () => {
+    const results = await emit(
+      `${PREAMBLE}
+      model Widget { id: string; }
+      @route("/widgets") interface Widgets { @get read(): Widget; }
+    `,
+      { "all-versions": true },
+    );
+
+    ok(fileContent(results, "IWidgets.g.cs"));
+    ok(fileContent(results, "Widget.g.cs"));
+    ok(fileContent(results, "ModelMap.g.cs"));
+    ok(fileContent(results, ".csproj"));
+    ok(
+      !Object.keys(results).some((k) => /[\\/]v\d/.test(k)),
+      "No version folder should be created",
+    );
+  });
+});
+
+describe("additional-usings validation", () => {
+  const spec = `${PREAMBLE}
+    @route("/w") interface Widgets { @get read(): string; }
+  `;
+
+  for (const bad of [
+    "Acme.Shared-Models",
+    "Acme..Shared",
+    "class",
+    "A;B",
+    "A\nnamespace Evil",
+  ]) {
+    it(`rejects ${JSON.stringify(bad)}`, async () => {
+      const [results, diagnostics] = await emitWithDiagnostics(spec, {
+        "additional-usings": ["Acme.Shared", bad],
+      });
+
+      const messages = codes(diagnostics, "invalid-option");
+      strictEqual(messages.length, 1, messages.join(", "));
+      ok(messages[0].includes("additional-usings"));
+      strictEqual(Object.keys(results).length, 0, "Nothing is written");
+    });
+  }
+
+  it("accepts dotted namespaces", async () => {
+    const results = await emit(spec, {
+      "additional-usings": ["Acme.Shared", "Other"],
+    });
+
+    ok(fileContent(results, "IWidgets.g.cs").includes("using Acme.Shared;"));
+  });
+});
+
+describe("net-version validation", () => {
+  const spec = `${PREAMBLE}
+    @route("/w") interface Widgets { @get read(): string; }
+  `;
+
+  for (const bad of [
+    "net7.0",
+    "net6.0",
+    "netstandard2.0",
+    "netcoreapp3.1",
+    "net8",
+    "net8.0&x",
+    "net8.0;net7.0",
+  ]) {
+    it(`rejects ${JSON.stringify(bad)}`, async () => {
+      const [results, diagnostics] = await emitWithDiagnostics(spec, {
+        "net-version": bad,
+      });
+
+      const messages = codes(diagnostics, "invalid-option");
+      strictEqual(messages.length, 1, messages.join(", "));
+      ok(messages[0].includes("net-version"));
+      ok(messages[0].includes(".NET 8"));
+      strictEqual(Object.keys(results).length, 0, "Nothing is written");
+    });
+  }
+
+  it("rejects a value that names no framework", async () => {
+    const [, diagnostics] = await emitWithDiagnostics(spec, {
+      "net-version": " ; ",
+    });
+
+    const messages = codes(diagnostics, "invalid-option");
+    strictEqual(messages.length, 1);
+    ok(messages[0].includes("names no target framework"));
+  });
+
+  for (const good of [
+    "net8.0",
+    "net9.0",
+    "net10.0",
+    "net8.0;net10.0",
+    "net8.0-windows",
+  ]) {
+    it(`accepts ${JSON.stringify(good)}`, async () => {
+      const results = await emit(spec, { "net-version": good });
+
+      ok(fileContent(results, ".csproj").includes(good));
+    });
+  }
+});
+
+describe("numeric enum members beyond the long range", () => {
+  it("emits a double literal for a value a long cannot hold", async () => {
+    const results = await emit(`${PREAMBLE}
+      enum Magnitude { one: 1, huge: 100000000000000000000, tiny: 0.5 }
+      @route("/m") interface Ms { @get read(): Magnitude; }
+    `);
+
+    const enumSource = fileContent(results, "Magnitude.g.cs");
+    ok(enumSource.includes("1L"));
+    ok(enumSource.includes("100000000000000000000D"));
+    ok(!enumSource.includes("100000000000000000000L"));
+    ok(enumSource.includes("0.5D"));
+  });
+
+  it("emits a double literal when JavaScript prints the number in exponent form", async () => {
+    const results = await emit(`${PREAMBLE}
+      enum Magnitude { one: 1, huge: 1e21 }
+      @route("/m") interface Ms { @get read(): Magnitude; }
+    `);
+
+    const enumSource = fileContent(results, "Magnitude.g.cs");
+    ok(enumSource.includes("1e+21D"));
+  });
+});
+
+describe("bytes in a query, header, or path", () => {
+  it("renders them as base64 before treating them as a sequence", async () => {
+    const results = await emit(`${PREAMBLE}
+      @route("/b") interface Bs { @get read(@query data: bytes, @header("X-Blob") token: bytes): string; }
+    `);
+
+    const runtime = fileContent(results, "ClientRuntime.g.cs");
+    const bytes = runtime.indexOf(
+      "byte[] bytes => Convert.ToBase64String(bytes)",
+    );
+    ok(bytes > -1);
+    ok(
+      bytes < runtime.indexOf("IEnumerable sequence"),
+      "byte[] must be matched before the IEnumerable case",
+    );
+  });
+});

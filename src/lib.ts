@@ -56,14 +56,14 @@ const EmitterOptionsSchema: JSONSchemaType<EmitterOptions> = {
     "additional-usings": {
       type: "array",
       description:
-        "Extra `using` directives appended to every emitted file (endpoint clients, records, and request records). Useful when this service references models/enums declared outside its own TypeSpec namespace but already emitted elsewhere — e.g. a sibling emitter's shared namespace — so referencing them still compiles. Omitted when not set.",
+        "Extra `using` directives appended to every emitted file (endpoint clients, records, and request records). Useful when this service references models/enums declared outside its own TypeSpec namespace but already emitted elsewhere — e.g. a sibling emitter's shared namespace — so referencing them still compiles. Each entry must be a dotted C# namespace (e.g. 'Acme.Shared.Models'); an invalid entry is reported and nothing is emitted. Omitted when not set.",
       nullable: true,
       items: { type: "string" },
     },
     "net-version": {
       type: "string",
       description:
-        "Target .NET version(s) for the generated project file. Use a single TFM (e.g. 'net8.0') or a semicolon-separated list for multi-targeting (e.g. 'net8.0;net9.0'). Defaults to 'net8.0'.",
+        "Target .NET version(s) for the generated project file. Use a single TFM (e.g. 'net8.0') or a semicolon-separated list for multi-targeting (e.g. 'net8.0;net9.0'). Must be net8.0 or later. Defaults to 'net8.0'.",
       nullable: true,
     },
     "target-version": {

@@ -549,11 +549,16 @@ function gatherTemplateParams(
  * `Utf8JsonWriter.WriteNumberValue` overload and compares against the `double`
  * the reader produces.
  *
+ * A number outside the safe integer range is a `double` literal too.
+ *
  * @param value - The declared numeric enum value.
  * @returns The C# literal.
  */
 function csNumberLiteral(value: number): string {
-  return Number.isInteger(value) ? `${value}L` : `${value}D`;
+  // Only a safe integer is certain to fit a C# `long`; a larger one (or one JavaScript
+  // prints in exponent form) would be an invalid `L` literal, so it stays a double,
+  // which is how the converter reads numbers anyway.
+  return Number.isSafeInteger(value) ? `${value}L` : `${value}D`;
 }
 
 /**

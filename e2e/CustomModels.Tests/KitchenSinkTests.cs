@@ -167,4 +167,27 @@ public sealed class KitchenSinkTests
         error.Code.Should().Be(7);
         error.Message.Should().Be("nope");
     }
+
+    [TestMethod]
+    public async Task Bytes_in_a_query_or_header_are_base64_not_a_list_of_numbers()
+    {
+        var (client, handler) = Create();
+        handler.RespondJson("\"ok\"");
+
+        await client.Misc.BlobAsync([1, 2, 3, 255], [4, 5, 6]);
+
+        Uri.UnescapeDataString(handler.Last.Uri.Query).Should().Be("?data=AQID/w==");
+        handler.Last.Headers["X-Blob"].Should().Be("BAUG");
+    }
+
+    [TestMethod]
+    public async Task A_numeric_enum_with_a_value_beyond_long_still_reads_and_writes_by_value()
+    {
+        var (client, handler) = Create();
+        handler.RespondJson("100000000000000000000");
+
+        var magnitude = await client.Misc.MagnitudeAsync();
+
+        magnitude.Should().Be(Magnitude.Huge);
+    }
 }

@@ -97,6 +97,7 @@ internal static class ClientRuntime
         DateOnly dateOnly => dateOnly.ToString("O", CultureInfo.InvariantCulture),
         TimeOnly timeOnly => timeOnly.ToString("O", CultureInfo.InvariantCulture),
         TimeSpan timeSpan => XmlConvert.ToString(timeSpan),
+        byte[] bytes => Convert.ToBase64String(bytes),
         IFormattable formattable => formattable.ToString(null, CultureInfo.InvariantCulture),
         IEnumerable sequence => sequence.Cast<object?>().Select(ToQueryValue).ToList(),
         _ => value.ToString(),

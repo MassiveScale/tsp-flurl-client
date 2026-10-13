@@ -82,6 +82,7 @@ export async function $onEmit(
 ): Promise<void> {
   const { program, emitterOutputDir, options } = context;
   if (program.compilerOptions.noEmit) return;
+  if (!validateOptions(program, options)) return;
 
   if (options["clean-output-dir"] !== false) {
     await deleteGeneratedFiles(program.host, emitterOutputDir);
@@ -348,6 +349,88 @@ export function runDotnetFormat(
   }
 }
 
+/** The lowest .NET major version the generated runtime supports. */
+const MIN_DOTNET_MAJOR = 8;
+
+/**
+ * Splits the `net-version` option into its target framework monikers.
+ *
+ * @param raw - The option value; `net8.0` when omitted.
+ * @returns The trimmed, non-empty monikers in order.
+ */
+export function splitTargetFrameworks(raw: string | undefined): string[] {
+  return (raw ?? "net8.0")
+    .split(";")
+    .map((v) => v.trim())
+    .filter(Boolean);
+}
+
+/**
+ * Whether a target framework moniker is one the generated code can build for:
+ * `net8.0` or later, optionally with an OS suffix such as `net8.0-windows`. The
+ * runtime relies on System.Text.Json contract customization, which older targets
+ * (`net7.0`, `netstandard2.0`, `netcoreapp3.1`) do not provide.
+ *
+ * @param tfm - One moniker from the `net-version` option.
+ * @returns `true` when the moniker is supported.
+ */
+function isSupportedTargetFramework(tfm: string): boolean {
+  const match = /^net(\d+)\.\d+(-[A-Za-z0-9.]+)?$/.exec(tfm);
+  return match !== null && Number(match[1]) >= MIN_DOTNET_MAJOR;
+}
+
+/**
+ * Checks the options whose values are written straight into generated files, once
+ * for the whole program: every `additional-usings` entry becomes a `using`
+ * directive in every file (a typo would not compile, and a newline would inject
+ * arbitrary declarations), and every `net-version` moniker becomes a target
+ * framework in the project file. Reports an `invalid-option` diagnostic for each
+ * bad value.
+ *
+ * @param program - The compiler program, used to report diagnostics.
+ * @param options - The resolved emitter options.
+ * @returns `true` when the options are safe to emit with; `false` after reporting.
+ */
+function validateOptions(program: Program, options: EmitterOptions): boolean {
+  const problems: { option: string; value: string; reason: string }[] = [];
+
+  for (const using of options["additional-usings"] ?? []) {
+    if (!isCsNamespace(using)) {
+      problems.push({
+        option: "additional-usings",
+        value: using,
+        reason:
+          "is not a valid C# namespace; use dot-separated identifiers such as `Acme.Shared.Models`",
+      });
+    }
+  }
+
+  const frameworks = splitTargetFrameworks(options["net-version"]);
+  if (frameworks.length === 0) {
+    problems.push({
+      option: "net-version",
+      value: options["net-version"] ?? "",
+      reason: "names no target framework; use a value such as `net8.0`",
+    });
+  }
+  for (const tfm of frameworks) {
+    if (!isSupportedTargetFramework(tfm)) {
+      problems.push({
+        option: "net-version",
+        value: tfm,
+        reason: `is not supported; the generated client needs .NET ${MIN_DOTNET_MAJOR} or later (\`net${MIN_DOTNET_MAJOR}.0\`)`,
+      });
+    }
+  }
+
+  for (const format of problems) {
+    program.reportDiagnostic(
+      createDiagnostic({ code: "invalid-option", target: NoTarget, format }),
+    );
+  }
+  return problems.length === 0;
+}
+
 /**
  * Checks the names that become file paths and C# identifiers before anything is
  * written: a project name such as `../../Outside` would write the `.csproj` outside
@@ -452,11 +535,7 @@ async function emitService(
     )
   )
     return;
-  const rawNetVersion = options["net-version"] ?? "net8.0";
-  const netVersionParts = rawNetVersion
-    .split(";")
-    .map((v) => v.trim())
-    .filter(Boolean);
+  const netVersionParts = splitTargetFrameworks(options["net-version"]);
   const netVersion = netVersionParts.join(";");
   const isMultiTarget = netVersionParts.length > 1;
 
@@ -494,7 +573,10 @@ async function emitService(
   if (versionsToEmit === null) return; // diagnostic already reported
 
   // Use version subfolders only when explicitly emitting all versions.
-  const useVersionedFolders = options["all-versions"] === true;
+  // An unversioned API has no versions to put in folders, so it is emitted as the
+  // normal single unit even when `all-versions` is set.
+  const useVersionedFolders =
+    options["all-versions"] === true && versionsToEmit.length > 0;
 
   /**
    * Emits one self-contained set of output: the endpoint interfaces and clients,

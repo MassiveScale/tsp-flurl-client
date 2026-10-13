@@ -96,7 +96,31 @@ describe("internal-access-leak", () => {
       });
   });
 
-  it("flags a public interface operation whose union-wrapped return type is @access(Access.internal)", async () => {
+  it("flags a public interface operation whose nullable return type is @access(Access.internal)", async () => {
+    await tester
+      .expect(
+        `
+        import "@massivescale/tsp-flurl-client";
+        using MassiveScale.TspFlurlClient;
+
+        namespace TestApi;
+
+        @access(Access.internal)
+        model Secret {
+          value: string;
+        }
+
+        interface Widgets {
+          read(): Secret | null;
+        }
+      `,
+      )
+      .toEmitDiagnostics({
+        code: "@massivescale/tsp-flurl-client/internal-access-leak",
+      });
+  });
+
+  it("does not flag a multi-variant union, which is emitted as JsonElement and names no model", async () => {
     await tester
       .expect(
         `
@@ -119,9 +143,7 @@ describe("internal-access-leak", () => {
         }
       `,
       )
-      .toEmitDiagnostics({
-        code: "@massivescale/tsp-flurl-client/internal-access-leak",
-      });
+      .toEmitDiagnostics([]);
   });
 
   it("flags a public model whose property type is @access(Access.internal)", async () => {
