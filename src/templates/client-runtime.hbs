@@ -230,14 +230,36 @@ internal static class ClientRuntime
     /// <param name="body">The value to send.</param>
     /// <param name="contentType">The JSON media type the operation declares.</param>
     /// <returns>The request content.</returns>
-    internal static HttpContent JsonContent(IFlurlRequest request, object? body, string contentType)
+    internal static HttpContent JsonContent(IFlurlRequest request, object? body, string contentType) =>
+        EncodedContent(request.Settings.JsonSerializer.Serialize(body!), contentType);
+
+    /// <summary>
+    /// Reads a response declared as both JSON and plain text (for example a <c>string</c> that may
+    /// arrive as <c>application/json</c> or <c>text/plain</c>) according to the <c>Content-Type</c>
+    /// the server actually sent. A response with no <c>Content-Type</c> is read as JSON.
+    /// </summary>
+    /// <typeparam name="T">The declared type.</typeparam>
+    /// <param name="response">The response to read.</param>
+    /// <returns>The value.</returns>
+    internal static async Task<T> ReadJsonOrTextAsync<T>(IFlurlResponse response)
     {
-        var content = new CapturedJsonContent(request.Settings.JsonSerializer.Serialize(body!));
-        var mediaType = MediaTypeHeaderValue.Parse(contentType);
-        mediaType.CharSet ??= "utf-8";
-        content.Headers.ContentType = mediaType;
-        return content;
+        var mediaType = response.ResponseMessage.Content.Headers.ContentType?.MediaType;
+        if (mediaType is null || IsJsonMediaType(mediaType))
+        {
+            return (await response.GetJsonAsync<T>().ConfigureAwait(false))!;
+        }
+
+        return FromText<T>(await response.GetStringAsync().ConfigureAwait(false));
     }
+
+    /// <summary>
+    /// Whether a media type is one JSON document: <c>application/json</c>, <c>text/json</c>, or a
+    /// structured <c>+json</c> type.
+    /// </summary>
+    private static bool IsJsonMediaType(string mediaType) =>
+        mediaType.Equals("application/json", StringComparison.OrdinalIgnoreCase)
+        || mediaType.Equals("text/json", StringComparison.OrdinalIgnoreCase)
+        || mediaType.EndsWith("+json", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
     /// Wraps raw bytes as a request body.
@@ -259,7 +281,27 @@ internal static class ClientRuntime
     /// <param name="contentType">The media type, e.g. <c>text/plain</c>.</param>
     /// <returns>The request content.</returns>
     internal static HttpContent TextContent(string text, string contentType) =>
-        new StringContent(text, Encoding.UTF8, contentType);
+        EncodedContent(text, contentType);
+
+    /// <summary>
+    /// Encodes text with the charset its media type declares (UTF-8 when it declares none, which
+    /// is then added to the header), so a declaration such as <c>text/plain; charset=utf-16</c> is
+    /// honoured instead of rejected.
+    /// </summary>
+    /// <param name="text">The text to send.</param>
+    /// <param name="contentType">The full media type, possibly with parameters.</param>
+    /// <returns>The request content.</returns>
+    /// <exception cref="ArgumentException">The declared charset is not one .NET supports.</exception>
+    private static HttpContent EncodedContent(string text, string contentType)
+    {
+        var mediaType = MediaTypeHeaderValue.Parse(contentType);
+        var charSet = mediaType.CharSet?.Trim('"');
+        var encoding = string.IsNullOrEmpty(charSet) ? Encoding.UTF8 : Encoding.GetEncoding(charSet);
+        if (string.IsNullOrEmpty(charSet)) mediaType.CharSet = encoding.WebName;
+        var content = new ByteArrayContent(encoding.GetBytes(text));
+        content.Headers.ContentType = mediaType;
+        return content;
+    }
 
     /// <summary>
     /// Returns the wire name of an enum value, honouring <see cref="EnumMemberAttribute"/>.

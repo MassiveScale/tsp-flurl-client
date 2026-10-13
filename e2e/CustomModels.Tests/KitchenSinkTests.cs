@@ -296,4 +296,54 @@ public sealed class KitchenSinkTests
         handler.Last.Body.Should().Be("2024-01-02T03:04:05.0000000+00:00");
         handler.Last.ContentType.Should().StartWith("text/plain");
     }
+
+    [TestMethod]
+    public async Task Different_bodies_per_success_status_are_returned_as_whichever_arrived()
+    {
+        var (client, handler) = Create();
+
+        handler.RespondJson("""{"id":"1","name":"updated"}""");
+        var updated = await client.Misc.UpsertAsync();
+        updated.Deserialize<Derived>(new JsonSerializerOptions(JsonSerializerDefaults.Web))!.Name.Should().Be("updated");
+
+        handler.RespondJson("""{"id":"2","extra":"created"}""", System.Net.HttpStatusCode.Created);
+        var created = await client.Misc.UpsertAsync();
+        created.Deserialize<Spread>(new JsonSerializerOptions(JsonSerializerDefaults.Web))!.Extra.Should().Be("created");
+    }
+
+    [TestMethod]
+    public async Task A_value_declared_as_json_or_text_is_read_by_the_content_type_that_arrives()
+    {
+        var (client, handler) = Create();
+
+        handler.RespondText("plain words");
+        (await client.Misc.LabelAsync()).Should().Be("plain words");
+
+        handler.RespondJson("\"quoted\"");
+        (await client.Misc.LabelAsync()).Should().Be("quoted");
+    }
+
+    [TestMethod]
+    public async Task Text_is_encoded_with_the_charset_its_media_type_declares()
+    {
+        var (client, handler) = Create();
+
+        await client.Misc.LatinAsync("café");
+
+        handler.Last.BodyBytes.Should().Equal(0x63, 0x61, 0x66, 0xE9);
+        handler.Last.ContentType.Should().Be("text/plain; charset=iso-8859-1");
+    }
+
+    [TestMethod]
+    public async Task A_uuid_body_is_a_guid_both_ways()
+    {
+        var (client, handler) = Create();
+        var id = Guid.Parse("0f8fad5b-d9cb-469f-a165-70867728950e");
+
+        handler.RespondText("0f8fad5b-d9cb-469f-a165-70867728950e");
+        (await client.Text.IdAsync()).Should().Be(id);
+
+        await client.Text.SetIdAsync(id);
+        handler.Last.Body.Should().Be("0f8fad5b-d9cb-469f-a165-70867728950e");
+    }
 }

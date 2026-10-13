@@ -134,8 +134,12 @@ export interface EnumView {
   expectedToken: string;
 }
 
-/** How a request or response payload travels on the wire. */
-export type PayloadKind = "json" | "bytes" | "text";
+/**
+ * How a request or response payload travels on the wire: JSON, raw bytes, plain
+ * text, or (for a response declared as both JSON and text) whichever the server's
+ * `Content-Type` says arrived.
+ */
+export type PayloadKind = "json" | "bytes" | "text" | "negotiated";
 
 /** The request body of an endpoint method. */
 export interface BodyView {
@@ -554,6 +558,10 @@ function renderRequestBody(m: MethodView, responseType: string): string[] {
   } else if (m.response?.kind === "text") {
     lines.push(
       `${pad}return ClientRuntime.FromText<${responseType}>(await flurlResponse.GetStringAsync().ConfigureAwait(false));`,
+    );
+  } else if (m.response?.kind === "negotiated") {
+    lines.push(
+      `${pad}return await ClientRuntime.ReadJsonOrTextAsync<${responseType}>(flurlResponse).ConfigureAwait(false);`,
     );
   }
   return lines;

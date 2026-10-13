@@ -48,7 +48,6 @@ const HELPER_USINGS: Record<HelperName, string[]> = {
   [CLIENT_RUNTIME_HELPER_NAME]: [
     "Flurl.Http",
     "Flurl.Http.Configuration",
-    "Flurl.Http.Content",
     "System",
     "System.Collections",
     "System.Collections.Generic",
@@ -62,6 +61,7 @@ const HELPER_USINGS: Record<HelperName, string[]> = {
     "System.Text.Json",
     "System.Text.Json.Serialization",
     "System.Text.Json.Serialization.Metadata",
+    "System.Threading.Tasks",
     "System.Xml",
   ],
 };

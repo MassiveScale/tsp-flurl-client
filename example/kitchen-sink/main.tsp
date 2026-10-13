@@ -195,6 +195,9 @@ interface Misc {
   @route("vendor") @post vendor(@header contentType: "application/vnd.acme+json", @body body: Derived): Derived;
   @route("optional") @get optional(): Derived | void;
   @route("box") @get box(): Box<Derived>;
+  @route("upsert") @post upsert(): { @statusCode _: 200; @body body: Derived } | { @statusCode _: 201; @body body: Spread };
+  @route("label") @get label(): { @header contentType: "application/json" | "text/plain"; @body body: string };
+  @route("latin") @post latin(@header contentType: "text/plain; charset=iso-8859-1", @body body: string): void;
 }
 
 /** Scalar bodies, which TypeSpec sends as text/plain. */
@@ -210,6 +213,8 @@ interface Text {
   @route("on") @get on(): boolean;
   @route("either") @get either(): int32 | string;
   @route("maybe") @get maybe(): int32 | void;
+  @route("id") @get id(): { @body @format("uuid") id: string };
+  @route("id") @put setId(@body @format("uuid") id: string): void;
 }
 
 @clientName("Pings")

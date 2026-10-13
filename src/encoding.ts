@@ -5,7 +5,6 @@
 
 import {
   getEncode,
-  NoTarget,
   type ModelProperty,
   type Program,
   type Scalar,
@@ -83,6 +82,43 @@ export function classifyEncoding(
 }
 
 /**
+ * The declarations already warned about, per program. A model, parameter, or body
+ * is visited once for every API version emitted, and its warning belongs to the
+ * declaration, so it is reported only the first time.
+ */
+const reported = new WeakMap<Program, WeakSet<ModelProperty>>();
+
+/**
+ * Reports `unsupported-encoding` for a declaration, once.
+ *
+ * @param program - The compiler program, used to report.
+ * @param prop - The property, parameter, or body property.
+ * @param kind - What it is, for the message.
+ * @param encoding - The encoding's name.
+ */
+export function reportUnsupportedEncoding(
+  program: Program,
+  prop: ModelProperty,
+  kind: "property" | "parameter" | "body",
+  encoding: string,
+): void {
+  let seen = reported.get(program);
+  if (!seen) {
+    seen = new WeakSet();
+    reported.set(program, seen);
+  }
+  if (seen.has(prop)) return;
+  seen.add(prop);
+  program.reportDiagnostic(
+    createDiagnostic({
+      code: "unsupported-encoding",
+      target: prop,
+      format: { kind, name: prop.name, encoding },
+    }),
+  );
+}
+
+/**
  * Reports a warning when a property or parameter uses an `@encode` the client
  * cannot honour, because its value would otherwise travel in the wrong format with
  * no sign of it. The default wire format is used.
@@ -99,13 +135,7 @@ export function checkEncoding(
 ): EncodingSupport {
   const { support, encoding } = classifyEncoding(program, prop);
   if (support === "unsupported") {
-    program.reportDiagnostic(
-      createDiagnostic({
-        code: "unsupported-encoding",
-        target: prop ?? NoTarget,
-        format: { kind, name: prop.name, encoding: encoding ?? "" },
-      }),
-    );
+    reportUnsupportedEncoding(program, prop, kind, encoding ?? "");
   }
   return support;
 }

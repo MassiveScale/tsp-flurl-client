@@ -39,11 +39,16 @@ import {
 } from "./renderer.js";
 import { getClientName, getAccess } from "./decorators.js";
 import { checkName, MemberScope } from "./names.js";
-import { checkEncoding } from "./encoding.js";
+import {
+  checkEncoding,
+  classifyEncoding,
+  reportUnsupportedEncoding,
+} from "./encoding.js";
 import { createDiagnostic } from "./lib.js";
 import {
   mapType,
   mapPropertyType,
+  builtinScalarName,
   findModelSlot,
   capitalize,
   toCsMethodName,
@@ -647,7 +652,13 @@ function buildMethodView(
     }
 
     const contentTypes = bodyInfo.contentTypes;
-    const kind = payloadKind(contentTypes, bodyType);
+    // A request whose payload cannot be sent was reported by findUnsupportedPayload.
+    const kind = classifyPayload(
+      contentTypes,
+      bodyInfo.type,
+      "request",
+    ) as PayloadKind;
+    checkBodyEncoding(program, bodyInfo, kind);
     body = {
       variable: "body",
       kind,
@@ -755,21 +766,69 @@ function isTextual(type: Type): boolean {
 }
 
 /**
- * Decides how a payload travels on the wire. A body is JSON when it declares no
- * media type or at least one JSON media type; otherwise it is raw bytes, or plain
- * text for any other value (a string, number, boolean, date, ...). A non-JSON
- * payload with no text form is reported by {@link findUnsupportedPayload} before
- * this is reached.
+ * Whether a payload is raw bytes (the `bytes` scalar, or one derived from it).
+ *
+ * @param type - The payload's TypeSpec type.
+ * @returns `true` for bytes.
+ */
+function isBytes(type: Type): boolean {
+  return type.kind === "Scalar" && builtinScalarName(type) === "bytes";
+}
+
+/**
+ * Decides how a payload travels, from its TypeSpec type and the media types it
+ * declares.
+ *
+ * - Only JSON media types (or none): `json`.
+ * - Only other media types: `bytes` for bytes, `text` for anything with a plain-text
+ *   form (see {@link isTextual}), and `unsupported` for a model, list, or dictionary.
+ * - Both: a request picks JSON, since the client chooses what it sends. A response is
+ *   whatever the server chooses, so a textual value is `negotiated` (read by the
+ *   `Content-Type` that arrives) and anything else is `unsupported`, because a model
+ *   that may arrive as XML cannot be read as JSON.
  *
  * @param contentTypes - The media types the payload declares; empty means unspecified.
- * @param csType - The C# type the payload maps to.
- * @returns `json`, `bytes`, or `text`.
+ * @param type - The payload's TypeSpec type.
+ * @param direction - Whether the client sends or receives the payload.
+ * @returns How the payload travels, or `unsupported`.
  */
-function payloadKind(contentTypes: string[], csType: string): PayloadKind {
-  if (contentTypes.length === 0 || contentTypes.some(isJsonMediaType)) {
-    return "json";
+function classifyPayload(
+  contentTypes: string[],
+  type: Type,
+  direction: "request" | "response",
+): PayloadKind | "unsupported" {
+  const json = contentTypes.length === 0 || contentTypes.some(isJsonMediaType);
+  const other = contentTypes.some((c) => !isJsonMediaType(c));
+  if (json && (!other || direction === "request")) return "json";
+  if (isBytes(type)) return json ? "unsupported" : "bytes";
+  if (!isTextual(type)) return "unsupported";
+  return json ? "negotiated" : "text";
+}
+
+/**
+ * Reports a body whose `@encode` cannot be produced: one the client cannot write at
+ * all, or a number encoded as a string outside plain text (a standalone body has no
+ * property to carry `JsonNumberHandling`). As plain text a number is already a
+ * string, so that case is fine.
+ *
+ * @param program - The compiler program, used to report diagnostics.
+ * @param body - The request or response body.
+ * @param kind - How the body travels.
+ */
+function checkBodyEncoding(
+  program: Program,
+  body: HttpPayloadBody,
+  kind: PayloadKind,
+): void {
+  const prop = body.bodyKind === "single" ? body.property : undefined;
+  if (!prop) return;
+  const { support, encoding } = classifyEncoding(program, prop);
+  if (
+    support === "unsupported" ||
+    (support === "number-as-string" && kind !== "text")
+  ) {
+    reportUnsupportedEncoding(program, prop, "body", encoding ?? "");
   }
-  return csType.startsWith("byte[]") ? "bytes" : "text";
 }
 
 /** A resolved success response: its renderer view and, when customizable, its generic overload. */
@@ -781,9 +840,16 @@ interface ResolvedResponse {
 }
 
 /**
- * Determines how an operation's result is read from its responses: the body of
- * the first success (2xx) response, together with the generic overload when that
- * body contains a model a caller can replace with a derived type.
+ * Determines how an operation's result is read from its success (2xx) responses,
+ * together with the generic overload when the body contains a model a caller can
+ * replace with a derived type.
+ *
+ * Every success response is considered, not just the first: when they carry
+ * different bodies (a 200 `Item` and a 201 `CreatedItem`) the result is a
+ * `JsonElement` holding whichever arrived, as for a union of models, rather than
+ * every response being read as the first one's type. When some success response
+ * has no body (`Widget | void`), the result is nullable. Combinations that cannot be
+ * read correctly were reported by {@link findUnsupportedPayload}.
  *
  * @param responses - The operation's HTTP responses.
  * @param program - The compiler program.
@@ -799,6 +865,9 @@ function resolveResponse(
   enums: Map<string, Enum>,
   usedHelpers: UsedHelpers,
 ): ResolvedResponse | undefined {
+  const bodies = successBodies(responses);
+  if (bodies.length === 0) return undefined;
+
   // `Widget | void` is a 200 with a body and a 204 without one, so the result is
   // absent whenever the server takes the empty path, and the C# type says so.
   const mayBeEmpty = responses.some(
@@ -809,52 +878,69 @@ function resolveResponse(
   const optional = (csType: string): string =>
     mayBeEmpty && !csType.endsWith("?") ? `${csType}?` : csType;
 
+  // Every body is mapped, so the models of each are generated and can be read from
+  // the JsonElement with Deserialize<T>.
+  const mapped = bodies.map((body) =>
+    resolveBodyType(body, program, models, enums, usedHelpers),
+  );
+  if (new Set(bodies.map((body) => body.type)).size > 1) {
+    return { view: { kind: "json", type: optional("JsonElement") } };
+  }
+
+  const body = bodies[0];
+  const kind = classifyPayload(
+    bodies.flatMap((b) => b.contentTypes),
+    body.type,
+    "response",
+  ) as PayloadKind;
+  checkBodyEncoding(program, body, kind);
+
+  const view: ResponseView = { kind, type: optional(mapped[0]) };
+  const slot =
+    kind === "json"
+      ? findModelSlot(body.type, program, models, enums, usedHelpers)
+      : undefined;
+  if (!slot) return { view };
+
+  const responseType = optional(slot.wrap("TResult"));
+  return {
+    view,
+    generic: {
+      constraint: slot.constraint,
+      returnType: `Task<${responseType}>`,
+      responseType,
+    },
+  };
+}
+
+/** A body that is a single payload, which is every body that reaches the mapping. */
+type SingleBody = HttpPayloadBody & { bodyKind: "single" };
+
+/**
+ * Lists the bodies of an operation's success (2xx) responses, leaving out
+ * responses with no body.
+ *
+ * @param responses - The operation's HTTP responses.
+ * @returns The single-payload bodies, in declaration order.
+ */
+function successBodies(responses: HttpOperationResponse[]): SingleBody[] {
+  const bodies: SingleBody[] = [];
   for (const resp of responses) {
     if (!isSuccessStatus(resp.statusCodes)) continue;
-
     for (const content of resp.responses) {
-      if (!content.body) continue;
-      const mapped = resolveBodyType(
-        content.body,
-        program,
-        models,
-        enums,
-        usedHelpers,
-      );
-      if (mapped === "void") continue;
-
-      const type = optional(mapped);
-      const kind = payloadKind(content.body.contentTypes, mapped);
-      const view: ResponseView = { kind, type };
-      const slot =
-        kind === "json" && content.body.bodyKind === "single"
-          ? findModelSlot(
-              content.body.type,
-              program,
-              models,
-              enums,
-              usedHelpers,
-            )
-          : undefined;
-      if (!slot) return { view };
-
-      const responseType = optional(slot.wrap("TResult"));
-      return {
-        view,
-        generic: {
-          constraint: slot.constraint,
-          returnType: `Task<${responseType}>`,
-          responseType,
-        },
-      };
+      const body = content.body;
+      if (body?.bodyKind !== "single") continue;
+      if (body.type.kind === "Intrinsic" && body.type.name === "void") continue;
+      bodies.push(body);
     }
   }
-  return undefined;
+  return bodies;
 }
 
 /**
- * Resolves the C# type of an HTTP payload body: the mapped type for a single
- * body, or `object` for multipart/other non-single bodies.
+ * Resolves the C# type of an HTTP payload body. A body declared by a property
+ * (`@body @format("uuid") id: string`) is mapped through that property, so its
+ * `@format` and `@encode` apply as they would to any other property.
  *
  * @param body - The HTTP payload body.
  * @param program - The compiler program.
@@ -864,16 +950,15 @@ function resolveResponse(
  * @returns The C# type expression for the body.
  */
 function resolveBodyType(
-  body: HttpPayloadBody,
+  body: SingleBody,
   program: Program,
   models: Map<string, Model>,
   enums: Map<string, Enum>,
   usedHelpers: UsedHelpers,
 ): string {
-  if (body.bodyKind === "single") {
-    return mapType(body.type, program, models, enums, usedHelpers);
-  }
-  return "object";
+  return body.property?.type === body.type
+    ? mapPropertyType(body.property, program, models, enums, usedHelpers)
+    : mapType(body.type, program, models, enums, usedHelpers);
 }
 
 /**
@@ -902,13 +987,11 @@ function resolveBodyParamType(
   usedHelpers: UsedHelpers,
 ): string {
   if (body.bodyKind !== "single") return "object";
-  const mapped = mapBodyParamType(
-    body.type,
-    program,
-    models,
-    enums,
-    usedHelpers,
-  );
+  // A scalar body declared by a property carries that property's `@format` and `@encode`.
+  const mapped =
+    body.type.kind === "Scalar" && body.property?.type === body.type
+      ? mapPropertyType(body.property, program, models, enums, usedHelpers)
+      : mapBodyParamType(body.type, program, models, enums, usedHelpers);
   const mergePatch = `${MERGE_PATCH_HELPER_NAME}<`;
   return mapped.startsWith(mergePatch)
     ? `${MERGE_PATCH_INTERFACE_NAME}<${mapped.slice(mergePatch.length)}`
@@ -973,9 +1056,15 @@ function isSuccessStatus(
 
 /**
  * Finds a request or success-response body the client cannot send or read
- * correctly. A multipart body, a file (`Http.File`) body, or a model declared only
- * with a non-JSON media type would otherwise be written as JSON, which is not what
- * the API expects, with no sign of it.
+ * correctly, which would otherwise be sent or read in the wrong format with no sign
+ * of it:
+ *
+ * - A multipart or file (`Http.File`) body.
+ * - A model, list, or dictionary declared only with non-JSON media types.
+ * - A response that may arrive in a media type the client cannot read as its type,
+ *   such as a model declared as `application/json` or `application/xml`.
+ * - Success responses with different bodies that are not all JSON, since the result
+ *   can only be held as a `JsonElement`.
  *
  * @param op - The HTTP operation.
  * @returns A description of the unsupported feature, or `undefined` when all is supported.
@@ -987,44 +1076,40 @@ function findUnsupportedPayload(op: HttpOperation): string | undefined {
       ? "A multipart request body"
       : "A file request body (Http.File)";
   }
-  if (body && isUnsupportedMediaType(body.contentTypes, body.type)) {
+  if (
+    body &&
+    classifyPayload(body.contentTypes, body.type, "request") === "unsupported"
+  ) {
     return `A request body sent as ${body.contentTypes.join(", ")} that is not bytes or text`;
   }
   for (const response of op.responses) {
     if (!isSuccessStatus(response.statusCodes)) continue;
     for (const content of response.responses) {
-      if (!content.body) continue;
-      if (content.body.bodyKind !== "single") {
+      if (content.body && content.body.bodyKind !== "single") {
         return content.body.bodyKind === "multipart"
           ? "A multipart response body"
           : "A file response body (Http.File)";
       }
-      if (
-        isUnsupportedMediaType(content.body.contentTypes, content.body.type)
-      ) {
-        return `A response body sent as ${content.body.contentTypes.join(", ")} that is not bytes or text`;
-      }
     }
   }
-  return undefined;
-}
 
-/**
- * Whether a payload declares only non-JSON media types (`application/xml`,
- * `application/x-www-form-urlencoded`, `application/x-ndjson`, ...) but has no
- * plain-text form (a model, list, or dictionary). The client could only write and
- * read such a value as JSON, which is not what the API expects, so it is reported
- * instead.
- *
- * @param contentTypes - The media types the payload declares.
- * @param type - The payload's TypeSpec type.
- * @returns `true` when the payload cannot be sent or read correctly.
- */
-function isUnsupportedMediaType(contentTypes: string[], type: Type): boolean {
-  if (contentTypes.length === 0 || contentTypes.some(isJsonMediaType)) {
-    return false;
+  const bodies = successBodies(op.responses);
+  const kinds = bodies.map((b) =>
+    classifyPayload(b.contentTypes, b.type, "response"),
+  );
+  const unreadable = bodies.find((_, i) => kinds[i] === "unsupported");
+  if (unreadable) {
+    return unreadable.contentTypes.some(isJsonMediaType)
+      ? `A response body that may arrive as ${unreadable.contentTypes.join(" or ")}, which the client cannot read in every one of them`
+      : `A response body sent as ${unreadable.contentTypes.join(", ")} that is not bytes or text`;
   }
-  return !isTextual(type);
+  if (
+    new Set(bodies.map((b) => b.type)).size > 1 &&
+    kinds.some((kind) => kind !== "json")
+  ) {
+    return "Success responses with different bodies that are not all JSON";
+  }
+  return undefined;
 }
 
 /**
