@@ -49,7 +49,7 @@ options:
 | `abstract-discriminated-base` | `boolean`  | `true`                                        | When `true` (default), models in a `@discriminator` hierarchy with no concrete wire shape of their own (the discriminated base, and pass-through grouping models) are emitted as `abstract record`. Set to `false` to keep them concrete/instantiable.                                                                                                                                                           |
 | `dotnet-format`               | `boolean`  | `true`                                        | When `true`, run `dotnet format --no-restore` on the output directory after emitting. Set to `false` to skip formatting (e.g. in CI pipelines where formatting is handled separately).                                                                                                                                                                                                                           |
 | `nuget-package-id`            | `string`   | —                                             | NuGet `<PackageId>`.                                                                                                                                                                                                                                                                                                                                                                                             |
-| `nuget-version`               | `string`   | Auto-derived from TypeSpec version            | NuGet `<Version>`. When not set, derived from the targeted TypeSpec API version: parsed as semver if possible (e.g. `v2.1` → `2.1.0`), otherwise formatted as CalVer (`YYYY.MM.DD`).                                                                                                                                                                                                                             |
+| `nuget-version`               | `string`   | Auto-derived from TypeSpec version            | NuGet `<Version>`. When not set, derived from the targeted TypeSpec API version: parsed as semver if possible (e.g. `v2.1` → `2.1.0`, `1.2-preview.1` → `1.2.0-preview.1`), otherwise formatted as CalVer (`YYYY.MM.DD`). A pre-release or build suffix is kept only when it is valid SemVer 2, so `1.2-preview build` becomes CalVer rather than an invalid package version.                                    |
 | `nuget-authors`               | `string`   | —                                             | NuGet `<Authors>` (comma-separated).                                                                                                                                                                                                                                                                                                                                                                             |
 | `nuget-description`           | `string`   | `Flurl client for the {namespace} API`        | NuGet `<Description>`.                                                                                                                                                                                                                                                                                                                                                                                           |
 | `nuget-title`                 | `string`   | Value of `client-name` (if set), else omitted | NuGet `<Title>`.                                                                                                                                                                                                                                                                                                                                                                                                 |
@@ -119,6 +119,8 @@ interface SecretEndpoints {
 ```
 
 An internal interface is an internal property of the aggregate client, and the aggregate client's constructor becomes internal whenever any endpoint is internal (a public constructor cannot take an internal type).
+
+`@access` and `@clientName` also work on a generic model (`@access(Access.internal) model Page<T>`). TypeSpec runs a decorator only on each use of a template (`Page<string>`), never on the declaration, so the emitter reads the declaration's own decorators when it generates the generic `Page<T>` record.
 
 #### `internal-access-leak` lint rule
 
@@ -366,6 +368,8 @@ List<MyDog> dogs = await api.Pets.ListAsync<MyDog>();
 | A custom type that does not derive from the model, or is abstract               | Rejected with `ArgumentException` when registered.                                                                              |
 | A mapped discriminated subtype is read directly (`ReadAsync` of `Dog`)          | The map applies when it is read through its base type. Use the generic overload to read it directly.                            |
 | Request bodies with hidden properties (`@visibility`)                           | The request type is a record of its own (`WidgetCreateRequest`). Derive from that to add properties to the request.             |
+| Two operations send the same model with different visible properties            | Each gets its own record: `WidgetCreateRequest`, then `WidgetCreateDraftRequest`, then `Widget{Interface}CreateDraftRequest`.   |
+| A model set on a `MergePatch<T>` (`Set(g => g.Owner, new MyOwner { ... })`)     | It is written as its runtime type, like a request body, so the derived type's extra properties are sent.                        |
 
 ## Requirements
 
@@ -381,7 +385,10 @@ List<MyDog> dogs = await api.Pets.ListAsync<MyDog>();
 - Unions map to what is on the wire, since C# has no union type: `T | null` is `T?`; a union whose variants are all strings (literals, `string`, string enums) is `string`; any other union, such as models, or a string and a number, is `System.Text.Json.JsonElement`, which holds whatever the server sends (read it with `Deserialize<T>()`). A response that is a union of models is therefore a `JsonElement` rather than a `string` that would fail to deserialize. A literal type maps to its underlying type (`"dog"` is `string`, `5` is `int`).
 - `@format("uuid")` on a string, whether it is on a property, a parameter, or a scalar, maps to `Guid`, and `@format("uri")` or `@format("url")` maps to `Uri`.
 - Names that become C# string literals (property, query and header names, discriminator and enum values, media types) are escaped, and values written into the generated `.csproj` (NuGet metadata, namespace, target framework) are XML-escaped.
-- A `bytes` body or response is sent and read raw, as is a `string` body or response with a non-JSON media type (TypeSpec's default for `string` is `text/plain`).
+- A `bytes` body or response is sent and read raw.
+- A scalar body or response (`string`, `int32`, `boolean`, `utcDateTime`, `duration`, `decimal`, ...) is `text/plain` in TypeSpec unless declared otherwise, so it is sent as its wire text (`42`, `true`, `2024-01-02T03:04:05.0000000+00:00`, `PT1H`) and read back by parsing that text. A union of scalars read as text is a `JsonElement` holding the number, boolean, or string that arrived. Text that is not a valid value throws `FormatException`.
+- A JSON body is sent as `application/json` when the operation accepts it, and otherwise with the JSON media type it declares (`application/vnd.acme+json`, `application/problem+json`), through the same serializer and model map.
+- When an operation has a success response without a body (`Widget | void` is a 200 or a 204), the method returns a nullable type (`Widget?`, `TResult?`, `int?`), which is `null` when no body arrives.
 - Versioning is applied to everything that is emitted: an operation, a parameter, a model property, an enum member, a `@discriminator` subtype, and a whole model or enum is left out of any version that does not have it (`@added` / `@removed`).
 - A `Content-Type` header declared as an operation parameter is not exposed; the body's media type decides it.
 
@@ -448,6 +455,8 @@ A request or success response that cannot be sent or read correctly is reported 
 
 - Multipart request or response bodies (`@multipartBody`).
 - File bodies (`Http.File`).
+- A model, list, or dictionary declared only with a non-JSON media type (`application/xml`, `application/x-www-form-urlencoded`, `application/x-ndjson`, ...). The client can only write and read it as JSON. A scalar with a non-JSON media type is sent as text, as above.
+- Two operations that send the same model with different visible properties, when every request record name the emitter tries is already a different record. Reported as `name-collision`; rename one operation with `@clientName`.
 - A `@discriminator` model that is also a variant of another discriminated model (a nested discriminator). `System.Text.Json` can resolve only one discriminator per hierarchy: reading through the base type would return the wrong subtype, and writing a subtype would fail or omit a discriminator. Reported as `unsupported-nested-discriminator`. A grouping model with no discriminator of its own (`model Dog extends Animal {}`) is fine.
 - `@encode` values other than those in the table above (reported as a warning).
 - Streaming responses such as server-sent events are read in full before the call returns.

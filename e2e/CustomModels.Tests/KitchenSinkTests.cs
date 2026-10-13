@@ -190,4 +190,110 @@ public sealed class KitchenSinkTests
 
         magnitude.Should().Be(Magnitude.Huge);
     }
+
+    [TestMethod]
+    public async Task A_vendor_json_body_is_sent_with_its_declared_media_type()
+    {
+        var (client, handler) = Create();
+        handler.RespondJson("""{"id":"1","name":"n"}""");
+
+        await client.Misc.VendorAsync(new Derived { Id = "1", Name = "n" });
+
+        handler.Last.ContentType.Should().StartWith("application/vnd.acme+json");
+        using var sent = JsonDocument.Parse(handler.Last.Body!);
+        sent.RootElement.GetProperty("name").GetString().Should().Be("n");
+    }
+
+    [TestMethod]
+    public async Task An_optional_response_body_is_null_when_the_server_sends_no_content()
+    {
+        var (client, _) = Create();
+
+        var result = await client.Misc.OptionalAsync();
+
+        result.Should().BeNull();
+    }
+
+    [TestMethod]
+    public async Task A_renamed_generic_model_is_read()
+    {
+        var (client, handler) = Create();
+        handler.RespondJson("""{"content":{"id":"1","name":"n"}}""");
+
+        Bundle<Derived> box = await client.Misc.BoxAsync();
+
+        box.Content.Name.Should().Be("n");
+    }
+
+    [TestMethod]
+    public async Task Text_scalars_are_parsed_from_their_wire_text()
+    {
+        var (client, handler) = Create();
+
+        handler.RespondText("2024-01-02T03:04:05Z");
+        (await client.Text.WhenAsync()).Should().Be(new DateTimeOffset(2024, 1, 2, 3, 4, 5, TimeSpan.Zero));
+
+        handler.RespondText("42");
+        (await client.Text.CountAsync()).Should().Be(42);
+
+        handler.RespondText("P1DT2H");
+        (await client.Text.TookAsync()).Should().Be(new TimeSpan(1, 2, 0, 0));
+
+        handler.RespondText("2024-02-29");
+        (await client.Text.DayAsync()).Should().Be(new DateOnly(2024, 2, 29));
+
+        handler.RespondText("12.50");
+        (await client.Text.PriceAsync()).Should().Be(12.50m);
+
+        handler.RespondText("true");
+        (await client.Text.OnAsync()).Should().BeTrue();
+    }
+
+    [TestMethod]
+    public async Task A_union_of_scalars_read_as_text_keeps_numbers_and_strings_apart()
+    {
+        var (client, handler) = Create();
+
+        handler.RespondText("42");
+        (await client.Text.EitherAsync()).GetInt32().Should().Be(42);
+
+        handler.RespondText("hello");
+        (await client.Text.EitherAsync()).GetString().Should().Be("hello");
+    }
+
+    [TestMethod]
+    public async Task An_optional_text_scalar_is_null_when_the_server_sends_no_content()
+    {
+        var (client, handler) = Create();
+
+        (await client.Text.MaybeAsync()).Should().BeNull();
+
+        handler.RespondText("7");
+        (await client.Text.MaybeAsync()).Should().Be(7);
+    }
+
+    [TestMethod]
+    public async Task A_malformed_text_scalar_fails_loudly()
+    {
+        var (client, handler) = Create();
+        handler.RespondText("not a number");
+
+        var act = () => client.Text.CountAsync();
+
+        await act.Should().ThrowAsync<FormatException>();
+    }
+
+    [TestMethod]
+    public async Task Text_scalar_bodies_are_sent_as_their_wire_text_with_text_plain()
+    {
+        var (client, handler) = Create();
+
+        await client.Text.SetCountAsync(42);
+        handler.Last.Body.Should().Be("42");
+        handler.Last.ContentType.Should().StartWith("text/plain");
+
+        await client.Text.SetWhenAsync(new DateTimeOffset(2024, 1, 2, 3, 4, 5, TimeSpan.Zero));
+        handler.Last.Body.Should().Be("2024-01-02T03:04:05.0000000+00:00");
+        handler.Last.ContentType.Should().StartWith("text/plain");
+    }
 }

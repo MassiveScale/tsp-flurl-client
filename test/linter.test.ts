@@ -146,6 +146,77 @@ describe("internal-access-leak", () => {
       .toEmitDiagnostics([]);
   });
 
+  it("flags a public operation returning an instance of an internal template", async () => {
+    await tester
+      .expect(
+        `
+        import "@massivescale/tsp-flurl-client";
+        using MassiveScale.TspFlurlClient;
+
+        namespace TestApi;
+
+        @access(Access.internal)
+        model Page<T> {
+          items: T[];
+        }
+
+        interface Widgets {
+          list(): Page<string>;
+        }
+      `,
+      )
+      .toEmitDiagnostics({
+        code: "@massivescale/tsp-flurl-client/internal-access-leak",
+        message: /"Page"/,
+      });
+  });
+
+  it("flags a public model whose property is an instance of an internal template", async () => {
+    await tester
+      .expect(
+        `
+        import "@massivescale/tsp-flurl-client";
+        using MassiveScale.TspFlurlClient;
+
+        namespace TestApi;
+
+        @access(Access.internal)
+        model Page<T> {
+          items: T[];
+        }
+
+        model Catalog {
+          page: Page<int32>;
+        }
+      `,
+      )
+      .toEmitDiagnostics({
+        code: "@massivescale/tsp-flurl-client/internal-access-leak",
+        message: /"Page"/,
+      });
+  });
+
+  it("does not flag an instance of a public template", async () => {
+    await tester
+      .expect(
+        `
+        import "@massivescale/tsp-flurl-client";
+        using MassiveScale.TspFlurlClient;
+
+        namespace TestApi;
+
+        model Page<T> {
+          items: T[];
+        }
+
+        interface Widgets {
+          list(): Page<string>;
+        }
+      `,
+      )
+      .toEmitDiagnostics([]);
+  });
+
   it("flags a public model whose property type is @access(Access.internal)", async () => {
     await tester
       .expect(

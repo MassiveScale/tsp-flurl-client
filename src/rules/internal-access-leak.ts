@@ -21,6 +21,20 @@ import { getAccess } from "../decorators.js";
 import { flattenProperties, findDiscriminatedRoot } from "../models.js";
 
 /**
+ * Returns the declaration the emitter generates for a model. A template instance
+ * such as `Page<string>` is emitted as the generic `Page<T>` declaration, so its
+ * `@access` is read from that declaration, exactly as `mapType` resolves it.
+ *
+ * @param model - A model, possibly a template instance.
+ * @returns The template declaration for an instance; otherwise the model itself.
+ */
+function declarationOf(model: Model): Model {
+  return model.templateMapper && model.name
+    ? (model.namespace?.models.get(model.name) ?? model)
+    : model;
+}
+
+/**
  * Unwraps `Array<T>` / `Record<T>` / nullable `Union` wrapping and the type arguments of
  * template instances (mirroring how `mapType` in `../utils.ts` treats these
  * wrapper kinds) to find the named `Model`/`Enum` type(s) actually referenced.
@@ -43,7 +57,7 @@ function resolveNamedTypes(type: Type): (Model | Enum)[] {
           (arg as { entityKind?: string }).entityKind === "Type",
       );
       return [
-        ...(type.name ? [type] : []),
+        ...(type.name ? [declarationOf(type)] : []),
         ...typeArguments.flatMap(resolveNamedTypes),
       ];
     }
@@ -145,7 +159,7 @@ export const internalAccessLeakRule = createRule({
         // In a discriminated hierarchy the emitter keeps C# inheritance
         // (`public record Dog : Pet`), and a base type must be at least as
         // accessible as the type that derives from it.
-        const base = model.baseModel;
+        const base = model.baseModel && declarationOf(model.baseModel);
         if (
           base?.name &&
           findDiscriminatedRoot(context.program, base) &&

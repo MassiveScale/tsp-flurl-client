@@ -1,8 +1,10 @@
-import type {
-  DecoratorContext,
-  EnumMember,
-  Program,
-  Type,
+import {
+  getNamespaceFullName,
+  isTemplateDeclaration,
+  type DecoratorContext,
+  type EnumMember,
+  type Program,
+  type Type,
 } from "@typespec/compiler";
 import { createDiagnostic, reportDiagnostic } from "./lib.js";
 import { isCsIdentifier, isCsKeyword } from "./identifiers.js";
@@ -39,15 +41,7 @@ export function $clientName(
   name: string,
 ): void {
   const trimmed = name.trim();
-  // The name becomes a C# identifier and a file name, so anything that is not a
-  // plain identifier (spaces, punctuation, path separators such as `../Client`)
-  // is rejected rather than written into the output. A model, enum, or interface
-  // name also cannot be a reserved keyword, since it becomes a type name.
-  const becomesTypeName =
-    target.kind === "Model" ||
-    target.kind === "Enum" ||
-    target.kind === "Interface";
-  if (!isCsIdentifier(trimmed) || (becomesTypeName && isCsKeyword(trimmed))) {
+  if (!isValidClientName(target, trimmed)) {
     reportDiagnostic(context.program, {
       code: "invalid-client-name",
       target,
@@ -56,6 +50,58 @@ export function $clientName(
   }
 
   context.program.stateMap(clientNameKey).set(target, trimmed);
+}
+
+/**
+ * Whether a `@clientName` value can be used for a target. The name becomes a C#
+ * identifier and a file name, so anything that is not a plain identifier (spaces,
+ * punctuation, path separators such as `../Client`) is rejected rather than written
+ * into the output. A model, enum, or interface name also cannot be a reserved
+ * keyword, since it becomes a type name.
+ *
+ * @param target - The renamed declaration.
+ * @param name - The trimmed name.
+ * @returns `true` when the name is usable.
+ */
+function isValidClientName(target: Type, name: string): boolean {
+  const becomesTypeName =
+    target.kind === "Model" ||
+    target.kind === "Enum" ||
+    target.kind === "Interface";
+  return isCsIdentifier(name) && !(becomesTypeName && isCsKeyword(name));
+}
+
+/**
+ * Reads the argument of one of this library's decorators as written on a template
+ * declaration such as `@access(Access.internal) model Page<T>`.
+ *
+ * TypeSpec runs a decorator on each instance of a template (`Page<string>`) but
+ * never on the declaration itself, while the emitter generates the declaration (the
+ * generic `Page<T>`). Without this, `@access` and `@clientName` on a generic model
+ * would be silently ignored.
+ *
+ * @param type - The type to look up.
+ * @param decoratorName - The decorator, e.g. `@access`.
+ * @returns The argument's value for a template declaration carrying the decorator;
+ *   otherwise `undefined`.
+ */
+function templateDecoratorArgument(type: Type, decoratorName: string): unknown {
+  if (
+    (type.kind !== "Model" &&
+      type.kind !== "Interface" &&
+      type.kind !== "Operation" &&
+      type.kind !== "Union" &&
+      type.kind !== "Scalar") ||
+    !isTemplateDeclaration(type)
+  ) {
+    return undefined;
+  }
+  const application = type.decorators.find(
+    (d) =>
+      d.definition?.name === decoratorName &&
+      getNamespaceFullName(d.definition.namespace) === namespace,
+  );
+  return application?.args[0]?.value;
 }
 
 /**
@@ -102,7 +148,8 @@ export function getClientName(
   program: Program,
   type: Type,
 ): string | undefined {
-  const value = program.stateMap(clientNameKey).get(type);
+  const value =
+    program.stateMap(clientNameKey).get(type) ?? templateClientName(type);
   if (typeof value !== "string") return undefined;
 
   // TypeSpec HTTP synthesized merge-patch models should keep their generated
@@ -121,6 +168,25 @@ export function getClientName(
 }
 
 /**
+ * Reads `@clientName` from a template declaration (see
+ * {@link templateDecoratorArgument}). An invalid name is ignored here; it is
+ * reported as `invalid-client-name` on each instance.
+ *
+ * @param type - The type to look up.
+ * @returns The trimmed name, or `undefined`.
+ */
+function templateClientName(type: Type): string | undefined {
+  const arg = templateDecoratorArgument(type, "@clientName");
+  const name =
+    arg && typeof arg === "object" && "value" in arg
+      ? (arg as { value: unknown }).value
+      : arg;
+  if (typeof name !== "string") return undefined;
+  const trimmed = name.trim();
+  return isValidClientName(type, trimmed) ? trimmed : undefined;
+}
+
+/**
  * Reads the `@access` modifier of a type.
  *
  * @param program - The compiler program holding the decorator state.
@@ -132,9 +198,22 @@ export function getAccess(
   program: Program,
   type: Type,
 ): "public" | "internal" | undefined {
-  const value = program.stateMap(accessKey).get(type);
+  const value = program.stateMap(accessKey).get(type) ?? templateAccess(type);
   if (value === "public" || value === "internal") {
     return value;
   }
   return undefined;
+}
+
+/**
+ * Reads `@access` from a template declaration (see {@link templateDecoratorArgument}).
+ *
+ * @param type - The type to look up.
+ * @returns The `Access` member's value, or `undefined`.
+ */
+function templateAccess(type: Type): string | undefined {
+  const member = templateDecoratorArgument(type, "@access") as
+    EnumMember | undefined;
+  if (member?.kind !== "EnumMember") return undefined;
+  return typeof member.value === "string" ? member.value : member.name;
 }

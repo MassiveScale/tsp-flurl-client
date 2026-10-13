@@ -32,6 +32,12 @@ public sealed class StubHandler : HttpMessageHandler
         return this;
     }
 
+    public StubHandler RespondText(string text)
+    {
+        _responses.Enqueue((HttpStatusCode.OK, Encoding.UTF8.GetBytes(text), "text/plain"));
+        return this;
+    }
+
     public StubHandler RespondBytes(byte[] data)
     {
         _responses.Enqueue((HttpStatusCode.OK, data, "application/octet-stream"));

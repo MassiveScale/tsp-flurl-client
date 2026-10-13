@@ -151,7 +151,11 @@ export interface BodyView {
 export interface ResponseView {
   /** Wire encoding: JSON-deserialized, raw bytes, or raw text. */
   kind: PayloadKind;
-  /** C# type the body is read as, e.g. `"Widget"` or `"List<Widget>"`. Ignored for `bytes` and `text`. */
+  /**
+   * C# type the body is read as, e.g. `"Widget"` or `"List<Widget>"`; nullable when
+   * another success response has no body. A `text` body is parsed into it, and it is
+   * ignored for `bytes`.
+   */
   type: string;
 }
 
@@ -520,12 +524,18 @@ function renderRequestBody(m: MethodView, responseType: string): string[] {
   let send: string;
   if (!m.body) {
     send = `await flurlRequest.SendAsync(${verb}, cancellationToken: cancellationToken)`;
-  } else if (m.body.kind === "json") {
+  } else if (
+    m.body.kind === "json" &&
+    m.body.contentType.toLowerCase() === "application/json"
+  ) {
     send = `await flurlRequest.SendJsonAsync(${verb}, ${m.body.variable}, cancellationToken: cancellationToken)`;
+  } else if (m.body.kind === "json") {
+    // Flurl's SendJsonAsync always sends application/json.
+    send = `await flurlRequest.SendAsync(${verb}, ClientRuntime.JsonContent(flurlRequest, ${m.body.variable}, "${escapeCsString(m.body.contentType)}"), cancellationToken: cancellationToken)`;
   } else if (m.body.kind === "bytes") {
     send = `await flurlRequest.SendAsync(${verb}, ClientRuntime.BytesContent(${m.body.variable}, "${escapeCsString(m.body.contentType)}"), cancellationToken: cancellationToken)`;
   } else {
-    send = `await flurlRequest.SendAsync(${verb}, ClientRuntime.TextContent(${m.body.variable}, "${escapeCsString(m.body.contentType)}"), cancellationToken: cancellationToken)`;
+    send = `await flurlRequest.SendAsync(${verb}, ClientRuntime.TextContent(ClientRuntime.ToWireString(${m.body.variable}), "${escapeCsString(m.body.contentType)}"), cancellationToken: cancellationToken)`;
   }
   lines.push(`${pad}using var flurlResponse = ${send}.ConfigureAwait(false);`);
 
@@ -537,9 +547,13 @@ function renderRequestBody(m: MethodView, responseType: string): string[] {
     lines.push(
       `${pad}return await flurlResponse.GetBytesAsync().ConfigureAwait(false);`,
     );
-  } else if (m.response?.kind === "text") {
+  } else if (m.response?.kind === "text" && responseType === "string") {
     lines.push(
       `${pad}return await flurlResponse.GetStringAsync().ConfigureAwait(false);`,
+    );
+  } else if (m.response?.kind === "text") {
+    lines.push(
+      `${pad}return ClientRuntime.FromText<${responseType}>(await flurlResponse.GetStringAsync().ConfigureAwait(false));`,
     );
   }
   return lines;

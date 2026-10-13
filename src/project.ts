@@ -60,19 +60,36 @@ export function buildCsproj(
   return renderer.renderCsproj(view);
 }
 
+/** A SemVer 2 numeric identifier: `0`, or digits without a leading zero. */
+const SEMVER_NUMBER = "(?:0|[1-9]\\d*)";
+
+/** A SemVer 2 pre-release identifier: a numeric identifier, or alphanumerics and hyphens with at least one non-digit. */
+const SEMVER_PRERELEASE_ID = `(?:${SEMVER_NUMBER}|\\d*[A-Za-z-][0-9A-Za-z-]*)`;
+
+/** A SemVer 2 build-metadata identifier: any non-empty run of alphanumerics and hyphens. */
+const SEMVER_BUILD_ID = "[0-9A-Za-z-]+";
+
+const SEMVER_PATTERN = new RegExp(
+  `^(${SEMVER_NUMBER})\\.(${SEMVER_NUMBER})(?:\\.(${SEMVER_NUMBER}))?` +
+    `((?:-${SEMVER_PRERELEASE_ID}(?:\\.${SEMVER_PRERELEASE_ID})*)?` +
+    `(?:\\+${SEMVER_BUILD_ID}(?:\\.${SEMVER_BUILD_ID})*)?)$`,
+);
+
 /**
  * Attempts to parse a semver string from a TypeSpec version value.
  * Accepts an optional leading `v`/`V`, two-part (`1.2`) or three-part (`1.2.3`)
- * numeric versions, and preserves any pre-release / build-metadata suffix.
- * Returns `undefined` when the string cannot be interpreted as semver.
+ * numeric versions, and preserves a pre-release / build-metadata suffix only when
+ * it is valid SemVer 2 (dot-separated ASCII identifiers), which is what NuGet
+ * accepts. Returns `undefined` when the string cannot be interpreted as semver, so
+ * a version such as `1.2-preview build` falls back to CalVer instead of producing
+ * an invalid package version.
  */
 export function tryParseSemver(value: string): string | undefined {
   const stripped = value.replace(/^[vV]/, "");
-  const match = stripped.match(/^(\d+)\.(\d+)(?:\.(\d+))?([-+].+)?$/);
+  const match = SEMVER_PATTERN.exec(stripped);
   if (!match) return undefined;
   const patch = match[3] ?? "0";
-  const rest = match[4] ?? "";
-  return `${match[1]}.${match[2]}.${patch}${rest}`;
+  return `${match[1]}.${match[2]}.${patch}${match[4]}`;
 }
 
 /** Formats a date as a CalVer string (`YYYY.MM.DD`). */

@@ -131,6 +131,94 @@ function filterPropsForRequest(
 }
 
 /**
+ * Whether two request records carry exactly the same properties, so one record
+ * can serve both operations.
+ *
+ * @param a - One record.
+ * @param b - The other record.
+ * @returns `true` when both list the same properties in the same order.
+ */
+function sameRequestShape(a: RequestType, b: RequestType): boolean {
+  const left = [...a.props];
+  const right = [...b.props];
+  return (
+    left.length === right.length &&
+    left.every(
+      ([name, prop], i) => right[i][0] === name && right[i][1] === prop,
+    )
+  );
+}
+
+/**
+ * Names and registers the request record for an operation's body. Visibility is
+ * resolved per operation (`@parameterVisibility` can differ between two creates of
+ * the same model), so a record is shared only when its properties match. The
+ * names tried, in order, are `{Model}{Verb}Request` (`WidgetCreateRequest`),
+ * `{Model}{Operation}Request` (`WidgetCreateDraftRequest`), and
+ * `{Model}{Container}{Operation}Request`. When every one is already a record with
+ * different properties, a `name-collision` is reported.
+ *
+ * @param program - The compiler program, used to report diagnostics.
+ * @param op - The operation the record is for.
+ * @param bodyModel - The body model the record is filtered from.
+ * @param operationName - The operation's effective (client) name.
+ * @param requestType - The record, with its properties already filtered.
+ * @param requestTypes - The records registered so far for this unit.
+ * @returns The record's name, or `undefined` after reporting a collision.
+ */
+function claimRequestType(
+  program: Program,
+  op: HttpOperation,
+  bodyModel: Model,
+  operationName: string,
+  requestType: RequestType,
+  requestTypes: Map<string, RequestType>,
+): string | undefined {
+  // Named after the model's effective (client) name, so renaming `Widget` to
+  // `Product` gives `ProductCreateRequest`, and two same-named models with
+  // different client names get different records.
+  const modelName = getClientName(program, bodyModel) ?? bodyModel.name;
+  const container = op.container;
+  const containerName =
+    container.kind === "Interface"
+      ? (getClientName(program, container) ?? container.name)
+      : container.name;
+  const operation = capitalize(operationName);
+  const candidates = [
+    ...new Set([
+      `${modelName}${requestTypeSuffix(op.verb)}Request`,
+      `${modelName}${operation}Request`,
+      `${modelName}${capitalize(containerName)}${operation}Request`,
+    ]),
+  ];
+
+  for (const name of candidates) {
+    const existing = requestTypes.get(name);
+    if (!existing) {
+      requestTypes.set(name, { ...requestType, name });
+      return name;
+    }
+    if (sameRequestShape(existing, requestType)) return name;
+  }
+
+  program.reportDiagnostic(
+    createDiagnostic({
+      code: "name-collision",
+      target: op.operation,
+      format: {
+        kind: "request record",
+        name: candidates[candidates.length - 1],
+        scope: "the generated models",
+        first:
+          "another operation whose request has different visible properties",
+        second: `operation "${operationName}"`,
+      },
+    }),
+  );
+  return undefined;
+}
+
+/**
  * Stable name suffixes produced by TypeSpec HTTP's `applyMergePatchTransform`.
  * Models with these suffixes are already purpose-built request payloads and must
  * not be visibility-filtered again.
@@ -533,35 +621,40 @@ function buildMethodView(
           op.verb,
         );
         if (hasHiddenProperties(bodyModel, visibility, program)) {
-          const suffix = requestTypeSuffix(op.verb);
-          // Named after the model's effective (client) name, so renaming `Widget` to
-          // `Product` gives `ProductCreateRequest`, and two same-named models with
-          // different client names get different records.
-          const modelName = getClientName(program, bodyModel) ?? bodyModel.name;
-          const requestTypeName = `${modelName}${suffix}Request`;
-          if (!requestTypes.has(requestTypeName)) {
-            requestTypes.set(requestTypeName, {
-              name: requestTypeName,
-              doc: getDoc(program, bodyModel),
-              access: getAccess(program, bodyModel) ?? "public",
-              props: filterPropsForRequest(
-                bodyModel,
-                visibility,
-                version,
-                program,
-              ),
-            });
-          }
+          const requestType: RequestType = {
+            name: "",
+            doc: getDoc(program, bodyModel),
+            access: getAccess(program, bodyModel) ?? "public",
+            props: filterPropsForRequest(
+              bodyModel,
+              visibility,
+              version,
+              program,
+            ),
+          };
+          const requestTypeName = claimRequestType(
+            program,
+            op,
+            bodyModel,
+            baseMethodName,
+            requestType,
+            requestTypes,
+          );
+          if (requestTypeName === undefined) return undefined;
           bodyType = requestTypeName;
         }
       }
     }
 
     const contentTypes = bodyInfo.contentTypes;
+    const kind = payloadKind(contentTypes, bodyType);
     body = {
       variable: "body",
-      kind: payloadKind(contentTypes, bodyType),
-      contentType: contentTypes[0] ?? "application/json",
+      kind,
+      contentType:
+        kind === "json"
+          ? jsonMediaType(contentTypes)
+          : (contentTypes[0] ?? "application/octet-stream"),
     };
     requiredParams.push({ decl: `${bodyType} body`, name: "body" });
   }
@@ -597,21 +690,86 @@ function buildMethodView(
 }
 
 /**
- * Decides how a payload travels on the wire. A body is JSON unless it declares
- * only non-JSON media types and maps to raw bytes or text.
+ * Whether a media type is JSON: `application/json`, `text/json`, or a structured
+ * `+json` type such as `application/vnd.acme+json` or `application/problem+json`.
+ * Line-delimited and sequence formats (`application/x-ndjson`,
+ * `application/json-seq`) are not one JSON document, so they are not JSON here.
+ *
+ * @param mediaType - The declared media type, possibly with parameters.
+ * @returns `true` when the payload is a single JSON document.
+ */
+function isJsonMediaType(mediaType: string): boolean {
+  const type = mediaType.split(";")[0].trim().toLowerCase();
+  return (
+    type === "application/json" ||
+    type === "text/json" ||
+    type.endsWith("+json")
+  );
+}
+
+/**
+ * Picks the media type a JSON body is sent with: `application/json` when the
+ * operation accepts it, otherwise the first JSON media type it declares, so an API
+ * that only accepts `application/vnd.acme+json` gets exactly that.
+ *
+ * @param contentTypes - The media types the body declares; empty means unspecified.
+ * @returns The `Content-Type` to send.
+ */
+function jsonMediaType(contentTypes: string[]): string {
+  const json = contentTypes.filter(isJsonMediaType);
+  return (
+    json.find((c) => c.toLowerCase() === "application/json") ??
+    json[0] ??
+    "application/json"
+  );
+}
+
+/**
+ * Whether a payload can travel as plain text: a scalar (`int32`, `boolean`,
+ * `utcDateTime`, `string`, ...), a literal, an enum, or a union of those. TypeSpec
+ * sends a scalar body as `text/plain` unless told otherwise, so these are written
+ * with their wire text and parsed back from it. A model, list, or dictionary has no
+ * text form.
+ *
+ * @param type - The payload's TypeSpec type.
+ * @returns `true` when the value has a plain-text form.
+ */
+function isTextual(type: Type): boolean {
+  switch (type.kind) {
+    case "Scalar":
+    case "String":
+    case "Number":
+    case "Boolean":
+    case "Enum":
+    case "EnumMember":
+      return true;
+    case "Union":
+      return [...type.variants.values()].every(
+        (v) =>
+          (v.type.kind === "Intrinsic" && v.type.name === "null") ||
+          isTextual(v.type),
+      );
+    default:
+      return false;
+  }
+}
+
+/**
+ * Decides how a payload travels on the wire. A body is JSON when it declares no
+ * media type or at least one JSON media type; otherwise it is raw bytes, or plain
+ * text for any other value (a string, number, boolean, date, ...). A non-JSON
+ * payload with no text form is reported by {@link findUnsupportedPayload} before
+ * this is reached.
  *
  * @param contentTypes - The media types the payload declares; empty means unspecified.
  * @param csType - The C# type the payload maps to.
  * @returns `json`, `bytes`, or `text`.
  */
 function payloadKind(contentTypes: string[], csType: string): PayloadKind {
-  const isJson =
-    contentTypes.length === 0 ||
-    contentTypes.some((c) => c.toLowerCase().includes("json"));
-  if (isJson) return "json";
-  if (csType === "byte[]") return "bytes";
-  if (csType === "string") return "text";
-  return "json";
+  if (contentTypes.length === 0 || contentTypes.some(isJsonMediaType)) {
+    return "json";
+  }
+  return csType.startsWith("byte[]") ? "bytes" : "text";
 }
 
 /** A resolved success response: its renderer view and, when customizable, its generic overload. */
@@ -641,21 +799,32 @@ function resolveResponse(
   enums: Map<string, Enum>,
   usedHelpers: UsedHelpers,
 ): ResolvedResponse | undefined {
+  // `Widget | void` is a 200 with a body and a 204 without one, so the result is
+  // absent whenever the server takes the empty path, and the C# type says so.
+  const mayBeEmpty = responses.some(
+    (resp) =>
+      isSuccessStatus(resp.statusCodes) &&
+      (resp.responses.length === 0 || resp.responses.every((c) => !c.body)),
+  );
+  const optional = (csType: string): string =>
+    mayBeEmpty && !csType.endsWith("?") ? `${csType}?` : csType;
+
   for (const resp of responses) {
     if (!isSuccessStatus(resp.statusCodes)) continue;
 
     for (const content of resp.responses) {
       if (!content.body) continue;
-      const type = resolveBodyType(
+      const mapped = resolveBodyType(
         content.body,
         program,
         models,
         enums,
         usedHelpers,
       );
-      if (type === "void") continue;
+      if (mapped === "void") continue;
 
-      const kind = payloadKind(content.body.contentTypes, type);
+      const type = optional(mapped);
+      const kind = payloadKind(content.body.contentTypes, mapped);
       const view: ResponseView = { kind, type };
       const slot =
         kind === "json" && content.body.bodyKind === "single"
@@ -669,7 +838,7 @@ function resolveResponse(
           : undefined;
       if (!slot) return { view };
 
-      const responseType = slot.wrap("TResult");
+      const responseType = optional(slot.wrap("TResult"));
       return {
         view,
         generic: {
@@ -804,8 +973,9 @@ function isSuccessStatus(
 
 /**
  * Finds a request or success-response body the client cannot send or read
- * correctly. A multipart body or a file (`Http.File`) body would otherwise be
- * written as JSON, which is not what the API expects, with no sign of it.
+ * correctly. A multipart body, a file (`Http.File`) body, or a model declared only
+ * with a non-JSON media type would otherwise be written as JSON, which is not what
+ * the API expects, with no sign of it.
  *
  * @param op - The HTTP operation.
  * @returns A description of the unsupported feature, or `undefined` when all is supported.
@@ -817,17 +987,44 @@ function findUnsupportedPayload(op: HttpOperation): string | undefined {
       ? "A multipart request body"
       : "A file request body (Http.File)";
   }
+  if (body && isUnsupportedMediaType(body.contentTypes, body.type)) {
+    return `A request body sent as ${body.contentTypes.join(", ")} that is not bytes or text`;
+  }
   for (const response of op.responses) {
     if (!isSuccessStatus(response.statusCodes)) continue;
     for (const content of response.responses) {
-      if (content.body && content.body.bodyKind !== "single") {
+      if (!content.body) continue;
+      if (content.body.bodyKind !== "single") {
         return content.body.bodyKind === "multipart"
           ? "A multipart response body"
           : "A file response body (Http.File)";
       }
+      if (
+        isUnsupportedMediaType(content.body.contentTypes, content.body.type)
+      ) {
+        return `A response body sent as ${content.body.contentTypes.join(", ")} that is not bytes or text`;
+      }
     }
   }
   return undefined;
+}
+
+/**
+ * Whether a payload declares only non-JSON media types (`application/xml`,
+ * `application/x-www-form-urlencoded`, `application/x-ndjson`, ...) but has no
+ * plain-text form (a model, list, or dictionary). The client could only write and
+ * read such a value as JSON, which is not what the API expects, so it is reported
+ * instead.
+ *
+ * @param contentTypes - The media types the payload declares.
+ * @param type - The payload's TypeSpec type.
+ * @returns `true` when the payload cannot be sent or read correctly.
+ */
+function isUnsupportedMediaType(contentTypes: string[], type: Type): boolean {
+  if (contentTypes.length === 0 || contentTypes.some(isJsonMediaType)) {
+    return false;
+  }
+  return !isTextual(type);
 }
 
 /**

@@ -103,8 +103,11 @@ public class MergePatch<T> : IMergePatch<T>
     {
         if (propertyName is null) throw new ArgumentNullException(nameof(propertyName));
 
-        Properties[propertyName] =
-            JsonSerializer.SerializeToElement(value, options ?? DefaultSerializerOptions);
+        // Serialized by its runtime type, as a request body is, so a derived model set through a
+        // base-typed property keeps its extra properties.
+        Properties[propertyName] = value is null
+            ? NullElement
+            : JsonSerializer.SerializeToElement(value, value.GetType(), options ?? DefaultSerializerOptions);
         return this;
     }
 

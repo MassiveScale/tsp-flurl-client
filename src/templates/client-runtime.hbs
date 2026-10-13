@@ -149,6 +149,97 @@ internal static class ClientRuntime
     }
 
     /// <summary>
+    /// Reads a plain-text payload (TypeSpec sends a scalar body as <c>text/plain</c>) as the value
+    /// it declares. It is the reverse of <see cref="ToWireString"/>: numbers and booleans in the
+    /// invariant culture, dates and times as ISO 8601, durations as ISO 8601 (<c>PT1H</c>), enums
+    /// by wire name.
+    /// </summary>
+    /// <typeparam name="T">The declared type.</typeparam>
+    /// <param name="text">The response text.</param>
+    /// <returns>The parsed value; <see langword="null"/> for empty text when the type allows it.</returns>
+    /// <exception cref="FormatException">The text is not a valid <typeparamref name="T"/>.</exception>
+    internal static T FromText<T>(string text)
+    {
+        var underlying = Nullable.GetUnderlyingType(typeof(T));
+        var target = underlying ?? typeof(T);
+        if (text.Length == 0 && (underlying is not null || !typeof(T).IsValueType))
+        {
+            return default!;
+        }
+
+        object value = target switch
+        {
+            _ when target == typeof(string) => text,
+            _ when target == typeof(bool) => bool.Parse(text),
+            _ when target == typeof(DateTimeOffset) =>
+                DateTimeOffset.Parse(text, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal),
+            _ when target == typeof(DateTime) =>
+                DateTime.Parse(text, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind),
+            _ when target == typeof(DateOnly) => DateOnly.Parse(text, CultureInfo.InvariantCulture),
+            _ when target == typeof(TimeOnly) => TimeOnly.Parse(text, CultureInfo.InvariantCulture),
+            _ when target == typeof(TimeSpan) => XmlConvert.ToTimeSpan(text),
+            _ when target == typeof(Guid) => Guid.Parse(text),
+            _ when target == typeof(Uri) => new Uri(text, UriKind.RelativeOrAbsolute),
+            _ when target == typeof(JsonElement) => TextToJsonElement(text),
+            _ when target.IsEnum => ParseEnum(target, text),
+            _ => Convert.ChangeType(text, target, CultureInfo.InvariantCulture),
+        };
+        return (T)value;
+    }
+
+    /// <summary>
+    /// Reads the text of a union of scalars: a number or boolean as that JSON value, anything else
+    /// as a JSON string, so <c>42</c> and <c>hello</c> both arrive as the value that was sent.
+    /// </summary>
+    private static JsonElement TextToJsonElement(string text)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(text);
+            if (document.RootElement.ValueKind is JsonValueKind.Number or JsonValueKind.True or JsonValueKind.False)
+            {
+                return document.RootElement.Clone();
+            }
+        }
+        catch (JsonException)
+        {
+        }
+
+        return JsonSerializer.SerializeToElement(text);
+    }
+
+    /// <summary>
+    /// Finds the enum member whose wire name (see <see cref="EnumMemberAttribute"/>) is <paramref name="text"/>.
+    /// </summary>
+    private static object ParseEnum(System.Type enumType, string text)
+    {
+        foreach (var value in Enum.GetValues(enumType))
+        {
+            if (EnumWireName((Enum)value) == text) return value;
+        }
+
+        throw new FormatException($"'{text}' is not a value of {enumType.Name}.");
+    }
+
+    /// <summary>
+    /// Serializes a JSON request body with the request's configured serializer (so the model map
+    /// and wire formats apply) and sends it with a declared JSON media type other than
+    /// <c>application/json</c>, such as <c>application/vnd.acme+json</c>.
+    /// </summary>
+    /// <param name="request">The request whose serializer writes the body.</param>
+    /// <param name="body">The value to send.</param>
+    /// <param name="contentType">The JSON media type the operation declares.</param>
+    /// <returns>The request content.</returns>
+    internal static HttpContent JsonContent(IFlurlRequest request, object? body, string contentType)
+    {
+        var content = new CapturedJsonContent(request.Settings.JsonSerializer.Serialize(body!));
+        var mediaType = MediaTypeHeaderValue.Parse(contentType);
+        mediaType.CharSet ??= "utf-8";
+        content.Headers.ContentType = mediaType;
+        return content;
+    }
+
+    /// <summary>
     /// Wraps raw bytes as a request body.
     /// </summary>
     /// <param name="data">The bytes to send.</param>

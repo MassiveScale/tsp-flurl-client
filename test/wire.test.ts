@@ -2,7 +2,7 @@ import { ok, strictEqual, doesNotMatch } from "node:assert";
 import { describe, it } from "node:test";
 import { buildRouteExpression } from "../src/endpoints.js";
 import { escapeCsIdentifier } from "../src/utils.js";
-import { emit, fileContent } from "./host.js";
+import { emit, emitWithDiagnostics, fileContent } from "./host.js";
 
 const PREAMBLE = `
   import "@typespec/http";
@@ -212,7 +212,7 @@ describe("payload kinds", () => {
 
     ok(
       fileContent(results, "NotesEndpoint.g.cs").includes(
-        'ClientRuntime.TextContent(body, "text/plain")',
+        'ClientRuntime.TextContent(ClientRuntime.ToWireString(body), "text/plain")',
       ),
     );
   });
@@ -227,7 +227,7 @@ describe("payload kinds", () => {
 
     ok(
       fileContent(results, "NotesEndpoint.g.cs").includes(
-        'ClientRuntime.TextContent(body, "text/plain")',
+        'ClientRuntime.TextContent(ClientRuntime.ToWireString(body), "text/plain")',
       ),
     );
   });
@@ -247,21 +247,26 @@ describe("payload kinds", () => {
     );
   });
 
-  it("falls back to JSON for a non-JSON media type on a model", async () => {
-    const results = await emit(`${PREAMBLE}
+  it("reports a model sent with a non-JSON media type instead of sending it as JSON", async () => {
+    const [results, diagnostics] = await emitWithDiagnostics(`${PREAMBLE}
       model Item { name: string; }
 
       @route("/items")
       interface Items {
         @post create(@header contentType: "application/xml", @body body: Item): void;
+        @get list(): Item[];
       }
     `);
 
-    ok(
-      fileContent(results, "ItemsEndpoint.g.cs").includes(
-        "SendJsonAsync(HttpMethod.Post, body,",
-      ),
-    );
+    const messages = diagnostics
+      .filter((d) => d.code.endsWith("unsupported-feature"))
+      .map((d) => d.message);
+    strictEqual(messages.length, 1);
+    ok(messages[0].includes("application/xml"));
+    ok(messages[0].includes('"create"'));
+    const client = fileContent(results, "ItemsEndpoint.g.cs");
+    ok(!client.includes("CreateAsync"), "The operation is left out");
+    ok(client.includes("ListAsync"), "The rest of the client is generated");
   });
 
   it("reads a byte response raw", async () => {

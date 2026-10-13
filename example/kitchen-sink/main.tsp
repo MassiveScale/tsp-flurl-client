@@ -83,6 +83,18 @@ model Page<T> {
   next?: string;
 }
 
+/** A generic model that only the internal admin interface uses. */
+@access(Access.internal)
+model Envelope<T> {
+  data: T;
+}
+
+/** A generic model renamed for C#. */
+@clientName("Bundle")
+model Box<T> {
+  content: T;
+}
+
 model Nested {
   grid: string[][];
   byName: Record<Derived>;
@@ -180,6 +192,24 @@ interface Misc {
   @route("fail") @get fail(): string | ApiError;
   @route("blob") @get blob(@query data: bytes, @header("X-Blob") token: bytes): string;
   @route("magnitude") @get magnitude(): Magnitude;
+  @route("vendor") @post vendor(@header contentType: "application/vnd.acme+json", @body body: Derived): Derived;
+  @route("optional") @get optional(): Derived | void;
+  @route("box") @get box(): Box<Derived>;
+}
+
+/** Scalar bodies, which TypeSpec sends as text/plain. */
+@route("/text")
+interface Text {
+  @route("when") @get when(): utcDateTime;
+  @route("when") @put setWhen(@body body: utcDateTime): void;
+  @route("count") @get count(): int32;
+  @route("count") @put setCount(@body body: int32): void;
+  @route("took") @get took(): duration;
+  @route("day") @get day(): plainDate;
+  @route("price") @get price(): decimal;
+  @route("on") @get on(): boolean;
+  @route("either") @get either(): int32 | string;
+  @route("maybe") @get maybe(): int32 | void;
 }
 
 @clientName("Pings")
@@ -192,4 +222,5 @@ interface Health {
 @route("/admin")
 interface Admin {
   @post reindex(): void;
+  @route("status") @get status(): Envelope<string>;
 }

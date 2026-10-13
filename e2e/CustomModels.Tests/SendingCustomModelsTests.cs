@@ -81,4 +81,30 @@ public sealed class SendingCustomModelsTests
         using var sent = JsonDocument.Parse(handler.Last.Body!);
         sent.RootElement.GetProperty("kind").GetString().Should().Be("dog");
     }
+
+    [TestMethod]
+    public async Task A_derived_model_set_on_a_merge_patch_keeps_its_extra_properties()
+    {
+        var (client, handler) = Harness.Create();
+        handler.RespondJson("""{"id":"1","owner":{"name":"ann"},"tags":{},"raw":null,"bytes":""}""");
+
+        var patch = new MergePatch<Gadget>().Set(g => g.Owner, new MyOwner { Name = "ann", Nickname = "annie" });
+        await client.Gadgets.UpdateAsync("1", patch);
+
+        using var sent = JsonDocument.Parse(handler.Last.Body!);
+        var owner = sent.RootElement.GetProperty("owner");
+        owner.GetProperty("name").GetString().Should().Be("ann");
+        owner.GetProperty("nickname").GetString().Should().Be("annie", "the value is written as its runtime type");
+    }
+
+    [TestMethod]
+    public async Task A_null_set_on_a_merge_patch_is_sent_as_json_null()
+    {
+        var (client, handler) = Harness.Create();
+        handler.RespondJson("""{"id":"1","owner":{"name":"ann"},"tags":{},"raw":null,"bytes":""}""");
+
+        await client.Gadgets.UpdateAsync("1", new MergePatch<Gadget>().Set("raw", (object?)null));
+
+        handler.Last.Body.Should().Be("""{"raw":null}""");
+    }
 }
