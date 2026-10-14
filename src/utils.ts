@@ -648,7 +648,9 @@ export function sortUsings(usings: Iterable<string>): string[] {
 /**
  * Escapes text for use between the quotes of an ordinary C# string literal, so a
  * wire name or discriminator value containing a quote, backslash, or line break
- * cannot end the literal early or change the surrounding code.
+ * cannot end the literal early or change the surrounding code. Every character C#
+ * treats as a line break is escaped: carriage return, line feed, next line
+ * (U+0085), line separator (U+2028), and paragraph separator (U+2029).
  *
  * @param text - The raw text.
  * @returns The text, safe to place inside `"..."`.
@@ -659,7 +661,10 @@ export function escapeCsString(text: string): string {
     .replace(/"/g, '\\"')
     .replace(/\r/g, "\\r")
     .replace(/\n/g, "\\n")
-    .replace(/\t/g, "\\t");
+    .replace(/\t/g, "\\t")
+    .replace(/\u0085/g, "\\u0085")
+    .replace(/\u2028/g, "\\u2028")
+    .replace(/\u2029/g, "\\u2029");
 }
 
 /**

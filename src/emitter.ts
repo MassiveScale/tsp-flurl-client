@@ -401,7 +401,9 @@ export function splitTargetFrameworks(raw: string | undefined): string[] {
  * @returns `true` when the moniker is supported.
  */
 function isSupportedTargetFramework(tfm: string): boolean {
-  const match = /^net(\d+)\.\d+(-[A-Za-z0-9.]+)?$/.exec(tfm);
+  // An OS suffix is a platform name with an optional dotted version
+  // (`windows`, `windows10.0.19041`, `ios18.0`), never a bare run of dots.
+  const match = /^net(\d+)\.\d+(?:-[A-Za-z]+(?:\d+(?:\.\d+)*)?)?$/.exec(tfm);
   return match !== null && Number(match[1]) >= MIN_DOTNET_MAJOR;
 }
 

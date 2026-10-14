@@ -54,6 +54,7 @@ import {
   toCsMethodName,
   toCsParamName,
   escapeCsIdentifier,
+  escapeCsString,
   escapeXml,
   sortUsings,
   isInVersion,
@@ -370,18 +371,16 @@ function resolveRoutePrefix(
 }
 
 /**
- * Escapes literal text for use inside a C# interpolated string: backslashes and
- * quotes are escaped, and braces are doubled so they are not read as holes.
+ * Escapes literal text for use inside a C# interpolated string: escaped as an
+ * ordinary string literal (quotes, backslashes, and line breaks, which a
+ * `route-prefix` value can contain), with braces doubled so they are not read as
+ * holes.
  *
  * @param text - The literal text.
  * @returns The text, safe to place between the quotes of `$"..."`.
  */
 function escapeInterpolatedLiteral(text: string): string {
-  return text
-    .replace(/\\/g, "\\\\")
-    .replace(/"/g, '\\"')
-    .replace(/\{/g, "{{")
-    .replace(/\}/g, "}}");
+  return escapeCsString(text).replace(/\{/g, "{{").replace(/\}/g, "}}");
 }
 
 /**
