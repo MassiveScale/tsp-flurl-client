@@ -391,6 +391,28 @@ public sealed class KitchenSinkTests
     }
 
     [TestMethod]
+    public async Task A_declared_enum_parameter_is_sent_as_its_wire_value()
+    {
+        var (client, handler) = Create();
+        handler.RespondJson("""{"items":[]}""");
+
+        await client.DerivedItems.ListAsync(color: Color.Dark_green);
+
+        Uri.UnescapeDataString(handler.Last.Uri.Query).Should().Be("?color=dark-green");
+    }
+
+    [TestMethod]
+    public async Task An_undeclared_enum_parameter_is_rejected_rather_than_sent_as_a_number()
+    {
+        var (client, handler) = Create();
+
+        var act = () => client.DerivedItems.ListAsync(color: (Color)99);
+
+        (await act.Should().ThrowAsync<ArgumentException>()).Which.Message.Should().Contain("99");
+        handler.Requests.Should().BeEmpty("nothing is sent");
+    }
+
+    [TestMethod]
     public async Task Read_only_properties_of_nested_models_are_not_sent()
     {
         var (client, handler) = Create();

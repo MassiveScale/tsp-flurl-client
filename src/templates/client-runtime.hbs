@@ -321,11 +321,17 @@ internal static class ClientRuntime
     /// <summary>
     /// Returns the wire name of an enum value, honouring <see cref="EnumMemberAttribute"/>.
     /// </summary>
+    /// <exception cref="ArgumentException">
+    /// The value is not one of the enum's declared members, such as <c>(Color)99</c>. It is
+    /// rejected rather than sent as its number, as the generated JSON converters reject it too.
+    /// </exception>
     private static string EnumWireName(Enum value)
     {
         var name = value.ToString();
-        var member = value.GetType().GetField(name);
-        return member?.GetCustomAttribute<EnumMemberAttribute>()?.Value ?? name;
+        var member = value.GetType().GetField(name, BindingFlags.Public | BindingFlags.Static)
+            ?? throw new ArgumentException(
+                $"'{name}' is not a declared value of {value.GetType().Name}.", nameof(value));
+        return member.GetCustomAttribute<EnumMemberAttribute>()?.Value ?? name;
     }
 
     /// <summary>

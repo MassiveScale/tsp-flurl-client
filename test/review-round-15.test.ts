@@ -434,6 +434,23 @@ describe("XML documentation warnings", () => {
   });
 });
 
+describe("enum parameters", () => {
+  it("rejects a value that is not a declared member instead of sending its number", async () => {
+    const results = await emit(`${PREAMBLE}
+      enum Color { red, blue }
+      @route("/i") interface Items { @get list(@query color?: Color): void; }
+    `);
+
+    const runtime = fileContent(results, "ClientRuntime.g.cs");
+    ok(
+      /GetField\(name, BindingFlags\.Public \| BindingFlags\.Static\)\s*\?\? throw new ArgumentException/.test(
+        runtime,
+      ),
+      runtime,
+    );
+  });
+});
+
 describe("dependency injection", () => {
   it("explains why the Flurl client it creates is not disposed", async () => {
     const results = await emit(`${PREAMBLE}
