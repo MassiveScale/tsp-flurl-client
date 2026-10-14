@@ -182,6 +182,16 @@ After making any change to the codebase:
 
 All steps must pass before a change is considered complete.
 
+## Releasing
+
+The package is published to npm as `@massivescale/tsp-flurl-client` by `.github/workflows/publish.yml`, the same way as `@massivescale/tsp-api-docs`:
+
+1. Set `version` in `package.json` and move the `CHANGELOG.md` entries from `[Unreleased]` under that version, in a pull request to `main`.
+2. After it merges, publish a GitHub release from `main` whose tag is `v` plus that version (`v1.0.0-beta.1`).
+3. The workflow checks formatting, lint, build, and tests, verifies the tag matches `package.json`, and runs `npm publish --access public --provenance`. A prerelease version (`1.0.0-beta.1`) is published under the `beta` dist-tag, so `npm install` keeps resolving the latest stable version.
+
+Publishing uses npm trusted publishing (GitHub OIDC), so no npm token is stored in the repository. The package's settings on npmjs.com must list this repository and `publish.yml` as a trusted publisher.
+
 ## Maintenance
 
 - **CLAUDE.md** — Redirects to this file. Do not add content there.

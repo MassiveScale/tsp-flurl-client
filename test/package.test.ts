@@ -84,6 +84,10 @@ describe("the published package", () => {
     }
   });
 
+  it("is published publicly, as a scoped package is private by default", () => {
+    strictEqual(manifest.publishConfig?.access, "public");
+  });
+
   it("declares where the code lives", () => {
     ok(manifest.repository.url.includes("MassiveScale/tsp-flurl-client"));
     ok(manifest.license);
