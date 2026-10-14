@@ -274,6 +274,12 @@ export const $lib = createTypeSpecLibrary({
         default: paramMessage`The template model "${"name"}" carries @discriminator. System.Text.Json cannot list the subtypes of a generic base (a subtype derives from one closed instance such as "${"name"}<string>", not from the generic type), so its subtypes would never be read or written. Declare the discriminated base as a non-template model.`,
       },
     },
+    "unsupported-value-template": {
+      severity: "error",
+      messages: {
+        default: paramMessage`The template model "${"name"}" is given a value for its parameter "${"parameter"}" (a valueof parameter), which a C# generic type cannot carry. An operation that sends or reads it is left out. Declare the model without a value parameter.`,
+      },
+    },
     "unsupported-encoding": {
       severity: "error",
       messages: {

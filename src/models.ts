@@ -42,6 +42,7 @@ import {
   escapeCsString,
   isInVersion,
   declarationKey,
+  csTemplateParameterName,
   type TypeSubstitute,
   type UsedHelpers,
 } from "./utils.js";
@@ -81,6 +82,8 @@ function recordReservedMembers(recordName: string): [string, string][] {
  *   its hierarchy's discriminator (see {@link InheritedNames}).
  * @param substitute - For a request record, the request records its property types
  *   write in place of models (see {@link mapType}).
+ * @param typeParameters - The record's C# type parameters, which no property can
+ *   share a name with (`CS0102`).
  * @returns One {@link PropertyView} per input property.
  */
 function buildPropertyViews(
@@ -92,10 +95,18 @@ function buildPropertyViews(
   recordName: string,
   inherited: InheritedNames = { members: new Map(), json: new Map() },
   substitute?: TypeSubstitute,
+  typeParameters: string[] = [],
 ): PropertyView[] {
   const result: PropertyView[] = [];
   const scope = new MemberScope(program, "property", `record ${recordName}`, [
     ...recordReservedMembers(recordName),
+    ...typeParameters.map(
+      (name) =>
+        [name.replace(/^@/, ""), `the type parameter "${name}"`] as [
+          string,
+          string,
+        ],
+    ),
     ...[...inherited.members].map(
       ([csName, name]) =>
         [csName, `the inherited property "${name}"`] as [string, string],
@@ -368,6 +379,21 @@ export function buildRecord(
   const nameOf = (m: Model): string =>
     request ? request.nameOf(m) : (getClientName(program, m) ?? m.name!);
   const recordName = nameOf(model);
+  // A type parameter cannot share its record's name (CS0694) or another parameter's.
+  const typeParamScope = new MemberScope(
+    program,
+    "type parameter",
+    `record ${recordName}`,
+    [
+      [
+        recordName,
+        "the record itself, whose name a type parameter cannot share",
+      ],
+    ],
+  );
+  for (const name of typeParams) {
+    typeParamScope.claim(name.replace(/^@/, ""), `"${name}"`, model);
+  }
 
   // Models with a discriminated ancestor inherit from that ancestor's record in
   // C# (rather than flattening its properties) so `[JsonDerivedType]` on the
@@ -495,6 +521,7 @@ export function buildRecord(
         request,
       ),
       request?.substitute,
+      typeParams,
     ),
     baseRecordName,
     discriminator,
@@ -760,6 +787,79 @@ export function* reachableModels(
 }
 
 /**
+ * The template parameter a model is given a value for (`model Sized<N extends
+ * valueof int32>`, used as `Sized<3>`), which no C# generic type can carry. For a
+ * template declaration, a parameter that only accepts values; for an instance, a
+ * parameter that accepts values and was not given a type, since a literal passed to
+ * one may be read as either.
+ *
+ * @param program - The compiler program.
+ * @param model - A template declaration or instance, or any other model.
+ * @returns The parameter's name, or `undefined` when there is none.
+ */
+export function valueTemplateParameter(
+  program: Program,
+  model: Model,
+): string | undefined {
+  const isDeclaration = isTemplateDeclaration(model);
+  const declaration = isDeclaration
+    ? model
+    : model.templateMapper && model.name
+      ? model.namespace?.models.get(model.name)
+      : undefined;
+  const nodes =
+    (
+      declaration?.node as
+        | {
+            templateParameters?: Parameters<
+              Program["checker"]["getTypeForNode"]
+            >[0][];
+          }
+        | undefined
+    )?.templateParameters ?? [];
+  for (const [index, node] of nodes.entries()) {
+    const parameter = program.checker.getTypeForNode(node);
+    // The constraint is on the runtime type but not in its public declaration.
+    const constraint =
+      parameter.kind === "TemplateParameter"
+        ? (parameter as { constraint?: { type?: Type; valueType?: Type } })
+            .constraint
+        : undefined;
+    if (!constraint?.valueType) continue;
+    const valueOnly = !constraint.type;
+    const given = model.templateMapper?.args[index] as
+      { entityKind?: string } | undefined;
+    if (isDeclaration ? valueOnly : given?.entityKind !== "Type") {
+      return (node as { id: { sv: string } }).id.sv;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Reports a model given a value for a template parameter (see
+ * {@link valueTemplateParameter}).
+ *
+ * @param program - The compiler program.
+ * @param model - The model.
+ * @param parameter - The parameter's name.
+ */
+export function reportValueTemplate(
+  program: Program,
+  model: Model,
+  parameter: string,
+): void {
+  reportOnce(
+    program,
+    createDiagnostic({
+      code: "unsupported-value-template",
+      target: model,
+      format: { name: model.name, parameter },
+    }),
+  );
+}
+
+/**
  * Finds a `@discriminator` model nested under another discriminated model anywhere
  * a payload can reach (see {@link reachableModels}). System.Text.Json resolves only
  * one discriminator per hierarchy, so such a payload would be read as the wrong
@@ -868,7 +968,9 @@ function collectTypeParams(model: Model): string[] {
   const declared = (
     model.node as { templateParameters?: { id: { sv: string } }[] } | undefined
   )?.templateParameters;
-  if (declared && declared.length > 0) return declared.map((p) => p.id.sv);
+  if (declared && declared.length > 0) {
+    return declared.map((p) => csTemplateParameterName(p.id.sv));
+  }
 
   const params: string[] = [];
   const seen = new Set<Type>();
@@ -894,8 +996,11 @@ function gatherTemplateParams(
   seen: Set<Type>,
 ): void {
   if (type.kind === "TemplateParameter") {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    out.push((type as any).node?.id?.sv ?? "T");
+    out.push(
+      csTemplateParameterName(
+        (type.node as { id?: { sv: string } } | undefined)?.id?.sv ?? "T",
+      ),
+    );
   } else if (type.kind === "Model") {
     const m = type as Model;
     // Guard against cyclic model references (e.g. Pet.store -> Store.pets -> Pet)

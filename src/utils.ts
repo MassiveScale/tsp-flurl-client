@@ -31,7 +31,11 @@ import {
   Availability,
   type Version,
 } from "@typespec/versioning";
-import { needsVerbatimEscape } from "./identifiers.js";
+import {
+  isCsIdentifier,
+  needsVerbatimEscape,
+  toCsIdentifier,
+} from "./identifiers.js";
 
 /** C# name of the generic merge-patch helper class emitted alongside the models. */
 export const MERGE_PATCH_HELPER_NAME = "MergePatch";
@@ -155,7 +159,7 @@ export function mapType(
       if (m.templateMapper?.args) {
         const decl = m.namespace?.models.get(m.name);
         const args = templateArguments(program, m, decl).map((a) =>
-          mapType(a, program, models, enums, usedHelpers),
+          a ? mapType(a, program, models, enums, usedHelpers) : "object",
         );
         // Array<T> represented as a template instance (unresolved element type) → List<T>
         if (m.name === "Array" && args.length === 1) {
@@ -207,8 +211,9 @@ export function mapType(
       return "object";
 
     case "TemplateParameter":
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      return (type as any).node?.id?.sv ?? "T";
+      return csTemplateParameterName(
+        (type.node as { id?: { sv: string } } | undefined)?.id?.sv ?? "T",
+      );
 
     default:
       return "object";
@@ -286,16 +291,21 @@ export function atVersion(program: Program, model: Model): Model {
  * @param program - The compiler program.
  * @param instance - The template instance.
  * @param decl - The template declaration, when found.
- * @returns The type arguments.
+ * @returns The type arguments, `undefined` for a value argument.
  */
 function templateArguments(
   program: Program,
   instance: Model,
   decl: Model | undefined,
-): Type[] {
-  const recorded = (instance.templateMapper?.args ?? []).filter(
-    (a): a is Type => (a as { entityKind?: string }).entityKind === "Type",
-  );
+): (Type | undefined)[] {
+  // A literal argument (`Page<"a">`) is recorded as an indeterminate entity holding
+  // its literal type. A value (`Sized<3>`) has no C# form; an operation that reaches
+  // one is left out (see `valueTemplateParameter`), so it is only a placeholder here.
+  const recorded = (instance.templateMapper?.args ?? []).map((a) => {
+    const entity = a as { entityKind?: string; type?: Type };
+    if (entity.entityKind === "Type") return a as Type;
+    return entity.entityKind === "Indeterminate" ? entity.type : undefined;
+  });
   const parameters = (
     decl?.node as { templateParameters?: { id: { sv: string } }[] } | undefined
   )?.templateParameters;
@@ -717,6 +727,21 @@ export function escapeCsString(text: string): string {
     .replace(/\u0085/g, "\\u0085")
     .replace(/\u2028/g, "\\u2028")
     .replace(/\u2029/g, "\\u2029");
+}
+
+/**
+ * The C# name of a template parameter, written the same way in a generic record's
+ * declaration and in every use inside it. A TypeSpec name that is a C# keyword is
+ * verbatim-escaped (`class` is `@class`), and a backtick-quoted name that is not
+ * an identifier has its other characters replaced (`my-T` is `my_T`). Either is
+ * safe because the name never reaches the wire or a caller: a caller writes the
+ * type arguments, not the parameter names.
+ *
+ * @param name - The TypeSpec template parameter name.
+ * @returns The C# type parameter name.
+ */
+export function csTemplateParameterName(name: string): string {
+  return escapeCsIdentifier(isCsIdentifier(name) ? name : toCsIdentifier(name));
 }
 
 /**

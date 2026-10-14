@@ -568,3 +568,127 @@ describe("dependency injection", () => {
     ok(/dispos/i.test(extensions), extensions);
   });
 });
+
+describe("template parameter names", () => {
+  it("escapes a keyword as a verbatim identifier in the declaration and every use", async () => {
+    const results = await emit(`${PREAMBLE}
+      model Item { name: string; }
+      model Page<class> { items: class[]; first: class; }
+      @route("/p") interface Pages { @get read(): Page<Item>; }
+    `);
+
+    const page = fileContent(results, "/Page.g.cs");
+    ok(page.includes("record Page<@class>"), page);
+    ok(page.includes("List<@class> Items"), page);
+    ok(page.includes("@class First"), page);
+    ok(fileContent(results, "IPages.g.cs").includes("Task<Page<Item>>"));
+  });
+
+  it("replaces the characters of a quoted name that is not an identifier", async () => {
+    const results = await emit(`${PREAMBLE}
+      model Box<\`my-T\`> { value: \`my-T\`; }
+      @route("/b") interface Boxes { @get read(): Box<string>; }
+    `);
+
+    const box = fileContent(results, "/Box.g.cs");
+    ok(box.includes("record Box<my_T>"), box);
+    ok(box.includes("my_T Value"), box);
+  });
+
+  it("reports a property that would share a type parameter's name", async () => {
+    const [, diagnostics] = await emitWithDiagnostics(`${PREAMBLE}
+      model Bag<Items> { items: Items[]; }
+      @route("/b") interface Bags { @get read(): Bag<string>; }
+    `);
+
+    ok(
+      messagesFor(diagnostics, "name-collision").some((m) =>
+        m.includes('the type parameter "Items"'),
+      ),
+      diagnostics.map((d) => d.message).join("; "),
+    );
+  });
+
+  it("reports a type parameter that would share its record's name", async () => {
+    const [, diagnostics] = await emitWithDiagnostics(`${PREAMBLE}
+      model Wrap<Wrap> { value: Wrap; }
+      @route("/w") interface Wraps { @get read(): Wrap<string>; }
+    `);
+
+    ok(
+      messagesFor(diagnostics, "name-collision").some((m) =>
+        m.includes("type parameter"),
+      ),
+      diagnostics.map((d) => d.message).join("; "),
+    );
+  });
+
+  it("keeps a literal argument to a parameter no property uses", async () => {
+    const results = await emit(`${PREAMBLE}
+      model Item { name: string; }
+      model Tagged<T, U> { value: T; }
+      @route("/t") interface Tags { @get read(): Tagged<Item, "x">; }
+    `);
+
+    ok(
+      fileContent(results, "ITags.g.cs").includes("Task<Tagged<Item, string>>"),
+    );
+  });
+});
+
+describe("value template parameters", () => {
+  const SIZED = `model Sized<N extends valueof int32> { x: string; }`;
+
+  for (const [where, signature] of [
+    ["a response", `@get read(): Sized<3>;`],
+    ["a request body", `@post send(@body body: Sized<3>): void;`],
+    ["a nested property", `@get nested(): { inner: Sized<3> };`],
+    [
+      "a union held as a JsonElement",
+      `@get either(): { @body body: Sized<3> | Other };`,
+    ],
+  ]) {
+    it(`leaves out an operation that reaches one through ${where}`, async () => {
+      const [results, diagnostics] = await emitWithDiagnostics(`${PREAMBLE}
+        ${SIZED}
+        model Other { id: string; }
+        @route("/s") interface Things {
+          ${signature}
+          @route("ok") @get ok(): string;
+        }
+      `);
+
+      ok(
+        messagesFor(diagnostics, "unsupported-value-template").some((m) =>
+          m.includes('"N"'),
+        ),
+        diagnostics.map((d) => d.message).join("; "),
+      );
+      const iface = fileContent(results, "IThings.g.cs");
+      strictEqual((iface.match(/Task.*Async\(/g) ?? []).length, 1, iface);
+      ok(!has(results, "/Sized.g.cs"));
+    });
+  }
+
+  it("accepts a type for a parameter that takes a type or a value", async () => {
+    const [results, diagnostics] = await emitWithDiagnostics(`${PREAMBLE}
+      model Mixed<T extends string | valueof string> { x: string; }
+      @route("/m") interface Things { @get read(): Mixed<string>; }
+    `);
+
+    strictEqual(
+      messagesFor(diagnostics, "unsupported-value-template").length,
+      0,
+    );
+    ok(fileContent(results, "/Mixed.g.cs").includes("record Mixed<T>"));
+  });
+
+  it("reports a literal for a parameter that takes a type or a value", async () => {
+    const [, diagnostics] = await emitWithDiagnostics(`${PREAMBLE}
+      model Mixed<T extends string | valueof string> { x: string; }
+      @route("/m") interface Things { @get read(): Mixed<"lit">; }
+    `);
+
+    ok(messagesFor(diagnostics, "unsupported-value-template").length > 0);
+  });
+});

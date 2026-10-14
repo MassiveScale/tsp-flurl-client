@@ -56,6 +56,8 @@ import {
   collectDerivedModels,
   isEmittable,
   isEmittableEnum,
+  reportValueTemplate,
+  valueTemplateParameter,
 } from "./models.js";
 import {
   ALL_HELPERS,
@@ -862,6 +864,11 @@ async function emitService(
         emittedModels.add(model);
         if (!isEmittable(model, nsFullName)) continue;
         if (!isInVersion(program, model, version)) continue;
+        const valueParameter = valueTemplateParameter(program, model);
+        if (valueParameter !== undefined) {
+          reportValueTemplate(program, model, valueParameter);
+          continue;
+        }
         const recordFileName = getClientName(program, model) ?? model.name!;
         if (!checkName(program, "model", recordFileName, model)) continue;
         const owner = `model ${declarationKey(model)}`;

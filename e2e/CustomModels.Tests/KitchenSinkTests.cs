@@ -404,6 +404,19 @@ public sealed class KitchenSinkTests
     }
 
     [TestMethod]
+    public async Task A_generic_model_whose_type_parameter_is_a_csharp_keyword_is_read()
+    {
+        var (client, handler) = Create();
+        handler.RespondJson("""{"key":"a","value":{"s":"x"}}""");
+
+        var keyed = await client.Misc.KeyedAsync();
+
+        keyed.Key.Should().Be("a");
+        keyed.Value.S.Should().Be("x");
+        typeof(Keyed<>).GetGenericArguments()[0].Name.Should().Be("class");
+    }
+
+    [TestMethod]
     public async Task A_declared_enum_parameter_is_sent_as_its_wire_value()
     {
         var (client, handler) = Create();

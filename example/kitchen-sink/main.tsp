@@ -247,11 +247,18 @@ interface Files {
   @route("notes") @post note(@header contentType: "text/plain", @body body: string): void;
 }
 
+/** A generic model whose template parameter is named after a C# keyword, so it is written `@class`. */
+model Keyed<class> {
+  key: string;
+  value: class;
+}
+
 @route("/misc")
 interface Misc {
   @get nested(): Nested;
   @route("scalars") @get scalars(): Scalars;
   @route("either") @get either(): Derived | Special;
+  @route("keyed") @get keyed(): Keyed<Scalars>;
   @route("lookup/{kind}/{id}") @get lookup(@path kind: string, @path id: string): string;
   /** Parameters named after C# keywords, which are escaped (`@await`, `@class`). */
   @route("keywords/{await}") @get keywords(@path await: string, @query class?: string, @header var?: string): string;

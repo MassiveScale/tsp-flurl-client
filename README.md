@@ -469,6 +469,7 @@ A request or success response that cannot be sent or read correctly is reported 
 - Multipart request or response bodies (`@multipartBody`).
 - File bodies (`Http.File`).
 - A template model carrying `@discriminator` (`@discriminator("kind") model Shape<T>`). System.Text.Json cannot list the subtypes of a generic base, and TypeSpec does not run the decorator on the template declaration the emitter generates. Reported as `unsupported-generic-discriminator`; declare the discriminated base as a non-template model.
+- A template model given a value for a template parameter (`model Sized<N extends valueof int32>`, used as `Sized<3>`). A C# generic type takes types, not values. Reported as `unsupported-value-template`, and an operation that sends or reads it is left out.
 - A model, list, or dictionary declared only with a non-JSON media type (`application/xml`, `application/x-www-form-urlencoded`, `application/x-ndjson`, ...). The client can only write and read it as JSON. A scalar with a non-JSON media type is sent as text, as above.
 - A response that may arrive in a media type the client cannot read as its type, such as a model declared as `application/json` or `application/xml`.
 - Success responses with different bodies that are not all JSON (a 200 model and a 201 plain-text string).

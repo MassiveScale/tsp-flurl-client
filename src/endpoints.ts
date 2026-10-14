@@ -72,6 +72,8 @@ import {
   findNestedDiscriminator,
   flattenProperties,
   reachableModels,
+  reportValueTemplate,
+  valueTemplateParameter,
   isCsValueType,
   hierarchyOf,
 } from "./models.js";
@@ -1604,6 +1606,11 @@ function findUnsupportedPayload(
   // than generated around a model that serializes it wrongly.
   for (const payload of [...(body ? [body] : []), ...bodies]) {
     for (const model of reachableModels(program, payload.type)) {
+      const valueParameter = valueTemplateParameter(program, model);
+      if (valueParameter !== undefined) {
+        reportValueTemplate(program, model, valueParameter);
+        return `A body containing "${model.name}", a template given a value for "${valueParameter}"`;
+      }
       for (const prop of model.properties.values()) {
         const { support, encoding } = classifyEncoding(program, prop);
         if (support === "unsupported") {
