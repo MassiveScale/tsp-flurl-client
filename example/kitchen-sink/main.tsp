@@ -253,6 +253,8 @@ interface Misc {
   @route("scalars") @get scalars(): Scalars;
   @route("either") @get either(): Derived | Special;
   @route("lookup/{kind}/{id}") @get lookup(@path kind: string, @path id: string): string;
+  /** Parameters named after C# keywords, which are escaped (`@await`, `@class`). */
+  @route("keywords/{await}") @get keywords(@path await: string, @query class?: string, @header var?: string): string;
   @route("encoded") @get encoded(): Encoded;
   @route("encoded") @post sendEncoded(@body body: Encoded): Encoded;
   @route("cookies") @get cookies(@cookie session: string, @cookie flavour?: string): string;

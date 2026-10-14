@@ -88,6 +88,15 @@ const CS_KEYWORDS = new Set([
 ]);
 
 /**
+ * Contextual keywords that cannot be used as an identifier where generated code
+ * declares one: `await` is reserved inside an `async` method, which every endpoint
+ * implementation is. Unlike a reserved keyword, it is still a legal type name. The
+ * other contextual keywords (`var`, `nameof`, `value`, ...) compile as parameter
+ * names in the generated methods.
+ */
+const CS_ASYNC_RESERVED = new Set(["await"]);
+
+/**
  * A plain C# identifier: a letter or underscore followed by letters, digits, or
  * underscores.
  */
@@ -101,6 +110,18 @@ const CS_IDENTIFIER = /^[\p{L}_][\p{L}\p{Nd}_]*$/u;
  */
 export function isCsKeyword(name: string): boolean {
   return CS_KEYWORDS.has(name);
+}
+
+/**
+ * Whether a parameter or local name needs a leading `@` to compile in a generated
+ * method: a reserved keyword such as `class`, or `await`, which an `async` method
+ * reserves.
+ *
+ * @param name - The candidate name.
+ * @returns `true` when the name must be written verbatim-escaped.
+ */
+export function needsVerbatimEscape(name: string): boolean {
+  return CS_KEYWORDS.has(name) || CS_ASYNC_RESERVED.has(name);
 }
 
 /**

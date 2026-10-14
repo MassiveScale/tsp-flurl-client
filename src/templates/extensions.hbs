@@ -12,7 +12,7 @@
         templates:
           extensions: "./templates/extensions.hbs"
 
-  ── Template variables ──────────────────────────────────────────────────────
+  Template variables:
 
   {{clientClassName}} — name of the aggregate client class, e.g. "ApiClient"
 
@@ -33,7 +33,7 @@
   {{constructorAccess}} — "public", or "internal" when any endpoint is internal,
                         because a public constructor cannot take an internal type
 
-  ── Usage example ────────────────────────────────────────────────────────────
+  Usage example:
 
   builder.Services.AddApiClient(
       c => c.BaseAddress = new Uri("https://api.example.com"),
@@ -46,7 +46,7 @@
           api.Pets.ReadAsync<MyPet>(id, cancellationToken: ct);
   }
 
-  ── Built-in helpers ────────────────────────────────────────────────────────
+  Built-in helpers:
 
   {{indent <text>}}  — prefixes every non-empty line of <text> with 4 spaces
 

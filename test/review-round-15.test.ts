@@ -1,3 +1,6 @@
+import { readdirSync, readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { ok, strictEqual } from "node:assert";
 import { describe, it } from "node:test";
 import { emit, emitWithDiagnostics, fileContent } from "./host.js";
@@ -448,6 +451,44 @@ describe("enum parameters", () => {
       ),
       runtime,
     );
+  });
+});
+
+describe("parameters named after contextual keywords", () => {
+  it("escapes await, which the generated async methods reserve", async () => {
+    const results = await emit(`${PREAMBLE}
+      @route("/k") interface Keywords {
+        @route("{await}") @get read(@path await: string, @query var?: string): void;
+      }
+    `);
+
+    const iface = fileContent(results, "IKeywords.g.cs");
+    ok(iface.includes("ReadAsync(string @await, string? var = null,"), iface);
+    const client = fileContent(results, "KeywordsEndpoint.g.cs");
+    ok(client.includes("EscapePathSegment(@await)"), client);
+    ok(!/[^@\w]await\)/.test(client), client);
+  });
+
+  it("still accepts await as a model name, which C# allows", async () => {
+    const [, diagnostics] = await emitWithDiagnostics(`${PREAMBLE}
+      model \`await\` { name: string; }
+      @route("/k") interface Keywords { @get read(): \`await\`; }
+    `);
+
+    strictEqual(messagesFor(diagnostics, "invalid-name").length, 0);
+  });
+});
+
+describe("template comments", () => {
+  it("use plain headings rather than decorative dividers", () => {
+    const templates = resolve(
+      fileURLToPath(import.meta.url),
+      "../../../src/templates",
+    );
+    for (const file of readdirSync(templates)) {
+      const content = readFileSync(resolve(templates, file), "utf-8");
+      ok(!content.includes("──"), file);
+    }
   });
 });
 

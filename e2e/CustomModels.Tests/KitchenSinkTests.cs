@@ -391,6 +391,19 @@ public sealed class KitchenSinkTests
     }
 
     [TestMethod]
+    public async Task Parameters_named_after_csharp_keywords_are_sent_under_their_declared_names()
+    {
+        var (client, handler) = Create();
+        handler.RespondText("ok");
+
+        await client.Misc.KeywordsAsync("a", @class: "b", var: "c");
+
+        handler.Last.Uri.AbsolutePath.Should().EndWith("/keywords/a");
+        handler.Last.Uri.Query.Should().Be("?class=b");
+        handler.Last.Headers["var"].Should().Be("c");
+    }
+
+    [TestMethod]
     public async Task A_declared_enum_parameter_is_sent_as_its_wire_value()
     {
         var (client, handler) = Create();

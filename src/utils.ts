@@ -31,7 +31,7 @@ import {
   Availability,
   type Version,
 } from "@typespec/versioning";
-import { isCsKeyword } from "./identifiers.js";
+import { needsVerbatimEscape } from "./identifiers.js";
 
 /** C# name of the generic merge-patch helper class emitted alongside the models. */
 export const MERGE_PATCH_HELPER_NAME = "MergePatch";
@@ -721,13 +721,14 @@ export function escapeCsString(text: string): string {
 
 /**
  * Prefixes a C# identifier with `@` when it collides with a reserved keyword, so a
- * TypeSpec parameter called `params` or `event` still produces compilable C#.
+ * TypeSpec parameter called `params` or `event` still produces compilable C#, or
+ * with `await`, which the generated `async` methods reserve.
  *
  * @param name - The candidate identifier.
- * @returns The identifier, verbatim-escaped when it is a C# keyword.
+ * @returns The identifier, verbatim-escaped when it needs to be.
  */
 export function escapeCsIdentifier(name: string): string {
-  return isCsKeyword(name) ? `@${name}` : name;
+  return needsVerbatimEscape(name) ? `@${name}` : name;
 }
 
 /**

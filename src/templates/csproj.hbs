@@ -7,7 +7,7 @@
         templates:
           csproj: "./templates/csproj.hbs"
 
-  ── Template variables ──────────────────────────────────────────────────────
+  Template variables:
 
   {{rootNamespace}}     — C# root namespace, e.g. "Acme.Api.Client"
   {{netVersion}}        — Target framework moniker(s). Single: "net8.0". Multi: "net8.0;net9.0"
@@ -19,7 +19,7 @@
   {{nugetTitle}}        — NuGet <Title> (optional)
   {{nugetTags}}         — NuGet <PackageTags> (optional)
 
-  ── Remarks ──────────────────────────────────────────────────────
+  Remarks:
 
   The default implementation generates a class library project for use in an ASP.NET Core application.
   If you want to generate a CLI application instead, change the Sdk to "Microsoft.NET.Sdk.Console".

@@ -8,7 +8,7 @@
         templates:
           record: "./templates/record.hbs"
 
-  ── Template variables ──────────────────────────────────────────────────────
+  Template variables:
 
   {{doc}}           — optional XML <summary> text (pre-escaped; may be falsy).
                       Rendered as: /// <summary>{{doc}}</summary>
@@ -47,7 +47,7 @@
                        `@discriminator` hierarchy members with no concrete wire
                        shape of their own (may be falsy).
 
-  ── Built-in helpers ────────────────────────────────────────────────────────
+  Built-in helpers:
 
   {{indent <text>}}        — prefixes every non-empty line of <text> with 4 spaces
   {{#if (isDefined val)}}  — true when val is not undefined
