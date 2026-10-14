@@ -42,7 +42,10 @@ import { checkName, MemberScope } from "./names.js";
 import {
   checkEncoding,
   classifyEncoding,
+  encodeExpression,
+  isDelimited,
   reportUnsupportedEncoding,
+  type WireEncoding,
 } from "./encoding.js";
 import { createDiagnostic, reportOnce } from "./lib.js";
 import {
@@ -64,7 +67,9 @@ import {
 } from "./utils.js";
 import {
   findDiscriminatedRoot,
+  findNestedDiscriminator,
   flattenProperties,
+  isCsValueType,
   hierarchyOf,
 } from "./models.js";
 
@@ -654,11 +659,20 @@ function buildMethodView(
     ) {
       continue;
     }
-    checkEncoding(program, param.param, "parameter");
+    const encoding = checkEncoding(program, param.param, "parameter");
+    // A value that cannot travel in the format the API expects is not sent at all.
+    if (encoding.support === "unsupported") return undefined;
     const csParam = escapeCsIdentifier(toCsParamName(paramName));
+    // A format the runtime implements is applied before the value is written.
+    const value = encoding.wire
+      ? encodeExpression(csParam, encoding.wire)
+      : undefined;
     const isOptional = param.param.optional;
     const nullableSuffix = isOptional && !csType.endsWith("?") ? "?" : "";
     const decl = `${csType}${nullableSuffix} ${csParam}${isOptional ? " = null" : ""}`;
+    // A header or cookie is left out when its value is null, which a required value
+    // type (`TimeSpan wait`) can never be; testing it would not compile.
+    const guard = isOptional || !isCsValueType(csType, param.param.type);
 
     if (param.type === "query") {
       // An array without `explode` is one comma-separated value (`tags=a,b`), which
@@ -667,13 +681,18 @@ function buildMethodView(
         param.explode === false &&
         param.param.type.kind === "Model" &&
         isArrayModelType(param.param.type as Model);
-      queryParams.push({ name: param.name, variable: csParam, delimited });
+      queryParams.push({
+        name: param.name,
+        variable: csParam,
+        value,
+        delimited,
+      });
     } else if (param.type === "header") {
-      headerParams.push({ name: param.name, variable: csParam });
+      headerParams.push({ name: param.name, variable: csParam, value, guard });
     } else if (param.type === "cookie") {
-      cookieParams.push({ name: param.name, variable: csParam });
+      cookieParams.push({ name: param.name, variable: csParam, value, guard });
     } else if (param.type === "path") {
-      pathParams.set(param.name, csParam);
+      pathParams.set(param.name, value ?? csParam);
     }
 
     (isOptional ? optionalParams : requiredParams).push({
@@ -752,7 +771,6 @@ function buildMethodView(
       bodyInfo.type,
       "request",
     ) as PayloadKind;
-    checkBodyEncoding(program, bodyInfo, kind);
     // `@body body?: Widget` may be left out, in which case no body is sent at all.
     const optionalBody = bodyInfo.property?.optional === true;
     body = {
@@ -763,6 +781,7 @@ function buildMethodView(
           ? jsonMediaType(contentTypes)
           : (contentTypes[0] ?? "application/octet-stream"),
       optional: optionalBody,
+      encoding: bodyEncoding(program, bodyInfo, kind).wire,
     };
     if (optionalBody) {
       const nullable = bodyType.endsWith("?") ? bodyType : `${bodyType}?`;
@@ -908,28 +927,37 @@ function classifyPayload(
 }
 
 /**
- * Reports a body whose `@encode` cannot be produced: one the client cannot write at
- * all, or a number encoded as a string outside plain text (a standalone body has no
- * property to carry `JsonNumberHandling`). As plain text a number is already a
- * string, so that case is fine.
+ * Decides whether a body's `@encode` can be honoured, given how the body travels.
+ * A plain-text body is written and read through the runtime encoder, so every
+ * scalar format works there (a number as a string is already a string). A JSON
+ * body has no property to carry a converter or `JsonNumberHandling`, so only the
+ * default format works, and a delimited list has no text form of its own.
  *
- * @param program - The compiler program, used to report diagnostics.
+ * @param program - The compiler program.
  * @param body - The request or response body.
  * @param kind - How the body travels.
+ * @returns Whether it can be honoured, the runtime format to apply, and the
+ *   encoding's name for a diagnostic.
  */
-function checkBodyEncoding(
+function bodyEncoding(
   program: Program,
   body: HttpPayloadBody,
-  kind: PayloadKind,
-): void {
+  kind: PayloadKind | "unsupported",
+): { ok: boolean; wire?: WireEncoding; encoding?: string } {
   const prop = body.bodyKind === "single" ? body.property : undefined;
-  if (!prop) return;
-  const { support, encoding } = classifyEncoding(program, prop);
-  if (
-    support === "unsupported" ||
-    (support === "number-as-string" && kind !== "text")
-  ) {
-    reportUnsupportedEncoding(program, prop, "body", encoding ?? "");
+  if (!prop) return { ok: true };
+  const { support, wire, encoding } = classifyEncoding(program, prop);
+  switch (support) {
+    case "default":
+      return { ok: true };
+    case "number-as-string":
+      return { ok: kind === "text", encoding };
+    case "wire":
+      return kind === "text" && !isDelimited(wire!)
+        ? { ok: true, wire }
+        : { ok: false, encoding };
+    default:
+      return { ok: false, encoding };
   }
 }
 
@@ -989,17 +1017,6 @@ function resolveResponse(
   const mapped = bodies.map((body) =>
     resolveBodyType(body, program, models, enums, usedHelpers),
   );
-  // Each body is checked against how its own media types are read: a 201 whose
-  // number is `@encode("string")` breaks reading even when the 200 beside it is a
-  // plain number of the same C# type.
-  for (const each of bodies) {
-    const ownKind = classifyPayload(
-      each.contentTypes,
-      each.type,
-      "response",
-    ) as PayloadKind;
-    checkBodyEncoding(program, each, ownKind);
-  }
   if (new Set(mapped.map(withoutNullable)).size > 1) {
     return {
       view: { kind: "json", type: optional("JsonElement"), emptyWhen },
@@ -1015,7 +1032,12 @@ function resolveResponse(
   ) as PayloadKind;
 
   const resultType = anyNullable ? `${withoutNullable(mapped[0])}?` : mapped[0];
-  const view: ResponseView = { kind, type: optional(resultType), emptyWhen };
+  const view: ResponseView = {
+    kind,
+    type: optional(resultType),
+    emptyWhen,
+    encoding: bodyEncoding(program, body, kind).wire,
+  };
   const slot =
     kind === "json"
       ? findModelSlot(body.type, program, models, enums, usedHelpers)
@@ -1242,6 +1264,9 @@ function isSuccessStatus(
  * - Success responses with different bodies that are not all JSON, since the result
  *   can only be held as a `JsonElement`.
  *
+ * A nested discriminator is also reported as `unsupported-nested-discriminator`,
+ * which says how to change the model.
+ *
  * @param op - The HTTP operation.
  * @param program - The compiler program.
  * @returns A description of the unsupported feature, or `undefined` when all is supported.
@@ -1288,6 +1313,52 @@ function findUnsupportedPayload(
     kinds.some((kind) => kind !== "json")
   ) {
     return "Success responses with different bodies that are not all JSON";
+  }
+
+  // Each body's `@encode` is checked against how its own media types travel: a 201
+  // whose number is `@encode("string")` inside JSON breaks reading even when the 200
+  // beside it is a plain number of the same C# type.
+  const encodedBodies: [SingleBody, PayloadKind | "unsupported"][] = [
+    ...(body && body.bodyKind === "single"
+      ? [
+          [body, classifyPayload(body.contentTypes, body.type, "request")] as [
+            SingleBody,
+            PayloadKind | "unsupported",
+          ],
+        ]
+      : []),
+    ...bodies.map(
+      (b, i) => [b, kinds[i]] as [SingleBody, PayloadKind | "unsupported"],
+    ),
+  ];
+  for (const [each, kind] of encodedBodies) {
+    const { ok, encoding } = bodyEncoding(program, each, kind);
+    if (!ok && each.property) {
+      reportUnsupportedEncoding(program, each.property, "body", encoding ?? "");
+      return `A body whose @encode "${encoding}" the client cannot produce or read`;
+    }
+  }
+
+  // A hierarchy System.Text.Json cannot read correctly is left out here, before the
+  // method is generated, rather than only reported when its models are written.
+  for (const payload of [...(body ? [body] : []), ...bodies]) {
+    const nested = findNestedDiscriminator(program, payload.type);
+    if (nested) {
+      // The specific diagnostic says how to fix the model; it reads the same as the
+      // one the record writer reports, so the two are merged by reportOnce.
+      reportOnce(
+        program,
+        createDiagnostic({
+          code: "unsupported-nested-discriminator",
+          target: nested.model,
+          format: {
+            name: getClientName(program, nested.model) ?? nested.model.name,
+            parent: getClientName(program, nested.parent) ?? nested.parent.name,
+          },
+        }),
+      );
+      return `A body containing "${nested.model.name}", a @discriminator model nested under "${nested.parent.name}"`;
+    }
   }
   return undefined;
 }

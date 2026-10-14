@@ -31,7 +31,7 @@ import {
 import { getClientName, getAccess } from "./decorators.js";
 import { checkName, reportInvalidName, MemberScope } from "./names.js";
 import { toCsIdentifier } from "./identifiers.js";
-import { checkEncoding } from "./encoding.js";
+import { checkEncoding, converterType } from "./encoding.js";
 import { createDiagnostic, reportOnce } from "./lib.js";
 import {
   mapPropertyType,
@@ -123,7 +123,10 @@ function buildPropertyViews(
       name: propName,
       jsonPropertyName: escapeCsString(jsonName(program, prop)),
       defaultValue: defaultVal,
-      numberAsString: encoding === "number-as-string",
+      numberAsString: encoding.support === "number-as-string",
+      converter: encoding.wire
+        ? converterType(encoding.wire, `${csType}${nullable}`)
+        : undefined,
       writeNull: !prop.optional && csType.endsWith("?"),
     });
   }
@@ -503,6 +506,18 @@ export function flattenProperties(model: Model): Map<string, ModelProperty> {
   return props;
 }
 
+/**
+ * Whether a C# type is a non-nullable value type, which can never be null: a
+ * number, a boolean, a date, a duration, a `Guid`, a `JsonElement`, or an enum.
+ *
+ * @param csType - The C# type.
+ * @param type - The TypeSpec type it maps from, to recognize an enum.
+ * @returns `true` for a non-nullable value type.
+ */
+export function isCsValueType(csType: string, type: Type): boolean {
+  return type.kind === "Enum" || CS_VALUE_TYPES.has(csType);
+}
+
 /** C# types that are value types, which can never be null and so need no initializer. */
 const CS_VALUE_TYPES = new Set([
   "bool",
@@ -548,7 +563,7 @@ function defaultForProperty(
   if (csType.endsWith("?")) return undefined;
   if (csType.startsWith("List<")) return "[]";
   if (csType.startsWith("Dictionary<")) return "new()";
-  if (prop.type.kind === "Enum" || CS_VALUE_TYPES.has(csType)) return undefined;
+  if (isCsValueType(csType, prop.type)) return undefined;
   return "default!";
 }
 
@@ -591,6 +606,54 @@ export function hierarchyOf(
   };
   visit(root);
   return members;
+}
+
+/**
+ * Finds a `@discriminator` model nested under another discriminated model anywhere
+ * a payload can reach: through properties, list and dictionary items, union
+ * variants, template arguments, and the subtypes of a discriminated model, which a
+ * response can contain without naming them. System.Text.Json resolves only one
+ * discriminator per hierarchy, so such a payload would be read as the wrong subtype.
+ *
+ * @param program - The compiler program.
+ * @param type - The payload type.
+ * @returns The nested model and the discriminated model it is nested under, or
+ *   `undefined` when there is none.
+ */
+export function findNestedDiscriminator(
+  program: Program,
+  type: Type,
+): { model: Model; parent: Model } | undefined {
+  const seen = new Set<Type>();
+  const queue: Type[] = [type];
+  while (queue.length > 0) {
+    const current = queue.pop()!;
+    if (seen.has(current)) continue;
+    seen.add(current);
+    if (current.kind === "Union") {
+      for (const variant of current.variants.values()) queue.push(variant.type);
+      continue;
+    }
+    if (current.kind !== "Model") continue;
+
+    const parent = current.baseModel
+      ? findDiscriminatedRoot(program, current.baseModel)
+      : undefined;
+    if (parent && getDiscriminator(program, current)) {
+      return { model: current, parent: parent.root };
+    }
+    if (current.indexer) queue.push(current.indexer.value);
+    for (const prop of current.properties.values()) queue.push(prop.type);
+    for (const arg of current.templateMapper?.args ?? []) {
+      if ((arg as { entityKind?: string }).entityKind === "Type") {
+        queue.push(arg as Type);
+      }
+    }
+    if (findDiscriminatedRoot(program, current)) {
+      queue.push(...current.derivedModels);
+    }
+  }
+  return undefined;
 }
 
 /**

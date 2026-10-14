@@ -187,7 +187,10 @@ describe("encodings of every success response body", () => {
     const messages = messagesFor(diagnostics, "unsupported-encoding");
     strictEqual(messages.length, 1, messages.join("; "));
     ok(messages[0].includes('The body "m"'));
-    ok(fileContent(results, "INumbers.g.cs").includes("Task<long> ReadAsync("));
+    ok(
+      !fileContent(results, "INumbers.g.cs").includes("ReadAsync("),
+      "the operation is left out rather than reading the 201 wrongly",
+    );
   });
 
   it("checks every body when the bodies differ and the result is a JsonElement", async () => {

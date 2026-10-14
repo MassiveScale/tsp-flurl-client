@@ -429,15 +429,20 @@ List<Pet> pets = await api.Pets.ListAsync();
 
 ### Encodings (`@encode`)
 
-`@encode` changes how a value is written on the wire. The client honours the ones below, and reports a warning (`unsupported-encoding`) for any other, because the value would otherwise travel in the wrong format with no sign of it.
+`@encode` changes how a value is written on the wire. The client implements every encoding TypeSpec defines, for model properties (with a `[JsonConverter]`), query, header, path and cookie parameters, and plain-text bodies and responses. An encoding it cannot honour is an error (`unsupported-encoding`), and an operation that sends or reads such a value is left out, because the value would otherwise travel in a format the API does not expect.
 
-| Encoding                                                                | Result                                                                                                  |
-| ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
-| none                                                                    | The default: ISO 8601 / RFC 3339 for dates and durations, base64 for bytes, a JSON number for a number. |
-| `@encode("string")` on a `boolean`                                      | The property or parameter is a C# `string` (`"true"` / `"false"`).                                      |
-| `@encode("string")` on a number (`int64`, `float64`, `decimal`, ...)    | The C# type stays numeric and is written and read as a JSON string, so an `int64` keeps its precision.  |
-| `rfc3339` on a date-time, `ISO8601` on a duration, `base64` on bytes    | The same as the default.                                                                                |
-| anything else (`unixTimestamp`, `rfc7231`, `seconds`, `base64url`, ...) | Not supported: the default format is used and a warning is reported.                                    |
+| Encoding                                                                                                      | On the wire                                                                                            |
+| ------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| none, or `rfc3339` / `ISO8601` / `base64`                                                                     | The default: RFC 3339 dates, ISO 8601 durations (`PT1H30M`), base64 bytes, JSON numbers.               |
+| `@encode("string")` on a `boolean`                                                                            | The property or parameter is a C# `string` (`"true"` / `"false"`).                                     |
+| `@encode("string")` on a number (`int64`, `float64`, `decimal`, ...)                                          | The C# type stays numeric and is written and read as a JSON string, so an `int64` keeps its precision. |
+| `unixTimestamp` on a date-time                                                                                | Whole seconds since 1970 (`1704164645`).                                                               |
+| `rfc7231` on a date-time                                                                                      | An HTTP date (`Tue, 02 Jan 2024 03:04:05 GMT`).                                                        |
+| `seconds` / `milliseconds` on a duration                                                                      | A number, whole or with a fraction following the type it is encoded as (`90`, `1.5`).                  |
+| `base64url` on bytes                                                                                          | URL-safe base64 without padding (`-_8`).                                                               |
+| `ArrayEncoding.pipeDelimited` / `spaceDelimited` / `commaDelimited` / `newlineDelimited` on a list of scalars | One string (`a\|b`), in a JSON property or a parameter.                                                |
+
+Not supported, and reported as an error: a custom encoding name, `@encode("string")` on a date or duration, a delimited list of models, a delimited list as a whole plain-text body, and a special encoding on a JSON body that is a single scalar (a standalone body has no property to carry the converter).
 
 ```typespec
 model Widget {
@@ -467,7 +472,7 @@ A request or success response that cannot be sent or read correctly is reported 
 - Success responses with different bodies that are not all JSON (a 200 model and a 201 plain-text string).
 - Two operations that send the same model with different visible properties, when every request record name the emitter tries is already a different record. Reported as `name-collision`; rename one operation with `@clientName`.
 - A `@discriminator` model that is also a variant of another discriminated model (a nested discriminator). `System.Text.Json` can resolve only one discriminator per hierarchy: reading through the base type would return the wrong subtype, and writing a subtype would fail or omit a discriminator. Reported as `unsupported-nested-discriminator`. A grouping model with no discriminator of its own (`model Dog extends Animal {}`) is fine.
-- `@encode` values other than those in the table above (reported as a warning).
+- `@encode` values the client cannot honour (see the encodings table; reported as an error).
 - Streaming responses such as server-sent events are read in full before the call returns.
 
 ### Merge-patch request bodies

@@ -403,6 +403,347 @@ internal static class ClientRuntime
     }
 
     /// <summary>
+    /// A wire format a TypeSpec <c>@encode</c> asks for. <see cref="Encode"/> applies it to parameters and
+    /// plain-text bodies, <see cref="FromText{T}(string, WireEncoding)"/> reads it back, and the matching
+    /// converters apply it to JSON properties.
+    /// </summary>
+    internal enum WireEncoding
+    {
+        /// <summary><c>unixTimestamp</c>: whole seconds since 1970-01-01T00:00:00Z.</summary>
+        UnixSeconds,
+
+        /// <summary><c>rfc7231</c>: an HTTP date such as <c>Tue, 15 Nov 1994 08:12:31 GMT</c>.</summary>
+        Rfc7231,
+
+        /// <summary><c>seconds</c> as a number that can have a fraction.</summary>
+        Seconds,
+
+        /// <summary><c>seconds</c> as a whole number.</summary>
+        WholeSeconds,
+
+        /// <summary><c>milliseconds</c> as a number that can have a fraction.</summary>
+        Milliseconds,
+
+        /// <summary><c>milliseconds</c> as a whole number.</summary>
+        WholeMilliseconds,
+
+        /// <summary><c>base64url</c>: URL-safe base64 without padding.</summary>
+        Base64Url,
+
+        /// <summary><c>ArrayEncoding.pipeDelimited</c>: <c>a|b</c>.</summary>
+        PipeDelimited,
+
+        /// <summary><c>ArrayEncoding.spaceDelimited</c>: <c>a b</c>.</summary>
+        SpaceDelimited,
+
+        /// <summary><c>ArrayEncoding.commaDelimited</c>: <c>a,b</c>.</summary>
+        CommaDelimited,
+
+        /// <summary><c>ArrayEncoding.newlineDelimited</c>: one item per line.</summary>
+        NewlineDelimited,
+    }
+
+    /// <summary>
+    /// Applies a wire format to a parameter or plain-text body before it is written, returning the
+    /// number or text that travels. A list in a delimited format becomes one string.
+    /// </summary>
+    /// <param name="value">The value; <see langword="null"/> stays <see langword="null"/>.</param>
+    /// <param name="encoding">The format.</param>
+    /// <returns>The value in that format, for <see cref="ToWireString"/> or <see cref="ToQueryValue"/>.</returns>
+    internal static object? Encode(object? value, WireEncoding encoding)
+    {
+        if (value is null) return null;
+        if (Separator(encoding) is { } separator)
+        {
+            return value is IEnumerable items and not string
+                ? string.Join(separator, items.Cast<object?>().Select(ToWireString))
+                : ToWireString(value);
+        }
+
+        return value switch
+        {
+            DateTimeOffset at when encoding == WireEncoding.UnixSeconds => at.ToUnixTimeSeconds(),
+            DateTimeOffset at when encoding == WireEncoding.Rfc7231 => at.ToString("r", CultureInfo.InvariantCulture),
+            TimeSpan span => encoding switch
+            {
+                WireEncoding.Seconds => span.TotalSeconds,
+                WireEncoding.WholeSeconds => (long)span.TotalSeconds,
+                WireEncoding.Milliseconds => span.TotalMilliseconds,
+                WireEncoding.WholeMilliseconds => (long)span.TotalMilliseconds,
+                _ => span,
+            },
+            byte[] bytes when encoding == WireEncoding.Base64Url => ToBase64Url(bytes),
+            _ => value,
+        };
+    }
+
+    /// <summary>
+    /// Reads a plain-text payload written in a wire format, the reverse of <see cref="Encode"/>.
+    /// </summary>
+    /// <typeparam name="T">The declared type.</typeparam>
+    /// <param name="text">The response text.</param>
+    /// <param name="encoding">The format.</param>
+    /// <returns>The value; <see langword="null"/> for empty text when the type allows it.</returns>
+    /// <exception cref="FormatException">The text is not in that format.</exception>
+    internal static T FromText<T>(string text, WireEncoding encoding)
+    {
+        if (text.Length == 0 && default(T) is null) return default!;
+
+        object value = encoding switch
+        {
+            WireEncoding.UnixSeconds =>
+                DateTimeOffset.FromUnixTimeSeconds(long.Parse(text, NumberStyles.Integer, CultureInfo.InvariantCulture)),
+            WireEncoding.Rfc7231 =>
+                DateTimeOffset.ParseExact(text, "r", CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal),
+            WireEncoding.Seconds or WireEncoding.WholeSeconds =>
+                TimeSpan.FromSeconds(double.Parse(text, NumberStyles.Float, CultureInfo.InvariantCulture)),
+            WireEncoding.Milliseconds or WireEncoding.WholeMilliseconds =>
+                TimeSpan.FromMilliseconds(double.Parse(text, NumberStyles.Float, CultureInfo.InvariantCulture)),
+            WireEncoding.Base64Url => FromBase64Url(text),
+            _ => throw new NotSupportedException($"{encoding} is not a plain-text format."),
+        };
+        return (T)value;
+    }
+
+    /// <summary>
+    /// The separator of a delimited list format, or <see langword="null"/> for any other format.
+    /// </summary>
+    private static string? Separator(WireEncoding encoding) => encoding switch
+    {
+        WireEncoding.PipeDelimited => "|",
+        WireEncoding.SpaceDelimited => " ",
+        WireEncoding.CommaDelimited => ",",
+        WireEncoding.NewlineDelimited => "\n",
+        _ => null,
+    };
+
+    /// <summary>
+    /// Encodes bytes as URL-safe base64 without padding.
+    /// </summary>
+    private static string ToBase64Url(byte[] bytes) =>
+        Convert.ToBase64String(bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_');
+
+    /// <summary>
+    /// Decodes URL-safe base64, with or without padding.
+    /// </summary>
+    /// <exception cref="FormatException">The text is not base64url.</exception>
+    private static byte[] FromBase64Url(string text)
+    {
+        var base64 = text.Replace('-', '+').Replace('_', '/');
+        return Convert.FromBase64String(base64.PadRight(base64.Length + ((4 - (base64.Length % 4)) % 4), '='));
+    }
+
+    /// <summary>
+    /// Reads and writes a date-time as a Unix timestamp in whole seconds (<c>unixTimestamp</c>).
+    /// </summary>
+    internal sealed class UnixSecondsConverter : JsonConverter<DateTimeOffset>
+    {
+        /// <inheritdoc />
+        public override DateTimeOffset Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options) =>
+            reader.TokenType == JsonTokenType.Number
+                ? DateTimeOffset.FromUnixTimeSeconds(reader.GetInt64())
+                : throw new JsonException($"Expected a Unix timestamp but found {reader.TokenType}.");
+
+        /// <inheritdoc />
+        public override void Write(Utf8JsonWriter writer, DateTimeOffset value, JsonSerializerOptions options) =>
+            writer.WriteNumberValue(value.ToUnixTimeSeconds());
+    }
+
+    /// <summary>
+    /// Reads and writes a date-time as an HTTP date (<c>rfc7231</c>), such as
+    /// <c>Tue, 15 Nov 1994 08:12:31 GMT</c>.
+    /// </summary>
+    internal sealed class Rfc7231Converter : JsonConverter<DateTimeOffset>
+    {
+        /// <inheritdoc />
+        public override DateTimeOffset Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+        {
+            if (reader.TokenType != JsonTokenType.String)
+            {
+                throw new JsonException($"Expected an RFC 7231 date but found {reader.TokenType}.");
+            }
+
+            try
+            {
+                return FromText<DateTimeOffset>(reader.GetString()!, WireEncoding.Rfc7231);
+            }
+            catch (FormatException exception)
+            {
+                throw new JsonException($"'{reader.GetString()}' is not an RFC 7231 date.", exception);
+            }
+        }
+
+        /// <inheritdoc />
+        public override void Write(Utf8JsonWriter writer, DateTimeOffset value, JsonSerializerOptions options) =>
+            writer.WriteStringValue(value.ToString("r", CultureInfo.InvariantCulture));
+    }
+
+    /// <summary>
+    /// Reads and writes a duration as a number of seconds or milliseconds.
+    /// </summary>
+    internal abstract class DurationNumberConverter : JsonConverter<TimeSpan>
+    {
+        private readonly bool _milliseconds;
+        private readonly bool _whole;
+
+        /// <summary>
+        /// Creates a converter for one unit, written as a whole number or with a fraction.
+        /// </summary>
+        protected DurationNumberConverter(bool milliseconds, bool whole)
+        {
+            _milliseconds = milliseconds;
+            _whole = whole;
+        }
+
+        /// <inheritdoc />
+        public override TimeSpan Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+        {
+            if (reader.TokenType != JsonTokenType.Number)
+            {
+                throw new JsonException($"Expected a duration as a number but found {reader.TokenType}.");
+            }
+
+            var units = reader.GetDouble();
+            return _milliseconds ? TimeSpan.FromMilliseconds(units) : TimeSpan.FromSeconds(units);
+        }
+
+        /// <inheritdoc />
+        public override void Write(Utf8JsonWriter writer, TimeSpan value, JsonSerializerOptions options)
+        {
+            var units = _milliseconds ? value.TotalMilliseconds : value.TotalSeconds;
+            if (_whole)
+            {
+                writer.WriteNumberValue((long)units);
+            }
+            else
+            {
+                writer.WriteNumberValue(units);
+            }
+        }
+    }
+
+    /// <summary>Reads and writes a duration as seconds that can have a fraction (<c>seconds</c>).</summary>
+    internal sealed class SecondsConverter : DurationNumberConverter
+    {
+        /// <summary>Creates the converter.</summary>
+        public SecondsConverter() : base(milliseconds: false, whole: false) { }
+    }
+
+    /// <summary>Reads and writes a duration as whole seconds (<c>seconds</c> encoded as an integer).</summary>
+    internal sealed class WholeSecondsConverter : DurationNumberConverter
+    {
+        /// <summary>Creates the converter.</summary>
+        public WholeSecondsConverter() : base(milliseconds: false, whole: true) { }
+    }
+
+    /// <summary>Reads and writes a duration as milliseconds that can have a fraction (<c>milliseconds</c>).</summary>
+    internal sealed class MillisecondsConverter : DurationNumberConverter
+    {
+        /// <summary>Creates the converter.</summary>
+        public MillisecondsConverter() : base(milliseconds: true, whole: false) { }
+    }
+
+    /// <summary>Reads and writes a duration as whole milliseconds (<c>milliseconds</c> encoded as an integer).</summary>
+    internal sealed class WholeMillisecondsConverter : DurationNumberConverter
+    {
+        /// <summary>Creates the converter.</summary>
+        public WholeMillisecondsConverter() : base(milliseconds: true, whole: true) { }
+    }
+
+    /// <summary>
+    /// Reads and writes bytes as URL-safe base64 without padding (<c>base64url</c>).
+    /// </summary>
+    internal sealed class Base64UrlConverter : JsonConverter<byte[]>
+    {
+        /// <inheritdoc />
+        public override byte[] Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+        {
+            if (reader.TokenType != JsonTokenType.String)
+            {
+                throw new JsonException($"Expected base64url text but found {reader.TokenType}.");
+            }
+
+            try
+            {
+                return FromBase64Url(reader.GetString()!);
+            }
+            catch (FormatException exception)
+            {
+                throw new JsonException($"'{reader.GetString()}' is not base64url.", exception);
+            }
+        }
+
+        /// <inheritdoc />
+        public override void Write(Utf8JsonWriter writer, byte[] value, JsonSerializerOptions options) =>
+            writer.WriteStringValue(ToBase64Url(value));
+    }
+
+    /// <summary>
+    /// Reads and writes a list as one delimited string (<c>ArrayEncoding</c>), each item in its
+    /// plain-text form.
+    /// </summary>
+    /// <typeparam name="T">The item type.</typeparam>
+    internal abstract class DelimitedConverter<T> : JsonConverter<List<T>>
+    {
+        private readonly string _separator;
+
+        /// <summary>
+        /// Creates a converter for one separator.
+        /// </summary>
+        protected DelimitedConverter(string separator) => _separator = separator;
+
+        /// <inheritdoc />
+        public override List<T> Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+        {
+            if (reader.TokenType != JsonTokenType.String)
+            {
+                throw new JsonException($"Expected a delimited list as a string but found {reader.TokenType}.");
+            }
+
+            var text = reader.GetString()!;
+            return text.Length == 0
+                ? []
+                : text.Split(_separator).Select(item => FromText<T>(item)).ToList();
+        }
+
+        /// <inheritdoc />
+        public override void Write(Utf8JsonWriter writer, List<T> value, JsonSerializerOptions options) =>
+            writer.WriteStringValue(string.Join(_separator, value.Select(item => ToWireString(item))));
+    }
+
+    /// <summary>Reads and writes a list as <c>a|b</c> (<c>ArrayEncoding.pipeDelimited</c>).</summary>
+    /// <typeparam name="T">The item type.</typeparam>
+    internal sealed class PipeDelimitedConverter<T> : DelimitedConverter<T>
+    {
+        /// <summary>Creates the converter.</summary>
+        public PipeDelimitedConverter() : base("|") { }
+    }
+
+    /// <summary>Reads and writes a list as <c>a b</c> (<c>ArrayEncoding.spaceDelimited</c>).</summary>
+    /// <typeparam name="T">The item type.</typeparam>
+    internal sealed class SpaceDelimitedConverter<T> : DelimitedConverter<T>
+    {
+        /// <summary>Creates the converter.</summary>
+        public SpaceDelimitedConverter() : base(" ") { }
+    }
+
+    /// <summary>Reads and writes a list as <c>a,b</c> (<c>ArrayEncoding.commaDelimited</c>).</summary>
+    /// <typeparam name="T">The item type.</typeparam>
+    internal sealed class CommaDelimitedConverter<T> : DelimitedConverter<T>
+    {
+        /// <summary>Creates the converter.</summary>
+        public CommaDelimitedConverter() : base(",") { }
+    }
+
+    /// <summary>Reads and writes a list with one item per line (<c>ArrayEncoding.newlineDelimited</c>).</summary>
+    /// <typeparam name="T">The item type.</typeparam>
+    internal sealed class NewlineDelimitedConverter<T> : DelimitedConverter<T>
+    {
+        /// <summary>Creates the converter.</summary>
+        public NewlineDelimitedConverter() : base("\n") { }
+    }
+
+    /// <summary>
     /// Reads and writes a <see cref="TimeSpan"/> as an ISO 8601 duration, which is what a TypeSpec
     /// <c>duration</c> is on the wire.
     /// </summary>

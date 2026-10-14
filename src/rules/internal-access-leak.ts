@@ -13,10 +13,12 @@ import {
   type Model,
   type ModelProperty,
   type Operation,
+  type Program,
   type Type,
   isArrayModelType,
   isRecordModelType,
 } from "@typespec/compiler";
+import { getMergePatchSource } from "@typespec/http/experimental/merge-patch";
 import { getAccess } from "../decorators.js";
 import { flattenProperties, findDiscriminatedRoot } from "../models.js";
 
@@ -41,15 +43,22 @@ function declarationOf(model: Model): Model {
  * Anonymous models, scalars, and
  * other non-named types are not tracked since they cannot carry `@access`.
  *
+ * A synthesized merge-patch body (`MergePatchUpdate<Secret>`) is emitted as
+ * `IMergePatch<Secret>`, so it resolves to its source model.
+ *
+ * @param program - The compiler program, used to find a merge-patch source.
  * @param type - The type to resolve.
  * @returns The named `Model`/`Enum` types reachable from `type`.
  */
-function resolveNamedTypes(type: Type): (Model | Enum)[] {
+function resolveNamedTypes(program: Program, type: Type): (Model | Enum)[] {
+  const resolve = (t: Type): (Model | Enum)[] => resolveNamedTypes(program, t);
   switch (type.kind) {
     case "Model": {
       if (isArrayModelType(type) || isRecordModelType(type)) {
-        return type.indexer ? resolveNamedTypes(type.indexer.value) : [];
+        return type.indexer ? resolve(type.indexer.value) : [];
       }
+      const mergePatchSource = getMergePatchSource(program, type);
+      if (mergePatchSource) return resolve(mergePatchSource);
       // A template instance such as `Page<Secret>` is emitted as `Page<Secret>`, so
       // its type arguments are as visible in the signature as the model itself.
       const typeArguments = (type.templateMapper?.args ?? []).filter(
@@ -58,7 +67,7 @@ function resolveNamedTypes(type: Type): (Model | Enum)[] {
       );
       return [
         ...(type.name ? [declarationOf(type)] : []),
-        ...typeArguments.flatMap(resolveNamedTypes),
+        ...typeArguments.flatMap(resolve),
       ];
     }
     case "Enum":
@@ -70,7 +79,7 @@ function resolveNamedTypes(type: Type): (Model | Enum)[] {
       const present = [...type.variants.values()]
         .map((variant) => variant.type)
         .filter((t) => !(t.kind === "Intrinsic" && t.name === "null"));
-      return present.length === 1 ? resolveNamedTypes(present[0]) : [];
+      return present.length === 1 ? resolve(present[0]) : [];
     }
     default:
       return [];
@@ -104,7 +113,7 @@ export const internalAccessLeakRule = createRule({
       target: Operation | ModelProperty,
       standalone = false,
     ): void {
-      for (const named of resolveNamedTypes(type)) {
+      for (const named of resolveNamedTypes(context.program, type)) {
         if (getAccess(context.program, named) === "internal") {
           context.reportDiagnostic({
             target,

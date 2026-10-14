@@ -256,54 +256,119 @@ describe("@encode", () => {
     strictEqual(warnings.length, 0);
   });
 
-  const unsupported: [string, string][] = [
+  const implemented: [string, string, string][] = [
     [
       "unixTimestamp",
       `@encode(DateTimeKnownEncoding.unixTimestamp, int64) when: utcDateTime;`,
+      "ClientRuntime.UnixSecondsConverter",
     ],
-    ["rfc7231", `@encode(DateTimeKnownEncoding.rfc7231) when: utcDateTime;`],
     [
-      "seconds",
-      `@encode(DurationKnownEncoding.seconds, float32) took: duration;`,
+      "rfc7231",
+      `@encode(DateTimeKnownEncoding.rfc7231) when: utcDateTime;`,
+      "ClientRuntime.Rfc7231Converter",
     ],
-    ["base64url", `@encode(BytesKnownEncoding.base64url) raw: bytes;`],
+    [
+      "seconds with a fraction",
+      `@encode(DurationKnownEncoding.seconds, float32) took: duration;`,
+      "ClientRuntime.SecondsConverter",
+    ],
+    [
+      "whole seconds",
+      `@encode(DurationKnownEncoding.seconds, int32) took: duration;`,
+      "ClientRuntime.WholeSecondsConverter",
+    ],
+    [
+      "milliseconds with a fraction",
+      `@encode(DurationKnownEncoding.milliseconds, float64) took: duration;`,
+      "ClientRuntime.MillisecondsConverter",
+    ],
+    [
+      "whole milliseconds",
+      `@encode(DurationKnownEncoding.milliseconds, int64) took: duration;`,
+      "ClientRuntime.WholeMillisecondsConverter",
+    ],
+    [
+      "base64url",
+      `@encode(BytesKnownEncoding.base64url) raw: bytes;`,
+      "ClientRuntime.Base64UrlConverter",
+    ],
+    [
+      "a pipe-delimited list",
+      `@encode(ArrayEncoding.pipeDelimited) tags: string[];`,
+      "ClientRuntime.PipeDelimitedConverter<string>",
+    ],
+    [
+      "a space-delimited list of numbers",
+      `@encode(ArrayEncoding.spaceDelimited) counts: int32[];`,
+      "ClientRuntime.SpaceDelimitedConverter<int>",
+    ],
+    [
+      "an optional comma-delimited list",
+      `@encode(ArrayEncoding.commaDelimited) maybe?: string[];`,
+      "ClientRuntime.CommaDelimitedConverter<string>",
+    ],
   ];
 
-  for (const [encoding, property] of unsupported) {
-    it(`warns that ${encoding} cannot be honoured, rather than using the wrong format silently`, async () => {
-      const { warnings } = await model(property);
+  for (const [name, property, converter] of implemented) {
+    it(`writes ${name} with its converter`, async () => {
+      const { thing, warnings } = await model(property);
 
-      strictEqual(warnings.length, 1, encoding);
-      ok(warnings[0].includes(`"${encoding}"`));
-      ok(warnings[0].includes("default wire format"));
+      strictEqual(warnings.length, 0, warnings.join("; "));
+      ok(thing.includes(`[JsonConverter(typeof(${converter}))]`), thing);
     });
   }
 
-  it("warns for a parameter too", async () => {
-    const [, diagnostics] = await emitWithDiagnostics(`${PREAMBLE}
+  it("applies the format to a parameter through the runtime encoder", async () => {
+    const [results, diagnostics] = await emitWithDiagnostics(`${PREAMBLE}
       @route("/t") interface Things {
         @get read(@header @encode(DateTimeKnownEncoding.rfc7231) ifModifiedSince?: utcDateTime): string;
       }
     `);
 
-    const warnings = codes(diagnostics, "unsupported-encoding");
-    strictEqual(warnings.length, 1);
-    ok(warnings[0].includes("parameter"));
-    ok(warnings[0].includes('"rfc7231"'));
+    strictEqual(codes(diagnostics, "unsupported-encoding").length, 0);
+    ok(
+      fileContent(results, "ThingsEndpoint.g.cs").includes(
+        'if (ifModifiedSince is not null) flurlRequest.WithHeader("if-modified-since", ClientRuntime.ToWireString(ClientRuntime.Encode(ifModifiedSince, ClientRuntime.WireEncoding.Rfc7231)));',
+      ),
+    );
   });
 
-  it("is only a warning, so generation still completes", async () => {
-    const [results, diagnostics] = await emitWithDiagnostics(`${PREAMBLE}
-      model Thing { @encode(DateTimeKnownEncoding.rfc7231) when: utcDateTime; }
+  it("reports an encoding the client cannot honour as an error", async () => {
+    const [, diagnostics] = await emitWithDiagnostics(`${PREAMBLE}
+      model Thing { @encode("custom") name: string; }
       @route("/t") interface Things { @get read(): Thing; }
     `);
 
-    ok(
-      diagnostics
-        .filter((d) => d.code.endsWith("unsupported-encoding"))
-        .every((d) => d.severity === "warning"),
+    const errors = diagnostics.filter((d) =>
+      d.code.endsWith("unsupported-encoding"),
     );
-    ok(Object.keys(results).some((k) => k.endsWith("Thing.g.cs")));
+    strictEqual(errors.length, 1);
+    strictEqual(errors[0].severity, "error");
+    ok(errors[0].message.includes('"custom"'));
+  });
+
+  it("leaves out an operation whose parameter cannot be encoded", async () => {
+    const [results, diagnostics] = await emitWithDiagnostics(`${PREAMBLE}
+      @route("/t") interface Things {
+        @get read(@query @encode("custom") q: string): string;
+        @route("other") @get other(): string;
+      }
+    `);
+
+    strictEqual(codes(diagnostics, "unsupported-encoding").length, 1);
+    const iface = fileContent(results, "IThings.g.cs");
+    ok(!iface.includes("ReadAsync"));
+    ok(iface.includes("OtherAsync"));
+  });
+
+  it("reports a delimited list of models, which has no text form", async () => {
+    const [, diagnostics] = await emitWithDiagnostics(`${PREAMBLE}
+      model Item { name: string; }
+      model Thing { @encode(ArrayEncoding.pipeDelimited) items: Item[]; }
+      @route("/t") interface Things { @get read(): Thing; }
+    `);
+
+    strictEqual(codes(diagnostics, "unsupported-encoding").length, 1);
   });
 });
 
@@ -483,12 +548,20 @@ describe("nested discriminators", () => {
 });
 
 describe("@encode(string) where it does not apply", () => {
+  it("accepts @encode(string) on a string, which already is one", async () => {
+    const [, diagnostics] = await emitWithDiagnostics(`${PREAMBLE}
+      model Thing { @encode("string") a: string; }
+      @route("/t") interface Things { @get read(): Thing; }
+    `);
+
+    strictEqual(codes(diagnostics, "unsupported-encoding").length, 0);
+  });
+
   for (const declaration of [
-    `@encode("string") a: string;`,
     `@encode("string") when: utcDateTime;`,
     `@encode("string") took: duration;`,
   ]) {
-    it(`warns for ${declaration}`, async () => {
+    it(`reports ${declaration}`, async () => {
       const [, diagnostics] = await emitWithDiagnostics(`${PREAMBLE}
         model Thing { ${declaration} }
         @route("/t") interface Things { @get read(): Thing; }

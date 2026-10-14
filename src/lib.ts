@@ -275,9 +275,9 @@ export const $lib = createTypeSpecLibrary({
       },
     },
     "unsupported-encoding": {
-      severity: "warning",
+      severity: "error",
       messages: {
-        default: paramMessage`The ${"kind"} "${"name"}" uses @encode "${"encoding"}", which this emitter cannot produce or read. The default wire format is used instead, so it will not match what the API expects.`,
+        default: paramMessage`The ${"kind"} "${"name"}" uses @encode "${"encoding"}", which this client cannot produce or read here, so the value would not travel in the format the API expects. An operation that sends or reads it is left out. Supported: rfc3339, rfc7231 and unixTimestamp for dates, ISO8601, seconds and milliseconds for durations, base64 and base64url for bytes, "string" for numbers and booleans, and ArrayEncoding for lists of scalars in parameters and JSON properties.`,
       },
     },
     "unsupported-feature": {

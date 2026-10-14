@@ -25,6 +25,8 @@
     .docName        —   the wire name, XML-escaped, for that generated summary
     .numberAsString —   true for a number written as a JSON string (@encode("string")).
                         Adds [JsonNumberHandling(...)] so it round-trips as a string.
+    .converter      —   the [JsonConverter] type for a property whose @encode the runtime
+                        implements (unixTimestamp, rfc7231, seconds, base64url, ...).
     .writeNull      —   true for a required property whose type allows null. Adds
                         [JsonIgnore(Condition = JsonIgnoreCondition.Never)] so a null is
                         written as `null` rather than left out like an optional one.
@@ -66,6 +68,7 @@
     [JsonPropertyName("{{jsonPropertyName}}")]
 {{#if numberAsString}}    [JsonNumberHandling(JsonNumberHandling.WriteAsString | JsonNumberHandling.AllowReadingFromString)]
 {{/if}}{{#if writeNull}}    [JsonIgnore(Condition = JsonIgnoreCondition.Never)]
+{{/if}}{{#if converter}}    [JsonConverter(typeof({{{converter}}}))]
 {{/if}}    public {{type}} {{name}} { get; init; }{{#if defaultValue}} = {{defaultValue}};{{/if}}
     
 {{/each}}

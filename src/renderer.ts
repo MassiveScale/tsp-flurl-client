@@ -12,6 +12,7 @@ import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import Handlebars from "handlebars";
+import { encodeExpression, type WireEncoding } from "./encoding.js";
 import { escapeCsString } from "./utils.js";
 
 /** Absolute path to the bundled default templates directory. */
@@ -64,6 +65,11 @@ export interface PropertyView {
    * `"note": null` instead of being left out the way an optional property is.
    */
   writeNull?: boolean;
+  /**
+   * The `[JsonConverter]` type for a property with an `@encode` the runtime
+   * implements, e.g. `ClientRuntime.UnixSecondsConverter`.
+   */
+  converter?: string;
 }
 
 /** One derived-type entry for a `[JsonDerivedType(typeof(...), "...")]` attribute. */
@@ -157,6 +163,8 @@ export interface BodyView {
   contentType: string;
   /** `true` for `@body body?: T`: a `null` argument sends no body at all. */
   optional?: boolean;
+  /** The runtime format of a plain-text body with an `@encode`, e.g. `UnixSeconds`. */
+  encoding?: WireEncoding;
 }
 
 /** The success response body of an endpoint method. */
@@ -168,6 +176,8 @@ export interface ResponseView {
    * success (`Widget | void`), for which the method returns `null` without reading.
    */
   emptyWhen?: string;
+  /** The runtime format of a plain-text response with an `@encode`, e.g. `UnixSeconds`. */
+  encoding?: WireEncoding;
   /**
    * C# type the body is read as, e.g. `"Widget"` or `"List<Widget>"`; nullable when
    * another success response has no body. A `text` body is parsed into it, and it is
@@ -196,6 +206,12 @@ export interface QueryParamView {
   /** C# parameter that supplies the value. */
   variable: string;
   /**
+   * The C# expression written for the parameter when its `@encode` needs the runtime
+   * encoder (`ClientRuntime.Encode(at, ClientRuntime.WireEncoding.UnixSeconds)`);
+   * otherwise the variable itself is written.
+   */
+  value?: string;
+  /**
    * `true` for an array sent as one comma-separated value (`tags=a,b`), which is what
    * TypeSpec means by `explode: false`. Otherwise an array is repeated (`tags=a&tags=b`).
    */
@@ -208,6 +224,17 @@ export interface CookieParamView {
   name: string;
   /** C# parameter that supplies the value. */
   variable: string;
+  /**
+   * `true` when the parameter can be null, so the header or cookie is only added
+   * when it has a value; a required value type cannot be null and is always added.
+   */
+  guard?: boolean;
+  /**
+   * The C# expression written for the parameter when its `@encode` needs the runtime
+   * encoder (`ClientRuntime.Encode(at, ClientRuntime.WireEncoding.UnixSeconds)`);
+   * otherwise the variable itself is written.
+   */
+  value?: string;
 }
 
 /** A header bound to a C# method parameter. */
@@ -216,6 +243,17 @@ export interface HeaderParamView {
   name: string;
   /** C# parameter that supplies the value. */
   variable: string;
+  /**
+   * `true` when the parameter can be null, so the header or cookie is only added
+   * when it has a value; a required value type cannot be null and is always added.
+   */
+  guard?: boolean;
+  /**
+   * The C# expression written for the parameter when its `@encode` needs the runtime
+   * encoder (`ClientRuntime.Encode(at, ClientRuntime.WireEncoding.UnixSeconds)`);
+   * otherwise the variable itself is written.
+   */
+  value?: string;
 }
 
 /** View model for a single endpoint method, used by both the interface and the client class. */
@@ -520,17 +558,17 @@ function renderRequestBody(m: MethodView, responseType: string): string[] {
       ? "ClientRuntime.ToDelimitedQueryValue"
       : "ClientRuntime.ToQueryValue";
     lines.push(
-      `${pad}flurlRequest.SetQueryParam("${escapeCsString(q.name)}", ${convert}(${q.variable}));`,
+      `${pad}flurlRequest.SetQueryParam("${escapeCsString(q.name)}", ${convert}(${q.value ?? q.variable}));`,
     );
   }
   for (const h of m.headerParams) {
     lines.push(
-      `${pad}if (${h.variable} is not null) flurlRequest.WithHeader("${escapeCsString(h.name)}", ClientRuntime.ToWireString(${h.variable}));`,
+      `${pad}${h.guard ? `if (${h.variable} is not null) ` : ""}flurlRequest.WithHeader("${escapeCsString(h.name)}", ClientRuntime.ToWireString(${h.value ?? h.variable}));`,
     );
   }
   for (const c of m.cookieParams) {
     lines.push(
-      `${pad}if (${c.variable} is not null) flurlRequest.WithCookie("${escapeCsString(c.name)}", ClientRuntime.ToWireString(${c.variable}));`,
+      `${pad}${c.guard ? `if (${c.variable} is not null) ` : ""}flurlRequest.WithCookie("${escapeCsString(c.name)}", ClientRuntime.ToWireString(${c.value ?? c.variable}));`,
     );
   }
   lines.push(
@@ -552,7 +590,10 @@ function renderRequestBody(m: MethodView, responseType: string): string[] {
   } else if (m.body.kind === "bytes") {
     send = `await flurlRequest.SendAsync(${verb}, ClientRuntime.BytesContent(${m.body.variable}, "${escapeCsString(m.body.contentType)}"), cancellationToken: cancellationToken)`;
   } else {
-    send = `await flurlRequest.SendAsync(${verb}, ClientRuntime.TextContent(ClientRuntime.ToWireString(${m.body.variable}), "${escapeCsString(m.body.contentType)}"), cancellationToken: cancellationToken)`;
+    const text = m.body.encoding
+      ? encodeExpression(m.body.variable, m.body.encoding)
+      : m.body.variable;
+    send = `await flurlRequest.SendAsync(${verb}, ClientRuntime.TextContent(ClientRuntime.ToWireString(${text}), "${escapeCsString(m.body.contentType)}"), cancellationToken: cancellationToken)`;
   }
   if (m.body?.optional) {
     // An omitted optional body sends no content, rather than a JSON `null`.
@@ -577,7 +618,7 @@ function renderRequestBody(m: MethodView, responseType: string): string[] {
     );
   } else if (m.response?.kind === "text") {
     lines.push(
-      `${pad}return ClientRuntime.FromText<${responseType}>(await flurlResponse.GetStringAsync().ConfigureAwait(false));`,
+      `${pad}return ClientRuntime.FromText<${responseType}>(await flurlResponse.GetStringAsync().ConfigureAwait(false)${m.response.encoding ? `, ClientRuntime.WireEncoding.${m.response.encoding}` : ""});`,
     );
   } else if (m.response?.kind === "negotiated") {
     lines.push(

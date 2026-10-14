@@ -464,6 +464,99 @@ public sealed class KitchenSinkTests
         label.Should().NotBeNull().And.BeEmpty();
     }
 
+    private static readonly DateTimeOffset At = new(2024, 1, 2, 3, 4, 5, TimeSpan.Zero);
+
+    [TestMethod]
+    public async Task Every_encoding_is_written_in_its_wire_format()
+    {
+        var (client, handler) = Create();
+        handler.RespondJson("""{"at":0,"httpDate":"Thu, 01 Jan 1970 00:00:00 GMT","wait":0,"precise":0,"ms":0,"token":"","tags":""}""");
+
+        await client.Misc.TimedAsync(new Timed
+        {
+            At = At,
+            HttpDate = At,
+            Wait = TimeSpan.FromSeconds(90),
+            Precise = TimeSpan.FromSeconds(1.5),
+            Ms = TimeSpan.FromMilliseconds(250),
+            Token = [0xFB, 0xFF],
+            Tags = ["a", "b"],
+            Counts = [1, 2],
+        });
+
+        using var sent = JsonDocument.Parse(handler.Last.Body!);
+        var root = sent.RootElement;
+        root.GetProperty("at").GetInt64().Should().Be(1704164645);
+        root.TryGetProperty("maybeAt", out _).Should().BeFalse("an optional null is left out");
+        root.GetProperty("httpDate").GetString().Should().Be("Tue, 02 Jan 2024 03:04:05 GMT");
+        root.GetProperty("wait").GetRawText().Should().Be("90");
+        root.GetProperty("precise").GetDouble().Should().Be(1.5);
+        root.GetProperty("ms").GetRawText().Should().Be("250");
+        root.GetProperty("token").GetString().Should().Be("-_8");
+        root.GetProperty("tags").GetString().Should().Be("a|b");
+        root.GetProperty("counts").GetString().Should().Be("1,2");
+    }
+
+    [TestMethod]
+    public async Task Every_encoding_is_read_from_its_wire_format()
+    {
+        var (client, handler) = Create();
+        handler.RespondJson(
+            """{"at":1704164645,"maybeAt":1704164645,"httpDate":"Tue, 02 Jan 2024 03:04:05 GMT","wait":90,"precise":1.5,"ms":250,"token":"-_8","tags":"a|b","counts":"1,2"}""");
+
+        var timed = await client.Misc.TimedAsync(new Timed { HttpDate = At, Token = [], Tags = [] });
+
+        timed.At.Should().Be(At);
+        timed.MaybeAt.Should().Be(At);
+        timed.HttpDate.Should().Be(At);
+        timed.Wait.Should().Be(TimeSpan.FromSeconds(90));
+        timed.Precise.Should().Be(TimeSpan.FromSeconds(1.5));
+        timed.Ms.Should().Be(TimeSpan.FromMilliseconds(250));
+        timed.Token.Should().Equal(0xFB, 0xFF);
+        timed.Tags.Should().Equal("a", "b");
+        timed.Counts.Should().Equal(1, 2);
+    }
+
+    [TestMethod]
+    public async Task A_value_in_the_wrong_wire_format_fails_loudly()
+    {
+        var (client, handler) = Create();
+        handler.RespondJson("""{"at":"2024-01-02T03:04:05Z","httpDate":"x","wait":0,"precise":0,"ms":0,"token":"","tags":""}""");
+
+        var act = () => client.Misc.TimedAsync(new Timed { HttpDate = At, Token = [], Tags = [] });
+
+        (await act.Should().ThrowAsync<FlurlParsingException>())
+            .WithInnerException<JsonException>()
+            .WithMessage("Expected a Unix timestamp*");
+    }
+
+    [TestMethod]
+    public async Task Encoded_parameters_use_their_wire_format()
+    {
+        var (client, handler) = Create();
+
+        await client.Misc.EncodedParamsAsync(At, At, ["a", "b"], TimeSpan.FromSeconds(90), [0xFB, 0xFF]);
+
+        handler.Last.Uri.AbsolutePath.Should().Be("/api/misc/encoded-params/1704164645");
+        var query = Uri.UnescapeDataString(handler.Last.Uri.Query);
+        query.Should().Contain("since=Tue, 02 Jan 2024 03:04:05 GMT");
+        query.Should().Contain("tags=a|b");
+        query.Should().Contain("token=-_8");
+        handler.Last.Headers["X-Wait"].Should().Be("90");
+    }
+
+    [TestMethod]
+    public async Task An_encoded_text_body_and_response_use_their_wire_format()
+    {
+        var (client, handler) = Create();
+
+        handler.RespondText("1704164645");
+        (await client.Misc.UnixAsync()).Should().Be(At);
+
+        await client.Misc.SetUnixAsync(At);
+        handler.Last.Body.Should().Be("1704164645");
+    }
+
     private static int CountOf(string text, string value) =>
         (text.Length - text.Replace(value, string.Empty).Length) / value.Length;
 

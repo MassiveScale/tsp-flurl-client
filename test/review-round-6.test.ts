@@ -212,18 +212,37 @@ describe("decorators on a body property", () => {
     ok(fileContent(results, "IFlags.g.cs").includes("SendAsync(string body,"));
   });
 
-  it("warns once about an encoding the client cannot produce on a request or response body", async () => {
-    const [, diagnostics] = await emitWithDiagnostics(`${PREAMBLE}
+  it("writes and reads an encoded plain-text body through the runtime encoder", async () => {
+    const [results, diagnostics] = await emitWithDiagnostics(`${PREAMBLE}
       @route("/d") interface Durations {
         @post send(@body @encode(DurationKnownEncoding.seconds, int32) value: duration): void;
         @get read(): { @body @encode(DurationKnownEncoding.seconds, int32) took: duration };
       }
     `);
 
+    strictEqual(messagesFor(diagnostics, "unsupported-encoding").length, 0);
+    const client = fileContent(results, "DurationsEndpoint.g.cs");
+    ok(
+      client.includes(
+        "ClientRuntime.ToWireString(ClientRuntime.Encode(body, ClientRuntime.WireEncoding.WholeSeconds))",
+      ),
+    );
+    ok(client.includes("ClientRuntime.WireEncoding.WholeSeconds);"));
+    ok(client.includes("ClientRuntime.FromText<TimeSpan>("));
+  });
+
+  it("leaves out an operation whose JSON body needs a format a body cannot carry", async () => {
+    const [results, diagnostics] = await emitWithDiagnostics(`${PREAMBLE}
+      @route("/d") interface Durations {
+        @post send(@header contentType: "application/json", @body @encode(DurationKnownEncoding.seconds, int32) value: duration): void;
+        @route("ok") @get ok(): string;
+      }
+    `);
+
     const messages = messagesFor(diagnostics, "unsupported-encoding");
-    strictEqual(messages.length, 2, messages.join(", "));
-    ok(messages.some((m) => m.includes('The body "value"')));
-    ok(messages.some((m) => m.includes('The body "took"')));
+    strictEqual(messages.length, 1);
+    ok(messages[0].includes('The body "value"'));
+    ok(!fileContent(results, "IDurations.g.cs").includes("SendAsync"));
   });
 
   it("accepts a number encoded as a string when it travels as plain text", async () => {
@@ -269,13 +288,12 @@ describe("encoding warnings across versions", () => {
 
       enum Versions { v1: "1.0", v2: "2.0" }
 
-      model M { @encode(DurationKnownEncoding.seconds, int32) d: duration; }
+      model M { @encode("custom") d: string; }
 
       @route("/x") interface X {
-        @post send(
-          @body @encode(DurationKnownEncoding.seconds, int32) value: duration,
-          @query @encode(DurationKnownEncoding.seconds, int32) q: duration,
-        ): M;
+        @post send(@body body: M): void;
+        @route("q") @get query(@query @encode("custom") q: string): void;
+        @route("b") @post text(@body @encode("custom") value: string): void;
       }
     `,
       { "all-versions": true },

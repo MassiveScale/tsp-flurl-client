@@ -196,6 +196,33 @@ describe("internal-access-leak", () => {
       });
   });
 
+  it("flags a public operation whose merge-patch body patches an internal model", async () => {
+    await tester
+      .expect(
+        `
+        import "@typespec/http";
+        import "@massivescale/tsp-flurl-client";
+        using Http;
+        using MassiveScale.TspFlurlClient;
+
+        namespace TestApi;
+
+        @access(Access.internal)
+        model Secret {
+          value: string;
+        }
+
+        interface Secrets {
+          @patch update(@body body: MergePatchUpdate<Secret>): void;
+        }
+      `,
+      )
+      .toEmitDiagnostics({
+        code: "@massivescale/tsp-flurl-client/internal-access-leak",
+        message: /"Secret"/,
+      });
+  });
+
   it("does not flag an instance of a public template", async () => {
     await tester
       .expect(

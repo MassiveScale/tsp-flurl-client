@@ -121,6 +121,19 @@ model WireNames {
   nothing: null;
 }
 
+/** Every @encode TypeSpec defines that is not the default wire format. */
+model Timed {
+  @encode(DateTimeKnownEncoding.unixTimestamp, int64) at: utcDateTime;
+  @encode(DateTimeKnownEncoding.unixTimestamp, int64) maybeAt?: utcDateTime;
+  @encode(DateTimeKnownEncoding.rfc7231) httpDate: utcDateTime;
+  @encode(DurationKnownEncoding.seconds, int32) wait: duration;
+  @encode(DurationKnownEncoding.seconds, float64) precise: duration;
+  @encode(DurationKnownEncoding.milliseconds, int64) ms: duration;
+  @encode(BytesKnownEncoding.base64url) token: bytes;
+  @encode(ArrayEncoding.pipeDelimited) tags: string[];
+  @encode(ArrayEncoding.commaDelimited) counts?: int32[];
+}
+
 model Encoded {
   @encode("string") big: int64;
   @encode("string") ratio: float64;
@@ -236,6 +249,16 @@ interface Misc {
   @route("box") @get box(): Box<Derived>;
   @route("tagged") @get tagged(): Tagged<Derived, string>;
   @route("wire") @post wireNames(@body body: WireNames): WireNames;
+  @route("timed") @post timed(@body body: Timed): Timed;
+  @route("encoded-params/{at}") @get encodedParams(
+    @path @encode(DateTimeKnownEncoding.unixTimestamp, int64) at: utcDateTime,
+    @query @encode(DateTimeKnownEncoding.rfc7231) since: utcDateTime,
+    @query @encode(ArrayEncoding.pipeDelimited) tags: string[],
+    @header("X-Wait") @encode(DurationKnownEncoding.seconds, int32) wait: duration,
+    @query @encode(BytesKnownEncoding.base64url) token: bytes,
+  ): void;
+  @route("unix") @get unix(): { @body @encode(DateTimeKnownEncoding.unixTimestamp, int64) at: utcDateTime };
+  @route("unix") @put setUnix(@body @encode(DateTimeKnownEncoding.unixTimestamp, int64) at: utcDateTime): void;
   @route("upsert") @post upsert(): { @statusCode _: 200; @body body: Derived } | { @statusCode _: 201; @body body: Spread };
   @route("label") @get label(): { @header contentType: "application/json" | "text/plain"; @body body: string };
   @route("latin") @post latin(@header contentType: "text/plain; charset=iso-8859-1", @body body: string): void;
