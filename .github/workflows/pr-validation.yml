@@ -35,8 +35,10 @@ jobs:
       - name: Lint
         run: npm run lint
 
+      # Tests run the compiled files in dist, so the build is explicit rather than left
+      # to the prepare script that npm ci happens to run.
       - name: Build & Test
-        run: npm test
+        run: npm run build && npm test
 
   e2e:
     name: End-to-end (generated C#)

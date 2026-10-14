@@ -479,6 +479,70 @@ describe("parameters named after contextual keywords", () => {
   });
 });
 
+describe("success responses of one type in different media types", () => {
+  const response = (status: number, contentType: string, body: string) =>
+    `{ @statusCode _: ${status}; @header contentType: "${contentType}"; @body body: ${body} }`;
+
+  const compile = (responses: string) =>
+    emitWithDiagnostics(`${PREAMBLE}
+      @route("/r") interface Things {
+        @get read(): ${responses};
+        @route("ok") @get ok(): string;
+      }
+    `);
+
+  for (const [name, responses] of [
+    [
+      "JSON bytes beside raw octets",
+      `${response(200, "application/json", "bytes")} | ${response(201, "application/octet-stream", "bytes")}`,
+    ],
+    [
+      "base64 text beside raw octets",
+      `{ @statusCode _: 200; @header contentType: "text/plain"; @body @encode("base64") body: bytes } | ${response(201, "application/octet-stream", "bytes")}`,
+    ],
+  ]) {
+    it(`leaves out an operation with ${name}`, async () => {
+      const [results, diagnostics] = await compile(responses);
+
+      ok(
+        messagesFor(diagnostics, "unsupported-feature").some((m) =>
+          m.includes("travel in ways one method cannot read"),
+        ),
+        diagnostics.map((d) => d.message).join("; "),
+      );
+      const iface = fileContent(results, "IThings.g.cs");
+      ok(!iface.includes("ReadAsync"), iface);
+      ok(iface.includes("OkAsync"), iface);
+    });
+  }
+
+  it("still reads JSON and text of one value by the Content-Type that arrives", async () => {
+    const [results, diagnostics] = await compile(
+      `${response(200, "application/json", "string")} | ${response(201, "text/plain", "string")}`,
+    );
+
+    strictEqual(
+      messagesFor(diagnostics, "unsupported-feature").length,
+      0,
+      diagnostics.map((d) => d.message).join("; "),
+    );
+    ok(
+      fileContent(results, "IThings.g.cs").includes("Task<string> ReadAsync("),
+    );
+  });
+
+  it("still reads raw octets from two statuses", async () => {
+    const [results, diagnostics] = await compile(
+      `${response(200, "application/octet-stream", "bytes")} | ${response(201, "application/octet-stream", "bytes")}`,
+    );
+
+    strictEqual(messagesFor(diagnostics, "unsupported-feature").length, 0);
+    ok(
+      fileContent(results, "IThings.g.cs").includes("Task<byte[]> ReadAsync("),
+    );
+  });
+});
+
 describe("template comments", () => {
   it("use plain headings rather than decorative dividers", () => {
     const templates = resolve(

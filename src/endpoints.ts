@@ -1531,6 +1531,29 @@ function findUnsupportedPayload(
     return "Success responses with different bodies that are not all JSON";
   }
 
+  // Bodies of one C# type are read by one method, in the way their media types
+  // together call for (see resolveResponse). Each must travel that way: only JSON and
+  // text mix, as a response read by the Content-Type that arrives. A 200 of JSON bytes
+  // beside a 201 of raw octets would otherwise be generated with no way to read it.
+  if (
+    bodies.length > 1 &&
+    new Set(bodies.map((b) => bodyShape(b, program))).size === 1
+  ) {
+    const combined = classifyPayload(
+      bodies.flatMap((b) => b.contentTypes),
+      bodies[0].type,
+      "response",
+      isEncodedAsText(program, bodies[0]),
+    );
+    const fits = (kind: PayloadKind | "unsupported"): boolean =>
+      combined === "negotiated"
+        ? kind === "json" || kind === "text" || kind === "negotiated"
+        : kind === combined;
+    if (combined === "unsupported" || !kinds.every(fits)) {
+      return `Success responses of one type that travel in ways one method cannot read (${[...new Set(kinds)].join(", ")})`;
+    }
+  }
+
   // Each body's `@encode` is checked against how its own media types travel: a 201
   // whose number is `@encode("string")` inside JSON breaks reading even when the 200
   // beside it is a plain number of the same C# type.
