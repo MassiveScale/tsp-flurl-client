@@ -1,7 +1,7 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { ok, strictEqual } from "node:assert";
+import { deepStrictEqual, ok, strictEqual } from "node:assert";
 import { describe, it } from "node:test";
 import {
   emit,
@@ -592,32 +592,47 @@ describe("template parameter names", () => {
     ok(box.includes("my_T Value"), box);
   });
 
-  it("reports a property that would share a type parameter's name", async () => {
-    const [, diagnostics] = await emitWithDiagnostics(`${PREAMBLE}
-      model Bag<Items> { items: Items[]; }
+  for (const [name, spec, declared, used] of [
+    [
+      "a property",
+      "model Bag<Items> { items: Items[]; }",
+      "record Bag<TItems>",
+      "List<TItems> Items",
+    ],
+    [
+      "its record",
+      "model Bag<Bag> { value: Bag; }",
+      "record Bag<TBag>",
+      "TBag Value",
+    ],
+    [
+      "a member every record has",
+      "model Bag<Equals> { value: Equals; }",
+      "record Bag<TEquals>",
+      "TEquals Value",
+    ],
+  ]) {
+    it(`renames a type parameter that would share a name with ${name}`, async () => {
+      const results = await emit(`${PREAMBLE}
+        ${spec}
+        @route("/b") interface Bags { @get read(): Bag<string>; }
+      `);
+
+      const bag = fileContent(results, "/Bag.g.cs");
+      ok(bag.includes(declared), bag);
+      ok(bag.includes(used), bag);
+    });
+  }
+
+  it("verbatim-escapes a name of only lower-case letters, which C# warns about (CS8981)", async () => {
+    const results = await emit(`${PREAMBLE}
+      model Bag<value> { item: value; }
       @route("/b") interface Bags { @get read(): Bag<string>; }
     `);
 
-    ok(
-      messagesFor(diagnostics, "name-collision").some((m) =>
-        m.includes('the type parameter "Items"'),
-      ),
-      diagnostics.map((d) => d.message).join("; "),
-    );
-  });
-
-  it("reports a type parameter that would share its record's name", async () => {
-    const [, diagnostics] = await emitWithDiagnostics(`${PREAMBLE}
-      model Wrap<Wrap> { value: Wrap; }
-      @route("/w") interface Wraps { @get read(): Wrap<string>; }
-    `);
-
-    ok(
-      messagesFor(diagnostics, "name-collision").some((m) =>
-        m.includes("type parameter"),
-      ),
-      diagnostics.map((d) => d.message).join("; "),
-    );
+    const bag = fileContent(results, "/Bag.g.cs");
+    ok(bag.includes("record Bag<@value>"), bag);
+    ok(bag.includes("@value Item"), bag);
   });
 
   it("keeps a literal argument to a parameter no property uses", async () => {
@@ -660,6 +675,14 @@ describe("value template parameters", () => {
           m.includes('"N"'),
         ),
         diagnostics.map((d) => d.message).join("; "),
+      );
+      // Only the emitter reports anything: inspecting the template must not make
+      // the compiler report `value-in-type` against it.
+      deepStrictEqual(
+        diagnostics
+          .filter((d) => !d.code.startsWith("@massivescale/"))
+          .map((d) => d.code),
+        [],
       );
       const iface = fileContent(results, "IThings.g.cs");
       strictEqual((iface.match(/Task.*Async\(/g) ?? []).length, 1, iface);

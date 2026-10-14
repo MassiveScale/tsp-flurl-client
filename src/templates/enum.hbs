@@ -37,8 +37,10 @@
 
   Built-in helpers:
 
-  {{indent <text>}}  — prefixes every non-empty line of <text> with 4 spaces
-  {{eq a b}}         — strict equality
+  {{indent <text>}}      — prefixes every non-empty line of <text> with 4 spaces
+  {{eq a b}}             — strict equality
+  {{declaredName name}}  — the name to declare a type with: one of only lower-case
+                           letters is verbatim-escaped, as C# warns about it (CS8981)
 
 --}}
 /// <summary>
@@ -46,7 +48,7 @@
 {{else}}/// The <c>{{enumName}}</c> enumeration.
 {{/if}}/// </summary>
 [JsonConverter(typeof({{enumName}}JsonConverter))]
-{{access}} enum {{enumName}}
+{{access}} enum {{declaredName enumName}}
 {
 {{#each members}}    /// <summary>
 {{#if doc}}    /// {{docLines doc "    /// "}}

@@ -61,6 +61,7 @@ const HAND_WRITTEN = [
   ...TEMPLATES,
   ...filesUnder("scripts", [".mjs", ".js", ".ts"]),
   ...filesUnder("e2e", [".cs"]),
+  ...filesUnder("matrix", [".mjs", ".cs"]),
   ...filesUnder("example", [".tsp"]),
 ];
 

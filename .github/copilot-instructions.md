@@ -180,6 +180,14 @@ After making any change to the codebase:
    dotnet run --project e2e/CustomModels.Tests -f net10.0
    ```
 
+4. **Run the compile matrix**, which generates every combination TypeSpec accepts and requires each to be reported or to build and round-trip:
+
+   ```powershell
+   npm run matrix
+   ```
+
+   When a change deliberately leaves out more or fewer operations, accept it with `npm run matrix -- --update` and review the diff of `matrix/left-out.txt`.
+
 All steps must pass before a change is considered complete.
 
 ## Releasing

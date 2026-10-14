@@ -13,7 +13,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import Handlebars from "handlebars";
 import { encodeExpression, type WireEncoding } from "./encoding.js";
-import { escapeCsString } from "./utils.js";
+import { csDeclarationName, escapeCsString } from "./utils.js";
 
 /** Absolute path to the bundled default templates directory. */
 const TEMPLATES_DIR = resolve(
@@ -427,6 +427,10 @@ function createHandlebarsEnv(): typeof Handlebars {
   env.registerHelper("isDefined", (value: unknown) => value !== undefined);
 
   env.registerHelper("eq", (a: unknown, b: unknown) => a === b);
+
+  env.registerHelper("declaredName", (name: unknown) =>
+    typeof name === "string" ? csDeclarationName(name) : name,
+  );
 
   return env;
 }

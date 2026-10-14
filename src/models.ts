@@ -16,6 +16,10 @@ import {
   resolveEncodedName,
   type Discriminator,
 } from "@typespec/compiler";
+import {
+  SyntaxKind,
+  type TemplateParameterDeclarationNode as TemplateParameterNode,
+} from "@typespec/compiler/ast";
 import { isVisible, type Visibility } from "@typespec/http";
 import { getMergePatchSource } from "@typespec/http/experimental/merge-patch";
 import type { Version } from "@typespec/versioning";
@@ -384,12 +388,7 @@ export function buildRecord(
     program,
     "type parameter",
     `record ${recordName}`,
-    [
-      [
-        recordName,
-        "the record itself, whose name a type parameter cannot share",
-      ],
-    ],
+    recordReservedMembers(recordName),
   );
   for (const name of typeParams) {
     typeParamScope.claim(name.replace(/^@/, ""), `"${name}"`, model);
@@ -793,44 +792,38 @@ export function* reachableModels(
  * parameter that accepts values and was not given a type, since a literal passed to
  * one may be read as either.
  *
- * @param program - The compiler program.
  * @param model - A template declaration or instance, or any other model.
  * @returns The parameter's name, or `undefined` when there is none.
  */
-export function valueTemplateParameter(
-  program: Program,
-  model: Model,
-): string | undefined {
+export function valueTemplateParameter(model: Model): string | undefined {
   const isDeclaration = isTemplateDeclaration(model);
   const declaration = isDeclaration
     ? model
     : model.templateMapper && model.name
       ? model.namespace?.models.get(model.name)
       : undefined;
-  const nodes =
-    (
-      declaration?.node as
-        | {
-            templateParameters?: Parameters<
-              Program["checker"]["getTypeForNode"]
-            >[0][];
-          }
-        | undefined
-    )?.templateParameters ?? [];
-  for (const [index, node] of nodes.entries()) {
-    const parameter = program.checker.getTypeForNode(node);
-    // The constraint is on the runtime type but not in its public declaration.
-    const constraint =
-      parameter.kind === "TemplateParameter"
-        ? (parameter as { constraint?: { type?: Type; valueType?: Type } })
-            .constraint
-        : undefined;
-    if (!constraint?.valueType) continue;
-    const valueOnly = !constraint.type;
+  const parameters =
+    (declaration?.node as { templateParameters?: TemplateParameterNode[] })
+      ?.templateParameters ?? [];
+  for (const [index, parameter] of parameters.entries()) {
+    // Read from the syntax: asking the checker for the parameter's type makes it
+    // report `value-in-type` against a parameter that is never used as a type.
+    const constraint = parameter.constraint;
+    const options =
+      constraint?.kind === SyntaxKind.UnionExpression
+        ? constraint.options
+        : constraint
+          ? [constraint]
+          : [];
+    const values = options.filter(
+      (o) => o.kind === SyntaxKind.ValueOfExpression,
+    ).length;
+    if (values === 0) continue;
     const given = model.templateMapper?.args[index] as
       { entityKind?: string } | undefined;
+    const valueOnly = values === options.length;
     if (isDeclaration ? valueOnly : given?.entityKind !== "Type") {
-      return (node as { id: { sv: string } }).id.sv;
+      return parameter.id.sv;
     }
   }
   return undefined;
@@ -966,10 +959,10 @@ export function collectDerivedModels(
  */
 function collectTypeParams(model: Model): string[] {
   const declared = (
-    model.node as { templateParameters?: { id: { sv: string } }[] } | undefined
+    model.node as { templateParameters?: TemplateParameterNode[] } | undefined
   )?.templateParameters;
   if (declared && declared.length > 0) {
-    return declared.map((p) => csTemplateParameterName(p.id.sv));
+    return declared.map((p) => csTemplateParameterName(p));
   }
 
   const params: string[] = [];
@@ -997,9 +990,7 @@ function gatherTemplateParams(
 ): void {
   if (type.kind === "TemplateParameter") {
     out.push(
-      csTemplateParameterName(
-        (type.node as { id?: { sv: string } } | undefined)?.id?.sv ?? "T",
-      ),
+      csTemplateParameterName(type.node as TemplateParameterNode | undefined),
     );
   } else if (type.kind === "Model") {
     const m = type as Model;

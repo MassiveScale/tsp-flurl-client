@@ -70,6 +70,7 @@
     "lint:fix": "eslint . --report-unused-disable-directives --fix",
     "format": "prettier . --write",
     "format:check": "prettier --check .",
-    "test:coverage": "c8 --reporter=cobertura --reporter=text node --test \"dist/test/**/*.test.js\""
+    "test:coverage": "c8 --reporter=cobertura --reporter=text node --test \"dist/test/**/*.test.js\"",
+    "matrix": "node matrix/run.mjs"
   }
 }

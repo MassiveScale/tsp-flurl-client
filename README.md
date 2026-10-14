@@ -571,6 +571,21 @@ dotnet run --project ../../e2e/CustomModels.Tests -f net8.0
 dotnet run --project ../../e2e/CustomModels.Tests -f net10.0
 ```
 
+They also write and read back every model and enum of every example client with the client's own serializer settings, so a contract System.Text.Json rejects fails a test rather than the first request.
+
+### Compile matrix
+
+`npm run matrix` generates one spec covering every type shape in every position, every `@encode` in every position, every media type, awkward names, visibility, and discriminators. Whatever TypeSpec itself rejects is pruned; for the rest, the emitter must either report it or generate C# that builds with warnings as errors and whose every model and enum round-trips through the client serializer.
+
+```powershell
+npm run build
+npm run matrix                    # check
+npm run matrix -- --update        # accept a change to the operations left out
+npm run matrix -- --skip=Shadowing  # leave out a group of cases while investigating
+```
+
+The operations the emitter leaves out are recorded in `matrix/left-out.txt`, so a supported case that starts being left out fails the run. On a machine whose NuGet config includes a private feed that rejects the current credentials, set `MATRIX_RESTORE_SOURCES=https://api.nuget.org/v3/index.json`.
+
 ### Lint & Format
 
 ```powershell

@@ -864,7 +864,7 @@ async function emitService(
         emittedModels.add(model);
         if (!isEmittable(model, nsFullName)) continue;
         if (!isInVersion(program, model, version)) continue;
-        const valueParameter = valueTemplateParameter(program, model);
+        const valueParameter = valueTemplateParameter(model);
         if (valueParameter !== undefined) {
           reportValueTemplate(program, model, valueParameter);
           continue;

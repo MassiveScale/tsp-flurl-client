@@ -51,6 +51,8 @@
 
   {{indent <text>}}        — prefixes every non-empty line of <text> with 4 spaces
   {{#if (isDefined val)}}  — true when val is not undefined
+  {{declaredName name}}    — the name to declare a type with: one of only lower-case
+                             letters is verbatim-escaped, as C# warns about it (CS8981)
 
 --}}
 /// <summary>
@@ -59,7 +61,7 @@
 {{/if}}/// </summary>
 {{#if discriminator}}[JsonPolymorphic(TypeDiscriminatorPropertyName = "{{discriminator.propertyName}}")]
 {{#each discriminator.derivedTypes}}[JsonDerivedType(typeof({{typeName}}), "{{value}}")]
-{{/each}}{{/if}}{{access}} {{#if isAbstract}}abstract {{/if}}record {{recordName}}{{genericSuffix}}{{#if baseRecordName}} : {{baseRecordName}}{{/if}}
+{{/each}}{{/if}}{{access}} {{#if isAbstract}}abstract {{/if}}record {{declaredName recordName}}{{genericSuffix}}{{#if baseRecordName}} : {{baseRecordName}}{{/if}}
 {
 {{#each properties}}    /// <summary>
 {{#if doc}}    /// {{docLines doc "    /// "}}

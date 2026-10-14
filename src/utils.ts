@@ -24,6 +24,10 @@ import {
   getNamespaceFullName,
   type Namespace,
 } from "@typespec/compiler";
+import {
+  SyntaxKind,
+  type TemplateParameterDeclarationNode,
+} from "@typespec/compiler/ast";
 import { getMergePatchSource } from "@typespec/http/experimental/merge-patch";
 import { getClientName } from "./decorators.js";
 import {
@@ -215,7 +219,7 @@ export function mapType(
 
     case "TemplateParameter":
       return csTemplateParameterName(
-        (type.node as { id?: { sv: string } } | undefined)?.id?.sv ?? "T",
+        type.node as TemplateParameterDeclarationNode | undefined,
       );
 
     default:
@@ -787,18 +791,70 @@ export function escapeCsString(text: string): string {
 }
 
 /**
- * The C# name of a template parameter, written the same way in a generic record's
- * declaration and in every use inside it. A TypeSpec name that is a C# keyword is
- * verbatim-escaped (`class` is `@class`), and a backtick-quoted name that is not
- * an identifier has its other characters replaced (`my-T` is `my_T`). Either is
- * safe because the name never reaches the wire or a caller: a caller writes the
- * type arguments, not the parameter names.
+ * The name a C# type is declared with. A name of only lower-case letters
+ * (`thing`) is verbatim-escaped (`@thing`): C# warns about declaring one
+ * (`CS8981`), which a project that treats warnings as errors cannot build, and
+ * the escape names the same type, so references need no change.
  *
- * @param name - The TypeSpec template parameter name.
+ * @param name - The type's C# name.
+ * @returns The name to write in its declaration.
+ */
+export function csDeclarationName(name: string): string {
+  return /^[a-z]+$/.test(name) ? `@${name}` : name;
+}
+
+/**
+ * Members every C# record has, which a type parameter cannot share a name with
+ * (`CS0102`).
+ */
+const RECORD_MEMBERS = new Set([
+  "EqualityContract",
+  "Equals",
+  "GetHashCode",
+  "ToString",
+  "GetType",
+  "Deconstruct",
+  "PrintMembers",
+  "MemberwiseClone",
+  "Finalize",
+  "ReferenceEquals",
+]);
+
+/**
+ * The C# name of a template parameter, written the same way in a generic record's
+ * declaration and in every use inside it, so it is worked out from the declaration
+ * alone. Changing it is safe, because the name never reaches the wire or a caller:
+ * a caller writes the type arguments, not the parameter names.
+ *
+ * - A backtick-quoted name that is not an identifier has its other characters
+ *   replaced (`my-T` is `my_T`).
+ * - A name the record already uses (a member every record has, the record's own
+ *   name, or one of its properties) is prefixed with `T` (`Equals` is `TEquals`),
+ *   since a type parameter cannot share it (`CS0102`, `CS0694`).
+ * - A keyword, or a name of only lower-case letters, is verbatim-escaped (`class`
+ *   is `@class`): the first is not an identifier, and the second draws warning
+ *   `CS8981`, which a project that treats warnings as errors cannot build.
+ *
+ * @param parameter - The template parameter's declaration.
  * @returns The C# type parameter name.
  */
-export function csTemplateParameterName(name: string): string {
-  return escapeCsIdentifier(isCsIdentifier(name) ? name : toCsIdentifier(name));
+export function csTemplateParameterName(
+  parameter: TemplateParameterDeclarationNode | undefined,
+): string {
+  const raw = parameter?.id.sv ?? "T";
+  const name = isCsIdentifier(raw) ? raw : toCsIdentifier(raw);
+  const taken = new Set(RECORD_MEMBERS);
+  const declaration = parameter?.parent;
+  if (declaration?.kind === SyntaxKind.ModelStatement) {
+    taken.add(declaration.id.sv);
+    for (const property of declaration.properties) {
+      if (property.kind === SyntaxKind.ModelProperty) {
+        taken.add(toCsPropName(property.id.sv));
+      }
+    }
+  }
+  if (taken.has(name)) return `T${capitalize(name)}`;
+  return needsVerbatimEscape(name) || /^[a-z]+$/.test(name) ? `@${name}` : name;
 }
 
 /**
