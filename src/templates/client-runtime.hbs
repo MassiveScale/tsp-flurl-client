@@ -291,17 +291,26 @@ internal static class ClientRuntime
     /// <param name="text">The text to send.</param>
     /// <param name="contentType">The full media type, possibly with parameters.</param>
     /// <returns>The request content.</returns>
-    /// <exception cref="ArgumentException">The declared charset is not one .NET supports.</exception>
+    /// <exception cref="ArgumentException">The declared charset is not a known encoding.</exception>
     private static HttpContent EncodedContent(string text, string contentType)
     {
         var mediaType = MediaTypeHeaderValue.Parse(contentType);
         var charSet = mediaType.CharSet?.Trim('"');
-        var encoding = string.IsNullOrEmpty(charSet) ? Encoding.UTF8 : Encoding.GetEncoding(charSet);
+        var encoding = string.IsNullOrEmpty(charSet) ? Encoding.UTF8 : FindEncoding(charSet);
         if (string.IsNullOrEmpty(charSet)) mediaType.CharSet = encoding.WebName;
         var content = new ByteArrayContent(encoding.GetBytes(text));
         content.Headers.ContentType = mediaType;
         return content;
     }
+
+    /// <summary>
+    /// Finds an encoding by its charset name, including the Windows and IBM code pages
+    /// (<c>windows-1252</c>, <c>shift_jis</c>, ...) that .NET only knows through
+    /// <see cref="CodePagesEncodingProvider"/>. The provider is asked directly rather than
+    /// registered, so the application's own encoding setup is left alone.
+    /// </summary>
+    private static Encoding FindEncoding(string charSet) =>
+        CodePagesEncodingProvider.Instance.GetEncoding(charSet) ?? Encoding.GetEncoding(charSet);
 
     /// <summary>
     /// Returns the wire name of an enum value, honouring <see cref="EnumMemberAttribute"/>.

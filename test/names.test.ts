@@ -311,6 +311,7 @@ describe("runDotnetFormat", () => {
     } as unknown as Program;
     runDotnetFormat(program, "/out", {
       exists: () => true,
+      projects: () => ["Api.csproj"],
       spawn: (command, args) => {
         calls.push({ command, args });
         return { error: undefined, status: 0, stderr: "" };
@@ -327,12 +328,28 @@ describe("runDotnetFormat", () => {
     strictEqual(reported.length, 0);
   });
 
-  it("formats the output directory without restoring", () => {
+  it("formats the project in the output directory without restoring", () => {
     const { reported, calls } = run({});
 
     strictEqual(calls.length, 1);
     strictEqual(calls[0].command, "dotnet");
-    strictEqual(calls[0].args.join(" "), "format /out --no-restore");
+    strictEqual(calls[0].args.join(" "), "format /out/Api.csproj --no-restore");
+    strictEqual(reported.length, 0);
+  });
+
+  it("formats each project when several services share the output directory", () => {
+    const { calls } = run({ projects: () => ["A.csproj", "B.csproj"] });
+
+    strictEqual(
+      calls.map((c) => c.args[1]).join(" "),
+      "/out/A.csproj /out/B.csproj",
+    );
+  });
+
+  it("does nothing when the output directory has no project", () => {
+    const { reported, calls } = run({ projects: () => [] });
+
+    strictEqual(calls.length, 0);
     strictEqual(reported.length, 0);
   });
 

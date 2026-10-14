@@ -619,45 +619,28 @@ export function escapeXml(s: string): string {
 }
 
 /**
- * Normalizes a single C# `using` namespace so it contains only code-safe
- * characters. Each namespace segment (separated by `.`) is sanitized by
- * replacing invalid characters with `_` and ensuring it doesn't start with a
- * digit.
- */
-function normalizeUsing(u: string): string {
-  const trimmed = (u ?? "").trim();
-  const parts = trimmed.split(".");
-  const sanitized = parts.map((seg) => {
-    if (!seg) return "_";
-    // Replace any char that's not letter/digit/underscore with '_'
-    let s = seg.replace(/[^A-Za-z0-9_]/g, "_");
-    // If segment starts with a digit, prefix with '_'
-    if (/^[0-9]/.test(s)) s = `_${s}`;
-    return s;
-  });
-  return sanitized.join(".");
-}
-
-/**
- * Sorts C# `using` namespaces with all `System*` namespaces first, then the rest,
- * each group ordered alphabetically. Accepts any iterable of strings and does
- * normalization and deduplication; does not mutate the input.
+ * Sorts C# `using` namespaces with `System` and its child namespaces first, then
+ * the rest, each group in ordinal order. Accepts any iterable of strings, trims
+ * and deduplicates them, and does not mutate the input.
  *
  * @param usings - The namespaces to sort (array, Set, or other iterable).
  * @returns A new, sorted array.
  */
 export function sortUsings(usings: Iterable<string>): string[] {
-  const normalized = new Set<string>();
+  // Every namespace is either one the emitter writes or an `additional-usings`
+  // entry already validated as a C# namespace, so it is only trimmed; rewriting it
+  // would turn a valid `München.Models` into a different, missing namespace.
+  const unique = new Set<string>();
   for (const u of usings) {
-    if (!u) continue;
-    normalized.add(normalizeUsing(u));
+    const trimmed = u?.trim();
+    if (trimmed) unique.add(trimmed);
   }
-  return [...normalized].sort((a, b) => {
-    const aSystem = a.startsWith("System");
-    const bSystem = b.startsWith("System");
-    if (aSystem && !bSystem) return -1;
-    if (!aSystem && bSystem) return 1;
-    return a.localeCompare(b);
+  const isSystem = (ns: string): boolean =>
+    ns === "System" || ns.startsWith("System.");
+  // Ordinal, so the output is the same on every machine whatever its locale.
+  return [...unique].sort((a, b) => {
+    if (isSystem(a) !== isSystem(b)) return isSystem(a) ? -1 : 1;
+    return a < b ? -1 : a > b ? 1 : 0;
   });
 }
 

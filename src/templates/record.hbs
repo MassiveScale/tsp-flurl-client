@@ -25,6 +25,9 @@
     .docName        —   the wire name, XML-escaped, for that generated summary
     .numberAsString —   true for a number written as a JSON string (@encode("string")).
                         Adds [JsonNumberHandling(...)] so it round-trips as a string.
+    .writeNull      —   true for a required property whose type allows null. Adds
+                        [JsonIgnore(Condition = JsonIgnoreCondition.Never)] so a null is
+                        written as `null` rather than left out like an optional one.
     .type           —   C# type string incl. optional "?", e.g. "string", "int?"
     .name           —   PascalCase property name, e.g. "FirstName"
     .jsonPropertyName — JSON wire name for [JsonPropertyName("...")], e.g. "firstName"
@@ -62,6 +65,7 @@
 {{/if}}    /// </summary>
     [JsonPropertyName("{{jsonPropertyName}}")]
 {{#if numberAsString}}    [JsonNumberHandling(JsonNumberHandling.WriteAsString | JsonNumberHandling.AllowReadingFromString)]
+{{/if}}{{#if writeNull}}    [JsonIgnore(Condition = JsonIgnoreCondition.Never)]
 {{/if}}    public {{type}} {{name}} { get; init; }{{#if defaultValue}} = {{defaultValue}};{{/if}}
     
 {{/each}}

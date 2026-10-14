@@ -67,7 +67,27 @@ public sealed class UnionTests
         using var sent = JsonDocument.Parse(handler.Last.Body!);
         sent.RootElement.GetProperty("value").ValueKind.Should().Be(JsonValueKind.Number);
         sent.RootElement.GetProperty("owner").GetProperty("name").GetString().Should().Be("o");
-        sent.RootElement.TryGetProperty("note", out _).Should().BeFalse("a null optional-or-nullable value is left out");
+        sent.RootElement.GetProperty("note").ValueKind.Should()
+            .Be(JsonValueKind.Null, "note is required, so a null is sent as null rather than left out");
+        sent.RootElement.TryGetProperty("tags", out _).Should().BeFalse("tags is optional, so a null is left out");
+    }
+
+    [TestMethod]
+    public async Task A_required_nullable_property_that_is_set_is_sent_as_its_value()
+    {
+        var (client, handler) = Harness.Create();
+        handler.RespondJson("""{"kind":"mixed","value":1,"note":"n","owner":null}""");
+
+        await client.Mixes.CreateAsync(new Mixed
+        {
+            Value = JsonSerializer.SerializeToElement(1),
+            Note = "hello",
+            Owner = null,
+        });
+
+        using var sent = JsonDocument.Parse(handler.Last.Body!);
+        sent.RootElement.GetProperty("note").GetString().Should().Be("hello");
+        sent.RootElement.GetProperty("owner").ValueKind.Should().Be(JsonValueKind.Null);
     }
 
     [TestMethod]

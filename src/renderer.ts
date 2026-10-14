@@ -58,6 +58,12 @@ export interface PropertyView {
   defaultValue?: string;
   /** `true` for a number that travels as a JSON string (`@encode("string")`); adds `[JsonNumberHandling(...)]`. */
   numberAsString?: boolean;
+  /**
+   * `true` for a required property whose type allows null (`note: string | null`);
+   * adds `[JsonIgnore(Condition = JsonIgnoreCondition.Never)]`, so a null is sent as
+   * `"note": null` instead of being left out the way an optional property is.
+   */
+  writeNull?: boolean;
 }
 
 /** One derived-type entry for a `[JsonDerivedType(typeof(...), "...")]` attribute. */
@@ -157,6 +163,11 @@ export interface BodyView {
 export interface ResponseView {
   /** Wire encoding: JSON-deserialized, raw bytes, or raw text. */
   kind: PayloadKind;
+  /**
+   * C# condition on `flurlResponse.StatusCode` that the response is a bodyless
+   * success (`Widget | void`), for which the method returns `null` without reading.
+   */
+  emptyWhen?: string;
   /**
    * C# type the body is read as, e.g. `"Widget"` or `"List<Widget>"`; nullable when
    * another success response has no body. A `text` body is parsed into it, and it is
@@ -549,6 +560,9 @@ function renderRequestBody(m: MethodView, responseType: string): string[] {
   }
   lines.push(`${pad}using var flurlResponse = ${send}.ConfigureAwait(false);`);
 
+  if (m.response?.emptyWhen) {
+    lines.push(`${pad}if (${m.response.emptyWhen}) return default;`);
+  }
   if (m.response?.kind === "json") {
     lines.push(
       `${pad}return (await flurlResponse.GetJsonAsync<${responseType}>().ConfigureAwait(false))!;`,

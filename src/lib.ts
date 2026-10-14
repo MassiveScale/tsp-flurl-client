@@ -121,7 +121,7 @@ const EmitterOptionsSchema: JSONSchemaType<EmitterOptions> = {
     "dotnet-format": {
       type: "boolean",
       description:
-        "When true (default), run 'dotnet format' on the output directory after emitting. Set to false to skip formatting.",
+        "When true (default), run 'dotnet format' on each project in the output directory after emitting. Skipped when the directory has no project (for example with 'emit-project-file' false). Set to false to skip formatting.",
       nullable: true,
     },
     "nuget-package-id": {

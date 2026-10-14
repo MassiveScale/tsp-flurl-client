@@ -37,7 +37,7 @@ import {
   Version,
 } from "@typespec/versioning";
 import { spawnSync, type SpawnSyncReturns } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 import { resolve } from "node:path";
 import { createRenderer, Renderer, TemplateOverrides } from "./renderer.js";
 import { EmitterOptions, createDiagnostic, reportOnce } from "./lib.js";
@@ -310,6 +310,8 @@ export async function deleteGeneratedFiles(
 export interface FormatDeps {
   /** Whether a path exists on the real filesystem. */
   exists(path: string): boolean;
+  /** The file names of the `.csproj` files directly in a directory. */
+  projects(dir: string): string[];
   /** Runs a command to completion and returns how it ended. */
   spawn(
     command: string,
@@ -320,16 +322,21 @@ export interface FormatDeps {
 /** The real filesystem and process runner. */
 const realFormatDeps: FormatDeps = {
   exists: existsSync,
+  projects: (dir) => readdirSync(dir).filter((f) => f.endsWith(".csproj")),
   spawn: (command, args) =>
     spawnSync(command, args, { encoding: "utf-8", stdio: "pipe" }),
 };
 
 /**
- * Runs `dotnet format --no-restore` over the output directory to normalize the
- * generated C#. Skipped when the directory doesn't exist on the real filesystem
- * (e.g. the in-memory test harness); a failure to start, or a non-zero exit,
- * reports a `dotnet-format-failed` diagnostic rather than throwing. The message is
- * the start error, else the process's stderr, else the exit code.
+ * Runs `dotnet format --no-restore` over each project in the output directory to
+ * normalize the generated C#. Each project is formatted on its own, since several
+ * services can write their projects into one directory and `dotnet format` will not
+ * pick between them. Skipped when the directory doesn't exist on the real
+ * filesystem (e.g. the in-memory test harness), or has no project to format
+ * (`emit-project-file: false` with none of the caller's own). A failure to start,
+ * or a non-zero exit, reports a `dotnet-format-failed` diagnostic rather than
+ * throwing. The message is the start error, else the process's stderr, else the
+ * exit code.
  *
  * @param program - The compiler program, used to report diagnostics.
  * @param outputDir - The emitter output directory to format.
@@ -344,22 +351,27 @@ export function runDotnetFormat(
   // (e.g. in-memory test harness).
   if (!deps.exists(outputDir)) return;
 
-  const result = deps.spawn("dotnet", ["format", outputDir, "--no-restore"]);
-
-  if (result.error || (result.status !== null && result.status !== 0)) {
-    // An empty stderr is not a message, so `||` (not `??`) falls through to the code.
-    const message =
-      result.error?.message ||
-      result.stderr?.trim() ||
-      `exited with code ${result.status}`;
-    reportOnce(
-      program,
-      createDiagnostic({
-        code: "dotnet-format-failed",
-        target: NoTarget,
-        format: { message },
-      }),
-    );
+  for (const project of deps.projects(outputDir)) {
+    const result = deps.spawn("dotnet", [
+      "format",
+      resolvePath(outputDir, project),
+      "--no-restore",
+    ]);
+    if (result.error || (result.status !== null && result.status !== 0)) {
+      // An empty stderr is not a message, so `||` (not `??`) falls through to the code.
+      const message =
+        result.error?.message ||
+        result.stderr?.trim() ||
+        `exited with code ${result.status}`;
+      reportOnce(
+        program,
+        createDiagnostic({
+          code: "dotnet-format-failed",
+          target: NoTarget,
+          format: { message },
+        }),
+      );
+    }
   }
 }
 

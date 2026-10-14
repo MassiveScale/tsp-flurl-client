@@ -155,6 +155,8 @@ model Vehicle {
 
 model Car extends Vehicle {
   type: "car";
+  /** Narrows the inherited property; the inherited C# member already carries it. */
+  wheels: 4;
   @visibility(Lifecycle.Read) vin: string;
   seats: int32;
 }
@@ -229,6 +231,8 @@ interface Misc {
   @route("upsert") @post upsert(): { @statusCode _: 200; @body body: Derived } | { @statusCode _: 201; @body body: Spread };
   @route("label") @get label(): { @header contentType: "application/json" | "text/plain"; @body body: string };
   @route("latin") @post latin(@header contentType: "text/plain; charset=iso-8859-1", @body body: string): void;
+  @route("cp1252") @post cp1252(@header contentType: "text/plain; charset=windows-1252", @body body: string): void;
+  @route("maybebytes") @get maybeBytes(): { @header contentType: "application/octet-stream"; @body body: bytes } | void;
 }
 
 /** Scalar bodies, which TypeSpec sends as text/plain. */

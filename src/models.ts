@@ -72,6 +72,13 @@ function recordReservedMembers(recordName: string): [string, string][] {
  * @param models - Accumulator for referenced named models (see {@link mapType}).
  * @param enums - Accumulator for referenced named enums (see {@link mapType}).
  * @param usedHelpers - Accumulator for required helper classes (see {@link mapType}).
+ * @param recordName - The C# record the properties belong to.
+ * @param inherited - The properties the record inherits from its base record, keyed
+ *   by C# name with their TypeSpec name. A property with another TypeSpec name
+ *   that becomes one of these C# names is a collision (C# would hide the inherited
+ *   member, `CS0108`); a property with the same TypeSpec name is an override that
+ *   narrows the inherited one, which the inherited member already carries, so it is
+ *   left out.
  * @returns One {@link PropertyView} per input property.
  */
 function buildPropertyViews(
@@ -81,14 +88,16 @@ function buildPropertyViews(
   enums: Map<string, Enum>,
   usedHelpers: UsedHelpers,
   recordName: string,
+  inherited: Map<string, string> = new Map(),
 ): PropertyView[] {
   const result: PropertyView[] = [];
-  const scope = new MemberScope(
-    program,
-    "property",
-    `record ${recordName}`,
-    recordReservedMembers(recordName),
-  );
+  const scope = new MemberScope(program, "property", `record ${recordName}`, [
+    ...recordReservedMembers(recordName),
+    ...[...inherited].map(
+      ([csName, name]) =>
+        [csName, `the inherited property "${name}"`] as [string, string],
+    ),
+  ]);
   for (const [, prop] of props) {
     const propDoc = getDoc(program, prop);
     const csType = mapPropertyType(prop, program, models, enums, usedHelpers);
@@ -97,6 +106,7 @@ function buildPropertyViews(
     // A property whose name is not a valid C# identifier is reported and left out.
     if (!checkName(program, "property", declaredName, prop)) continue;
     const propName = toCsPropName(declaredName);
+    if (inherited.get(propName) === prop.name) continue;
     // Two properties can become the same C# name (`foo` and `Foo`), and a property
     // cannot share its record's name or a member the record generates.
     if (!scope.claim(propName, `"${prop.name}"`, prop)) continue;
@@ -112,9 +122,45 @@ function buildPropertyViews(
       jsonPropertyName: escapeCsString(prop.name),
       defaultValue: defaultVal,
       numberAsString: encoding === "number-as-string",
+      writeNull: !prop.optional && csType.endsWith("?"),
     });
   }
   return result;
+}
+
+/**
+ * The properties a derived record inherits from its base record in a
+ * `@discriminator` hierarchy, keyed by C# name with their TypeSpec name (see
+ * `buildPropertyViews`). The discriminator itself is not a member, and a request
+ * record inherits only the properties visible in the request.
+ *
+ * @param program - The compiler program.
+ * @param model - The derived model.
+ * @param parent - The discriminated root it derives from, or `undefined` when it does not.
+ * @param version - The API version being emitted, or `undefined` when unversioned.
+ * @param request - The request context, for a request record.
+ * @returns The inherited names; empty for a model with no discriminated parent.
+ */
+function inheritedNames(
+  program: Program,
+  model: Model,
+  parent: { discriminator: Discriminator } | undefined,
+  version: Version | undefined,
+  request: RequestRecordContext | undefined,
+): Map<string, string> {
+  const names = new Map<string, string>();
+  if (!parent || !model.baseModel) return names;
+  const base = versionProps(
+    flattenProperties(model.baseModel),
+    program,
+    version,
+  );
+  for (const [name, prop] of base) {
+    if (name === parent.discriminator.propertyName) continue;
+    if (request && !isVisible(program, prop, request.visibility)) continue;
+    names.set(toCsPropName(getClientName(program, prop) ?? prop.name), name);
+  }
+  return names;
 }
 
 /**
@@ -278,6 +324,7 @@ export function buildRecord(
       enums,
       usedHelpers,
       recordName,
+      inheritedNames(program, model, parentDiscriminated, version, request),
     ),
     baseRecordName,
     discriminator,

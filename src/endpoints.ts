@@ -920,11 +920,13 @@ function resolveResponse(
 
   // `Widget | void` is a 200 with a body and a 204 without one, so the result is
   // absent whenever the server takes the empty path, and the C# type says so.
-  const mayBeEmpty = responses.some(
+  const emptyResponses = responses.filter(
     (resp) =>
       isSuccessStatus(resp.statusCodes) &&
       (resp.responses.length === 0 || resp.responses.every((c) => !c.body)),
   );
+  const mayBeEmpty = emptyResponses.length > 0;
+  const emptyWhen = emptyStatusCondition(responses, emptyResponses);
   const optional = (csType: string): string =>
     mayBeEmpty && !csType.endsWith("?") ? `${csType}?` : csType;
 
@@ -936,7 +938,9 @@ function resolveResponse(
     resolveBodyType(body, program, models, enums, usedHelpers),
   );
   if (new Set(mapped.map(withoutNullable)).size > 1) {
-    return { view: { kind: "json", type: optional("JsonElement") } };
+    return {
+      view: { kind: "json", type: optional("JsonElement"), emptyWhen },
+    };
   }
   const anyNullable = mapped.some((csType) => csType.endsWith("?"));
 
@@ -949,7 +953,7 @@ function resolveResponse(
   checkBodyEncoding(program, body, kind);
 
   const resultType = anyNullable ? `${withoutNullable(mapped[0])}?` : mapped[0];
-  const view: ResponseView = { kind, type: optional(resultType) };
+  const view: ResponseView = { kind, type: optional(resultType), emptyWhen };
   const slot =
     kind === "json"
       ? findModelSlot(body.type, program, models, enums, usedHelpers)
@@ -966,6 +970,36 @@ function resolveResponse(
       responseType,
     },
   };
+}
+
+/**
+ * The C# condition, on `flurlResponse.StatusCode`, that a response is one of the
+ * operation's bodyless success responses (`Widget | void` declares a 204), so the
+ * method returns `null` for it instead of reading the content: `GetBytesAsync`
+ * would otherwise return an empty array, and a genuinely empty string or array
+ * sent with a 200 must stay a value. A status that also carries a body is left out.
+ *
+ * @param responses - All of the operation's responses.
+ * @param emptyResponses - The success responses that carry no body.
+ * @returns The condition, or `undefined` when there is no bodyless success response.
+ */
+function emptyStatusCondition(
+  responses: HttpOperationResponse[],
+  emptyResponses: HttpOperationResponse[],
+): string | undefined {
+  const withBody = new Set(
+    responses
+      .filter((r) => r.responses.some((c) => c.body))
+      .map((r) => r.statusCodes),
+  );
+  const conditions = emptyResponses
+    .filter((r) => !withBody.has(r.statusCodes))
+    .map((r) =>
+      typeof r.statusCodes === "number"
+        ? `flurlResponse.StatusCode == ${r.statusCodes}`
+        : `flurlResponse.StatusCode is >= ${(r.statusCodes as { start: number }).start} and <= ${(r.statusCodes as { end: number }).end}`,
+    );
+  return conditions.length > 0 ? conditions.join(" || ") : undefined;
 }
 
 /**

@@ -1,3 +1,4 @@
+using System.Reflection;
 using System.Text.Json;
 using AwesomeAssertions;
 using Flurl.Http;
@@ -400,6 +401,39 @@ public sealed class KitchenSinkTests
         await client.Vehicles.MaybeCreateAsync(new BikeCreateRequest { Wheels = 2 });
         using var sent = JsonDocument.Parse(handler.Last.Body!);
         sent.RootElement.GetProperty("type").GetString().Should().Be("bike");
+    }
+
+    [TestMethod]
+    public async Task Text_can_be_sent_in_a_windows_code_page()
+    {
+        var (client, handler) = Create();
+
+        await client.Misc.Cp1252Async("café €");
+
+        handler.Last.BodyBytes.Should().Equal(0x63, 0x61, 0x66, 0xE9, 0x20, 0x80);
+        handler.Last.ContentType.Should().Be("text/plain; charset=windows-1252");
+    }
+
+    [TestMethod]
+    public async Task Bytes_are_null_for_the_bodyless_success_and_an_empty_array_for_an_empty_body()
+    {
+        var (client, handler) = Create();
+
+        (await client.Misc.MaybeBytesAsync()).Should().BeNull("the server sent 204");
+
+        handler.RespondBytes([]);
+        (await client.Misc.MaybeBytesAsync()).Should().NotBeNull().And.BeEmpty();
+
+        handler.RespondBytes([1, 2]);
+        (await client.Misc.MaybeBytesAsync()).Should().Equal(1, 2);
+    }
+
+    [TestMethod]
+    public void A_narrowing_override_is_carried_by_the_inherited_member()
+    {
+        typeof(Car).GetProperty("Wheels", BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly)
+            .Should().BeNull("Car inherits Wheels from Vehicle rather than hiding it");
+        typeof(Car).GetProperty("Wheels").Should().NotBeNull();
     }
 
     private static int CountOf(string text, string value) =>
