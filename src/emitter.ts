@@ -1,0 +1,1338 @@
+// Emitter entry point and orchestration. `$onEmit` drives the whole run;
+// `emitService` coordinates the per-service pipeline, delegating the actual C#
+// generation to the domain modules:
+//   - ./endpoints  — endpoint interfaces + Flurl clients (+ request-type collection)
+//   - ./models     — records and enums
+//   - ./helpers    — ModelMap, ClientRuntime and MergePatch helper files
+//   - ./client     — DI extensions + aggregate client
+//   - ./project    — .csproj + NuGet version
+//   - ./utils      — type mapping and name/format helpers
+// Everything else here is coordination: renderer setup, file IO, dotnet-format,
+// output-name reservation, and version selection/filtering.
+
+import type { TemplateParameterDeclarationNode } from "@typespec/compiler/ast";
+import { setGeneratedTypeNames } from "./framework.js";
+import {
+  CompilerHost,
+  EmitContext,
+  Model,
+  Enum,
+  Type,
+  Interface,
+  Namespace,
+  Program,
+  getNamespaceFullName,
+  resolvePath,
+  isService,
+  NoTarget,
+} from "@typespec/compiler";
+import { unsafe_mutateSubgraphWithNamespace } from "@typespec/compiler/experimental";
+import {
+  getAllHttpServices,
+  getHttpService,
+  HttpOperation,
+} from "@typespec/http";
+import {
+  getAllVersions,
+  getVersioningMutators,
+  Version,
+} from "@typespec/versioning";
+import { spawnSync, type SpawnSyncReturns } from "node:child_process";
+import { existsSync, readdirSync } from "node:fs";
+import { resolve } from "node:path";
+import { createRenderer, Renderer, TemplateOverrides } from "./renderer.js";
+import { EmitterOptions, createDiagnostic, reportOnce } from "./lib.js";
+import { isCsNamespace, isCsTypeName } from "./identifiers.js";
+import { checkName, MemberScope } from "./names.js";
+import { getClientName, getAccess } from "./decorators.js";
+import {
+  buildEndpoint,
+  requestRecordName,
+  requestSubstitute,
+  RequestType,
+} from "./endpoints.js";
+import {
+  buildRecord,
+  buildFilteredRecord,
+  buildEnum,
+  collectDerivedModels,
+  isEmittable,
+  isEmittableEnum,
+  reportValueTemplate,
+  valueTemplateParameter,
+} from "./models.js";
+import {
+  ALL_HELPERS,
+  ALWAYS_EMITTED_HELPERS,
+  buildHelper,
+  helperFolder,
+  type HelperName,
+} from "./helpers.js";
+import { buildExtensions, type EndpointName } from "./client.js";
+import { buildCsproj, deriveNugetVersion } from "./project.js";
+import {
+  docText,
+  sanitizeVersionForNs,
+  isInVersion,
+  declarationKey,
+  MERGE_PATCH_HELPER_NAME,
+  MERGE_PATCH_INTERFACE_NAME,
+  type UsedHelpers,
+  setProjection,
+  csTemplateParameterName,
+} from "./utils.js";
+
+/** For each helper, the C# namespaces that need a copy of it. */
+type HelperNamespaces = Map<HelperName, Set<string>>;
+
+/** Records which declaration first claimed a given output file name, for collision reporting. */
+type OutputNameOwner = {
+  /** The name as the first claimant spelled it. */
+  name: string;
+  /** Human-readable label of the claiming declaration (e.g. `model Widget`). */
+  label: string;
+};
+
+/**
+ * Emitter entry point invoked by the TypeSpec compiler. Cleans stale output,
+ * builds the renderer, then emits every HTTP service in the program and finally
+ * runs `dotnet format` (unless disabled).
+ *
+ * @param context - The emit context supplying the program, output dir, and options.
+ */
+export async function $onEmit(
+  context: EmitContext<EmitterOptions>,
+): Promise<void> {
+  const { program, emitterOutputDir, options } = context;
+  if (program.compilerOptions.noEmit) return;
+  if (!validateOptions(program, options)) return;
+
+  if (options["clean-output-dir"] !== false) {
+    await deleteGeneratedFiles(program.host, emitterOutputDir);
+  }
+
+  const renderer = buildRenderer(program, options);
+
+  const [services, diags] = getAllHttpServices(program);
+  program.reportDiagnostics(diags);
+
+  // Each service emits into its own C# namespace but shares one output directory,
+  // so the helpers have to be collected across all of them and written afterwards —
+  // emitting them per service would have the last service overwrite the file and
+  // leave every earlier namespace referencing a type that isn't there.
+  const helperNamespaces: HelperNamespaces = new Map(
+    ALL_HELPERS.map((name) => [name, new Set<string>()]),
+  );
+  // Endpoint and aggregate-client files are named after the interface and client,
+  // not the service, so two services can aim at the same path. Their reservations
+  // are shared so the clash is reported instead of the later write winning.
+  const endpointOutputOwners = new Map<string, OutputNameOwner>();
+  // The names of the types each C# namespace's helpers can see, so a framework
+  // type one of them hides is written in full there too.
+  const helperTypeNames = new Map<string, Set<string>>();
+
+  for (const service of services) {
+    if (!isService(program, service.namespace)) continue;
+    if (service.operations.length === 0) continue;
+    await emitService(
+      program,
+      service.namespace,
+      service.operations,
+      emitterOutputDir,
+      options,
+      renderer,
+      helperNamespaces,
+      endpointOutputOwners,
+      helperTypeNames,
+    );
+  }
+
+  await emitHelpers(
+    program,
+    emitterOutputDir,
+    helperNamespaces,
+    renderer,
+    new Set(options["additional-usings"] ?? []),
+    helperTypeNames,
+  );
+
+  if (options["dotnet-format"] !== false) {
+    runDotnetFormat(program, emitterOutputDir);
+  }
+}
+
+/**
+ * Writes each helper once for every C# namespace that needs it.
+ *
+ * With a single service — the normal case — each helper is one file
+ * (`Infrastructure/ModelMap.g.cs`, `Models/MergePatch.g.cs`, ...). A program
+ * declaring several `@service` namespaces needs the helpers visible in each of
+ * them, and C# allows one class name per namespace but only one file per path, so
+ * the extra copies get a namespace-qualified file name.
+ *
+ * @param program - The compiler program (its host performs the writes).
+ * @param outputDir - The root emitter output directory.
+ * @param helperNamespaces - For each helper, the C# namespaces that reference it.
+ * @param renderer - Handlebars renderer used to produce the file contents.
+ * @param additionalUsings - Extra `using` directives from the `additional-usings` option.
+ * @param typeNames - For each C# namespace, the generated types its helpers can see.
+ */
+async function emitHelpers(
+  program: Program,
+  outputDir: string,
+  helperNamespaces: HelperNamespaces,
+  renderer: Renderer,
+  additionalUsings: Set<string>,
+  typeNames: Map<string, Set<string>>,
+): Promise<void> {
+  for (const name of ALL_HELPERS) {
+    const sorted = [...(helperNamespaces.get(name) ?? [])].sort();
+    for (const [index, ns] of sorted.entries()) {
+      setGeneratedTypeNames(typeNames.get(ns) ?? []);
+      const fileName = index === 0 ? `${name}.g.cs` : `${name}.${ns}.g.cs`;
+      await writeFile(
+        program,
+        resolvePath(outputDir, helperFolder(name), fileName),
+        buildHelper(name, ns, renderer, additionalUsings),
+      );
+    }
+  }
+}
+
+/**
+ * Creates the Handlebars renderer, applying any configured template overrides.
+ * On failure to load an override, reports a `template-load-failed` diagnostic
+ * and falls back to the built-in templates.
+ *
+ * @param program - The compiler program, used to report diagnostics.
+ * @param options - Emitter options carrying optional template overrides.
+ * @returns A ready-to-use renderer.
+ */
+function buildRenderer(program: Program, options: EmitterOptions): Renderer {
+  const overrides = resolveTemplateOverrides(options.templates);
+  try {
+    return createRenderer(overrides);
+  } catch (e) {
+    reportOnce(
+      program,
+      createDiagnostic({
+        code: "template-load-failed",
+        target: NoTarget,
+        format: { message: String(e) },
+      }),
+    );
+    return createRenderer({});
+  }
+}
+
+/**
+ * Resolves configured template override paths to absolute paths (relative to the
+ * current working directory), dropping empty entries.
+ *
+ * @param templates - The raw template overrides from options, if any.
+ * @returns A map of template name to absolute override path.
+ */
+function resolveTemplateOverrides(
+  templates?: TemplateOverrides,
+): TemplateOverrides {
+  if (!templates) return {};
+  const result: TemplateOverrides = {};
+  for (const [key, val] of Object.entries(templates)) {
+    if (val) {
+      (result as Record<string, string>)[key] = resolve(process.cwd(), val);
+    }
+  }
+  return result;
+}
+
+/** The slice of the compiler host the cleanup and existence checks use. */
+export type FileHost = Pick<CompilerHost, "readDir" | "stat" | "rm">;
+
+/**
+ * Whether a file exists at the given path on the compiler host.
+ *
+ * @param host - The compiler host that performs the stat.
+ * @param filePath - Absolute path to check.
+ * @returns `true` if the path exists and is a file.
+ */
+export async function fileExists(
+  host: FileHost,
+  filePath: string,
+): Promise<boolean> {
+  try {
+    const s = await host.stat(filePath);
+    return s.isFile();
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Writes a file through the compiler host, creating parent directories as needed.
+ *
+ * @param program - The compiler program (its host performs the write).
+ * @param filePath - Absolute destination path.
+ * @param content - File contents to write.
+ */
+async function writeFile(
+  program: Program,
+  filePath: string,
+  content: string,
+): Promise<void> {
+  const dir = filePath.substring(0, filePath.lastIndexOf("/"));
+  if (dir) await program.host.mkdirp(dir);
+  await program.host.writeFile(filePath, content);
+}
+
+/**
+ * Recursively deletes all `*.g.cs` files under a directory (the pre-emit
+ * cleanup pass), leaving non-generated files and project files in place. A
+ * missing directory is a no-op, and an entry that cannot be inspected is skipped
+ * rather than failing the run.
+ *
+ * @param host - The compiler host that performs the IO.
+ * @param dir - Directory to clean, recursively.
+ */
+export async function deleteGeneratedFiles(
+  host: FileHost,
+  dir: string,
+): Promise<void> {
+  let entries: string[];
+  try {
+    entries = await host.readDir(dir);
+  } catch {
+    return;
+  }
+  await Promise.all(
+    entries.map(async (entry) => {
+      const entryPath = resolvePath(dir, entry);
+      let stat;
+      try {
+        stat = await host.stat(entryPath);
+      } catch {
+        return;
+      }
+      if (stat.isDirectory()) {
+        await deleteGeneratedFiles(host, entryPath);
+      } else if (stat.isFile() && entry.endsWith(".g.cs")) {
+        await host.rm(entryPath);
+      }
+    }),
+  );
+}
+
+/**
+ * The outside world `dotnet format` needs: whether a directory exists and how to
+ * run a process. Injectable so the failure paths can be tested without a real
+ * `dotnet`.
+ */
+export interface FormatDeps {
+  /** Whether a path exists on the real filesystem. */
+  exists(path: string): boolean;
+  /** The file names of the `.csproj` files directly in a directory. */
+  projects(dir: string): string[];
+  /** Runs a command to completion and returns how it ended. */
+  spawn(
+    command: string,
+    args: string[],
+  ): Pick<SpawnSyncReturns<string>, "error" | "status" | "stderr">;
+}
+
+/** The real filesystem and process runner. */
+const realFormatDeps: FormatDeps = {
+  exists: existsSync,
+  projects: (dir) => readdirSync(dir).filter((f) => f.endsWith(".csproj")),
+  spawn: (command, args) =>
+    spawnSync(command, args, { encoding: "utf-8", stdio: "pipe" }),
+};
+
+/**
+ * Runs `dotnet format --no-restore` over each project in the output directory to
+ * normalize the generated C#. Each project is formatted on its own, since several
+ * services can write their projects into one directory and `dotnet format` will not
+ * pick between them. Skipped when the directory doesn't exist on the real
+ * filesystem (e.g. the in-memory test harness), or has no project to format
+ * (`emit-project-file: false` with none of the caller's own). A failure to start,
+ * or a non-zero exit, reports a `dotnet-format-failed` diagnostic rather than
+ * throwing. The message is the start error, else the process's stderr, else the
+ * exit code.
+ *
+ * @param program - The compiler program, used to report diagnostics.
+ * @param outputDir - The emitter output directory to format.
+ * @param deps - The filesystem and process runner; the real ones by default.
+ */
+export function runDotnetFormat(
+  program: Program,
+  outputDir: string,
+  deps: FormatDeps = realFormatDeps,
+): void {
+  // Skip when the output directory doesn't exist on the real filesystem
+  // (e.g. in-memory test harness).
+  if (!deps.exists(outputDir)) return;
+
+  for (const project of deps.projects(outputDir)) {
+    const result = deps.spawn("dotnet", [
+      "format",
+      resolvePath(outputDir, project),
+      "--no-restore",
+    ]);
+    if (result.error || (result.status !== null && result.status !== 0)) {
+      // An empty stderr is not a message, so `||` (not `??`) falls through to the code.
+      const message =
+        result.error?.message ||
+        result.stderr?.trim() ||
+        `exited with code ${result.status}`;
+      reportOnce(
+        program,
+        createDiagnostic({
+          code: "dotnet-format-failed",
+          target: NoTarget,
+          format: { message },
+        }),
+      );
+    }
+  }
+}
+
+/** The lowest .NET major version the generated runtime supports. */
+const MIN_DOTNET_MAJOR = 8;
+
+/**
+ * Splits the `net-version` option into its target framework monikers.
+ *
+ * @param raw - The option value; `net8.0` when omitted.
+ * @returns The trimmed, non-empty monikers in order.
+ */
+export function splitTargetFrameworks(raw: string | undefined): string[] {
+  return (raw ?? "net8.0")
+    .split(";")
+    .map((v) => v.trim())
+    .filter(Boolean);
+}
+
+/**
+ * Whether a target framework moniker is one the generated code can build for:
+ * `net8.0` or later, optionally with an OS suffix such as `net8.0-windows`. The
+ * runtime relies on System.Text.Json contract customization, which older targets
+ * (`net7.0`, `netstandard2.0`, `netcoreapp3.1`) do not provide.
+ *
+ * @param tfm - One moniker from the `net-version` option.
+ * @returns `true` when the moniker is supported.
+ */
+function isSupportedTargetFramework(tfm: string): boolean {
+  // An OS suffix is a platform name with an optional dotted version
+  // (`windows`, `windows10.0.19041`, `ios18.0`), never a bare run of dots.
+  const match = /^net(\d+)\.\d+(?:-[A-Za-z]+(?:\d+(?:\.\d+)*)?)?$/.exec(tfm);
+  return match !== null && Number(match[1]) >= MIN_DOTNET_MAJOR;
+}
+
+/**
+ * Checks the options whose values are written straight into generated files, once
+ * for the whole program: every `additional-usings` entry becomes a `using`
+ * directive in every file (a typo would not compile, and a newline would inject
+ * arbitrary declarations), and every `net-version` moniker becomes a target
+ * framework in the project file. Reports an `invalid-option` diagnostic for each
+ * bad value.
+ *
+ * @param program - The compiler program, used to report diagnostics.
+ * @param options - The resolved emitter options.
+ * @returns `true` when the options are safe to emit with; `false` after reporting.
+ */
+function validateOptions(program: Program, options: EmitterOptions): boolean {
+  const problems: { option: string; value: string; reason: string }[] = [];
+
+  for (const using of options["additional-usings"] ?? []) {
+    if (!isCsNamespace(using)) {
+      problems.push({
+        option: "additional-usings",
+        value: using,
+        reason:
+          "is not a valid C# namespace; use dot-separated identifiers such as `Acme.Shared.Models`",
+      });
+    }
+  }
+
+  const frameworks = splitTargetFrameworks(options["net-version"]);
+  if (frameworks.length === 0) {
+    problems.push({
+      option: "net-version",
+      value: options["net-version"] ?? "",
+      reason: "names no target framework; use a value such as `net8.0`",
+    });
+  }
+  for (const tfm of frameworks) {
+    if (!isSupportedTargetFramework(tfm)) {
+      problems.push({
+        option: "net-version",
+        value: tfm,
+        reason: `is not supported; the generated client needs .NET ${MIN_DOTNET_MAJOR} or later (\`net${MIN_DOTNET_MAJOR}.0\`)`,
+      });
+    }
+  }
+
+  for (const format of problems) {
+    reportOnce(
+      program,
+      createDiagnostic({ code: "invalid-option", target: NoTarget, format }),
+    );
+  }
+  return problems.length === 0;
+}
+
+/**
+ * Checks the names that become file paths and C# identifiers before anything is
+ * written: a project name such as `../../Outside` would write the `.csproj` outside
+ * the output directory, and a client name such as `class` would generate C# that
+ * cannot compile. Reports an `invalid-option` diagnostic for each bad value.
+ *
+ * @param program - The compiler program, used to report diagnostics.
+ * @param projectName - The effective project name (dots separate namespace-like segments).
+ * @param clientName - The effective aggregate client name.
+ * @param rootNamespace - The effective root C# namespace.
+ * @param clientNameIsDerived - Whether the client name was derived from the project
+ *   name rather than given. A derived name is only checked when the project name is
+ *   valid, so one bad project name is reported once.
+ * @returns `true` when every name is safe to use; `false` after reporting.
+ */
+function validateNames(
+  program: Program,
+  projectName: string,
+  clientName: string,
+  rootNamespace: string,
+  clientNameIsDerived: boolean,
+): boolean {
+  const problems: { option: string; value: string; reason: string }[] = [];
+  if (!isCsNamespace(projectName)) {
+    problems.push({
+      option: "project-name",
+      value: projectName,
+      reason:
+        "is not a safe file name; use dot-separated C# identifiers such as `Acme.PetStoreClient`",
+    });
+  }
+  if (
+    !isCsTypeName(clientName) &&
+    !(clientNameIsDerived && problems.length > 0)
+  ) {
+    problems.push({
+      option: "client-name",
+      value: clientName,
+      reason: "is not a valid C# class name (it must not be a C# keyword)",
+    });
+  }
+  if (!isCsNamespace(rootNamespace)) {
+    problems.push({
+      option: "root-namespace",
+      value: rootNamespace,
+      reason: "is not a valid C# namespace",
+    });
+  }
+
+  for (const format of problems) {
+    reportOnce(
+      program,
+      createDiagnostic({ code: "invalid-option", target: NoTarget, format }),
+    );
+  }
+  return problems.length === 0;
+}
+
+/**
+ * Emits all output for a single HTTP service: resolves options and target
+ * versions, groups operations by container, then writes the endpoint interfaces
+ * and clients (via {@link buildEndpoint}), request-type records, DI extensions,
+ * model and enum files, and finally the `.csproj`. Handles both versioned
+ * (optionally per-version folders) and unversioned emission.
+ *
+ * @param program - The compiler program.
+ * @param serviceNs - The service namespace being emitted.
+ * @param operations - The service's HTTP operations.
+ * @param outputDir - The root emitter output directory.
+ * @param options - The resolved emitter options.
+ * @param renderer - Handlebars renderer used to produce file contents.
+ * @param helperNamespaces - Shared accumulator of the C# namespaces needing each
+ *   helper. This service adds its own namespace to every helper it uses; the
+ *   caller writes the helper files once every service has been emitted.
+ * @param endpointOutputOwners - Shared record of which declaration claimed each
+ *   endpoint and aggregate-client file, keyed by path relative to the output
+ *   directory, so clashes between services are reported.
+ * @param helperTypeNames - Shared record of the generated type names each helper
+ *   namespace can see; this service adds its own under its root namespace.
+ */
+async function emitService(
+  program: Program,
+  serviceNs: Namespace,
+  operations: HttpOperation[],
+  outputDir: string,
+  options: EmitterOptions,
+  renderer: Renderer,
+  helperNamespaces: HelperNamespaces,
+  endpointOutputOwners: Map<string, OutputNameOwner>,
+  helperTypeNames: Map<string, Set<string>>,
+): Promise<void> {
+  const nsFullName = getNamespaceFullName(serviceNs);
+  const projectName = options["project-name"] ?? `${nsFullName}Client`;
+  const csharpName = projectName.includes(".")
+    ? projectName.substring(projectName.lastIndexOf(".") + 1)
+    : projectName;
+  const clientName = options["client-name"] ?? csharpName;
+  const baseNs = options["root-namespace"] ?? `${nsFullName}.Client`;
+  if (
+    !validateNames(
+      program,
+      projectName,
+      clientName,
+      baseNs,
+      options["client-name"] === undefined,
+    )
+  )
+    return;
+  const netVersionParts = splitTargetFrameworks(options["net-version"]);
+  const netVersion = netVersionParts.join(";");
+  const isMultiTarget = netVersionParts.length > 1;
+
+  const rawRoutePrefix = options["route-prefix"] ?? "api/{version}";
+  const additionalUsings = new Set(options["additional-usings"] ?? []);
+  const nugetDescription =
+    options["nuget-description"] ?? `Flurl client for the ${baseNs} API`;
+  const nugetTitle =
+    options["nuget-title"] ??
+    (options["client-name"] !== undefined ? clientName : undefined);
+  const allVersions = getAllVersions(program, serviceNs) ?? [];
+
+  const versionsToEmit = resolveTargetVersions(program, allVersions, options);
+  if (versionsToEmit === null) return; // diagnostic already reported
+
+  // Use version subfolders only when explicitly emitting all versions.
+  // An unversioned API has no versions to put in folders, so it is emitted as the
+  // normal single unit even when `all-versions` is set.
+  const serviceTypeNames = new Set<string>();
+  const useVersionedFolders =
+    options["all-versions"] === true && versionsToEmit.length > 0;
+
+  /**
+   * Emits one self-contained set of output: the endpoint interfaces and clients,
+   * the aggregate client, and exactly the models, enums and request records those
+   * endpoints reference, projected onto the unit's API version. A unit owns its
+   * own model and enum accumulators and its own output-name reservations, so the
+   * same name can be used by different versions without clashing.
+   *
+   * @param unit - Where and how to emit.
+   * @param unit.dir - Folder the Endpoints folder and aggregate client are written under.
+   * @param unit.endpointNs - C# namespace of the endpoints and aggregate client.
+   * @param unit.modelNs - C# namespace of the models, enums, and request records.
+   * @param unit.modelsDir - Folder the models, enums, and request records are written to.
+   * @param unit.version - The API version emitted, or `undefined` when unversioned.
+   */
+  const emitUnit = async (unit: {
+    dir: string;
+    endpointNs: string;
+    modelNs: string;
+    modelsDir: string;
+    version: Version | undefined;
+  }): Promise<void> => {
+    const { dir, endpointNs, modelNs, modelsDir, version } = unit;
+    // Every declaration takes the shape it has in this version: its name
+    // (`@renamedFrom`), its type (`@typeChangedFrom`, `@returnTypeChangedFrom`), and
+    // whether it is optional (`@madeOptional`, `@madeRequired`), not just whether it
+    // exists.
+    const projected = projectService(program, serviceNs, operations, version);
+    const byContainer = groupByContainer(
+      program,
+      projected.namespace,
+      projected.operations,
+    );
+    setProjection(program, {
+      original: serviceNs,
+      projected: projected.namespace,
+    });
+    // A generated type of the same name as a framework type the generated code uses
+    // (a model called `Type` or `CancellationToken`) would hide it, so those
+    // framework types are written in full (see `fx`). The names of every version
+    // emitted so far are kept, since the root namespace's types are visible to all.
+    for (const name of generatedTypeNames(
+      program,
+      projected.namespace,
+      [...byContainer.values()].map((c) => c.name),
+      clientName,
+    )) {
+      serviceTypeNames.add(name);
+    }
+    setGeneratedTypeNames(serviceTypeNames);
+    const models = new Map<string, Model>();
+    const enums = new Map<string, Enum>();
+    const modelOutputOwners = new Map<string, OutputNameOwner>();
+    const usedHelpers: UsedHelpers = new Set();
+    const requestTypes = new Map<string, RequestType>();
+    const endpointNames: EndpointName[] = [];
+
+    /**
+     * Claims a model, enum, or request-record file by its path under the output
+     * directory. Every service writes into the same output folders, so the claim is
+     * shared across all services, not just this one.
+     *
+     * @param name - The file's base name.
+     * @param owner - How to describe the claimant in a collision message.
+     * @param target - The declaration to point a diagnostic at.
+     * @returns `true` when the path was free; `false` after reporting a collision.
+     */
+    const claimPath = (
+      name: string,
+      owner: string,
+      target: Type | typeof NoTarget,
+    ): boolean =>
+      tryReserveModelOutputName(
+        program,
+        endpointOutputOwners,
+        relativeTo(outputDir, resolvePath(modelsDir, name)),
+        owner,
+        target,
+      );
+
+    // An endpoint is a property of the aggregate client, so its name cannot be the
+    // client's own name (a member cannot share its type's name) or one of the
+    // members the client generates.
+    const clientMembers = new MemberScope(
+      program,
+      "property",
+      `client ${clientName}`,
+      [
+        [
+          clientName,
+          "the client class itself, whose name a member cannot share",
+        ],
+        ["FlurlClient", "the client's Flurl client"],
+        ["Create", "the client's Create factory methods"],
+      ],
+    );
+
+    for (const { name, container, ops } of byContainer.values()) {
+      const vOps = ops.filter((op) =>
+        isInVersion(program, op.operation, version),
+      );
+      if (vOps.length === 0) continue;
+      // The name becomes two class names and two file names.
+      if (!checkName(program, "interface", name, container)) continue;
+      if (
+        !clientMembers.checkReserved(
+          name,
+          `interface "${container.name ?? name}"`,
+          container,
+        )
+      ) {
+        continue;
+      }
+      const interfaceName = `I${name}`;
+      const endpointClientName = `${name}Endpoint`;
+      const label = `interface ${container.name ?? name} in ${getNamespaceFullName(container.kind === "Interface" ? (container.namespace ?? projected.namespace) : container)}`;
+      const claimed = [interfaceName, endpointClientName].map((file) =>
+        tryReserveModelOutputName(
+          program,
+          endpointOutputOwners,
+          relativeTo(outputDir, resolvePath(dir, "Endpoints", file)),
+          label,
+          NoTarget,
+        ),
+      );
+      // Both names are always claimed (so every clash is reported); the interface
+      // is only emitted when it won both files.
+      if (claimed.includes(false)) continue;
+      // The endpoint types live in the same C# namespace as the models, so a model
+      // with one of their names would be a duplicate type.
+      const typesFree = [
+        [interfaceName, `the ${interfaceName} endpoint interface`],
+        [endpointClientName, `the ${endpointClientName} endpoint client`],
+      ].map(([typeName, owner]) =>
+        tryReserveModelOutputName(
+          program,
+          modelOutputOwners,
+          typeName,
+          owner,
+          NoTarget,
+        ),
+      );
+      if (typesFree.includes(false)) continue;
+      const access = getAccess(program, container) ?? "public";
+      endpointNames.push({
+        interfaceName,
+        clientName: endpointClientName,
+        access,
+      });
+      const sources = buildEndpoint(
+        interfaceName,
+        endpointClientName,
+        endpointNs,
+        vOps,
+        docText(program, container),
+        access,
+        program,
+        models,
+        enums,
+        usedHelpers,
+        version,
+        requestTypes,
+        renderer,
+        rawRoutePrefix,
+        additionalUsings,
+      );
+      await writeFile(
+        program,
+        resolvePath(dir, "Endpoints", `${interfaceName}.g.cs`),
+        sources.interfaceSource,
+      );
+      await writeFile(
+        program,
+        resolvePath(dir, "Endpoints", `${endpointClientName}.g.cs`),
+        sources.clientSource,
+      );
+    }
+
+    // The runtime helpers are needed by every service. MergePatch is only needed
+    // when type mapping actually rewrote a merge-patch body. Each is reserved like
+    // a model, and before any model is, so a model of the same name is the one
+    // reported: the generated code refers to the helper by that name. The files
+    // themselves are written by the caller once every service has had its turn.
+    // They live in the root namespace, which every version's namespace is nested
+    // in, so one copy serves all versions.
+    const neededHelpers: HelperName[] = [...ALWAYS_EMITTED_HELPERS];
+    if (usedHelpers.has(MERGE_PATCH_HELPER_NAME)) {
+      neededHelpers.push(MERGE_PATCH_HELPER_NAME);
+      // The helper's file also declares the interface endpoints take.
+      tryReserveModelOutputName(
+        program,
+        modelOutputOwners,
+        MERGE_PATCH_INTERFACE_NAME,
+        `the ${MERGE_PATCH_INTERFACE_NAME} interface of the ${MERGE_PATCH_HELPER_NAME} helper`,
+        NoTarget,
+      );
+    }
+    for (const helper of neededHelpers) {
+      if (
+        tryReserveModelOutputName(
+          program,
+          modelOutputOwners,
+          helper,
+          `the ${helper} helper`,
+          NoTarget,
+        )
+      ) {
+        helperNamespaces.get(helper)!.add(baseNs);
+      }
+    }
+
+    // Request records share the models folder, so a model with the same name must
+    // be reported, not overwritten.
+    for (const [, rt] of requestTypes) {
+      if (!checkName(program, "model", rt.name, NoTarget)) continue;
+      const owner = `the ${rt.name} request type`;
+      if (
+        !tryReserveModelOutputName(
+          program,
+          modelOutputOwners,
+          rt.name,
+          owner,
+          NoTarget,
+        ) ||
+        !claimPath(rt.name, owner, NoTarget)
+      ) {
+        continue;
+      }
+      const substitute = requestSubstitute(program, rt);
+      await writeFile(
+        program,
+        resolvePath(modelsDir, `${rt.name}.g.cs`),
+        rt.discriminated
+          ? buildRecord(
+              rt.model,
+              modelNs,
+              program,
+              models,
+              enums,
+              usedHelpers,
+              renderer,
+              options["abstract-discriminated-base"] !== false,
+              additionalUsings,
+              version,
+              {
+                visibility: rt.visibility,
+                nameOf: (m) => requestRecordName(program, m, rt.suffix),
+                substitute,
+              },
+            )
+          : buildFilteredRecord(
+              rt.name,
+              rt.doc,
+              rt.props,
+              modelNs,
+              program,
+              models,
+              enums,
+              usedHelpers,
+              renderer,
+              additionalUsings,
+              rt.access,
+              substitute,
+            ),
+      );
+    }
+
+    // The aggregate client and its extensions class are types in the same namespace
+    // as the models, too.
+    const aggregateFree =
+      endpointNames.length === 0 ||
+      [clientName, `${clientName}Extensions`]
+        .map((typeName) =>
+          tryReserveModelOutputName(
+            program,
+            modelOutputOwners,
+            typeName,
+            `the ${typeName} client type`,
+            NoTarget,
+          ),
+        )
+        .every(Boolean);
+
+    if (
+      aggregateFree &&
+      endpointNames.length > 0 &&
+      tryReserveModelOutputName(
+        program,
+        endpointOutputOwners,
+        relativeTo(outputDir, resolvePath(dir, `${clientName}Extensions`)),
+        `the ${clientName} client in ${nsFullName}`,
+        NoTarget,
+      )
+    ) {
+      await writeFile(
+        program,
+        resolvePath(dir, `${clientName}Extensions.g.cs`),
+        buildExtensions(
+          clientName,
+          endpointNs,
+          endpointNames,
+          renderer,
+          additionalUsings,
+        ),
+      );
+    }
+
+    // Rendering a record can reference further models (a property type), and a
+    // newly referenced discriminated model brings derived models of its own that
+    // nothing else references. Emit in rounds, discovering derived models each
+    // time, until a round finds nothing new.
+    const emittedModels = new Set<Model>();
+    for (;;) {
+      // A model's `derivedModels` are only discovered by walking `@discriminator`
+      // hierarchies explicitly, unlike sub-models reached through a property type.
+      collectDerivedModels(program, models, version);
+      const pending = [...models.values()].filter((m) => !emittedModels.has(m));
+      if (pending.length === 0) break;
+
+      for (const model of pending) {
+        emittedModels.add(model);
+        if (!isEmittable(model, nsFullName)) continue;
+        if (!isInVersion(program, model, version)) continue;
+        const valueParameter = valueTemplateParameter(model);
+        if (valueParameter !== undefined) {
+          reportValueTemplate(program, model, valueParameter);
+          continue;
+        }
+        const recordFileName = getClientName(program, model) ?? model.name!;
+        if (!checkName(program, "model", recordFileName, model)) continue;
+        const owner = `model ${declarationKey(model)}`;
+        if (
+          !tryReserveModelOutputName(
+            program,
+            modelOutputOwners,
+            recordFileName,
+            owner,
+            model,
+          ) ||
+          !claimPath(recordFileName, owner, model)
+        ) {
+          continue;
+        }
+        await writeFile(
+          program,
+          resolvePath(modelsDir, `${recordFileName}.g.cs`),
+          buildRecord(
+            model,
+            modelNs,
+            program,
+            models,
+            enums,
+            usedHelpers,
+            renderer,
+            options["abstract-discriminated-base"] !== false,
+            additionalUsings,
+            version,
+          ),
+        );
+      }
+    }
+    for (const [, e] of enums) {
+      if (!isEmittableEnum(e, nsFullName)) continue;
+      if (!isInVersion(program, e, version)) continue;
+      const enumFileName = getClientName(program, e) ?? e.name;
+      if (!checkName(program, "enum", enumFileName, e)) continue;
+      if (
+        !tryReserveModelOutputName(
+          program,
+          modelOutputOwners,
+          enumFileName,
+          `enum ${declarationKey(e)}`,
+          e,
+        )
+      ) {
+        continue;
+      }
+      // The enum's generated converter is a type in the same namespace too.
+      if (
+        !tryReserveModelOutputName(
+          program,
+          modelOutputOwners,
+          `${enumFileName}JsonConverter`,
+          `the converter for enum ${declarationKey(e)}`,
+          e,
+        ) ||
+        !claimPath(enumFileName, `enum ${declarationKey(e)}`, e)
+      ) {
+        continue;
+      }
+      await writeFile(
+        program,
+        resolvePath(modelsDir, `${enumFileName}.g.cs`),
+        buildEnum(e, modelNs, program, renderer, version),
+      );
+    }
+  };
+
+  helperTypeNames.set(baseNs, serviceTypeNames);
+
+  // Two version values can sanitize to the same namespace segment (`1.0` and
+  // `1_0`), which would put both versions' types in one namespace.
+  const versionScope = new MemberScope(program, "namespace", `${baseNs}`);
+
+  if (useVersionedFolders) {
+    // Every version is emitted on its own: its own folder, namespace, and models,
+    // so each version's types have exactly that version's shape.
+    for (const version of versionsToEmit) {
+      // The version value is a folder name.
+      if (!checkName(program, "version", version.value, NoTarget)) continue;
+      const vDir = resolvePath(outputDir, version.value);
+      const vSegment = sanitizeVersionForNs(version.value);
+      if (
+        !versionScope.claim(vSegment, `version "${version.value}"`, NoTarget)
+      ) {
+        continue;
+      }
+      const vNs = `${baseNs}.${vSegment}`;
+      await emitUnit({
+        dir: vDir,
+        endpointNs: vNs,
+        modelNs: vNs,
+        modelsDir: resolvePath(vDir, "Models"),
+        version,
+      });
+    }
+  } else {
+    // At most one version. Its models live in the root namespace even when the
+    // endpoints are placed in a version namespace.
+    const version = versionsToEmit[0];
+    await emitUnit({
+      dir: outputDir,
+      endpointNs:
+        version && options["version-in-namespace"] === true
+          ? `${baseNs}.${sanitizeVersionForNs(version.value)}`
+          : baseNs,
+      modelNs: baseNs,
+      modelsDir: resolvePath(outputDir, "Models"),
+      version,
+    });
+  }
+
+  setProjection(program, undefined);
+
+  // Emit project file
+  if (options["emit-project-file"] !== false) {
+    const csprojPath = resolvePath(outputDir, `${projectName}.csproj`);
+    const overwrite = options["overwrite-project-file"] ?? false;
+    if (overwrite || !(await fileExists(program.host, csprojPath))) {
+      await writeFile(
+        program,
+        csprojPath,
+        buildCsproj(
+          baseNs,
+          netVersion,
+          isMultiTarget,
+          deriveNugetVersion(allVersions, options),
+          nugetDescription,
+          nugetTitle,
+          options,
+          renderer,
+        ),
+      );
+    }
+  }
+}
+
+/**
+ * The path of `file` relative to the output directory, with forward slashes, for
+ * use as a reservation key and in collision messages.
+ *
+ * @param outputDir - The root emitter output directory.
+ * @param file - An absolute path inside it.
+ * @returns The relative path, e.g. `Endpoints/IItems` or `v1.0/Endpoints/IItems`.
+ */
+function relativeTo(outputDir: string, file: string): string {
+  return file.startsWith(outputDir)
+    ? file.slice(outputDir.length).replace(/^\/+/, "")
+    : file;
+}
+
+/**
+ * Reserves an output file name for a model/enum, guarding against collisions. On
+ * the first claim it records the owner and returns `true`; a subsequent claim of
+ * the same name reports an `output-name-collision` diagnostic and returns
+ * `false` so the caller skips emitting the clashing file.
+ *
+ * Names are compared ignoring case: `Widget.g.cs` and `widget.g.cs` are the same
+ * file on Windows and macOS, so one would silently overwrite the other there.
+ *
+ * @param program - The compiler program, used to report diagnostics.
+ * @param owners - Map of already-claimed output names to their first owner.
+ * @param name - The output file base name being claimed.
+ * @param ownerLabel - Human-readable label of the claiming declaration.
+ * @param target - The declaration, used as the diagnostic target, or `NoTarget`
+ *   for generated files with no corresponding TypeSpec declaration.
+ * @returns `true` if the name was free and is now reserved; `false` on collision.
+ */
+function tryReserveModelOutputName(
+  program: Program,
+  owners: Map<string, OutputNameOwner>,
+  name: string,
+  ownerLabel: string,
+  target: Type | typeof NoTarget,
+): boolean {
+  const key = name.toLowerCase();
+  const existing = owners.get(key);
+  if (!existing) {
+    owners.set(key, { name, label: ownerLabel });
+    return true;
+  }
+
+  reportOnce(
+    program,
+    existing.name === name
+      ? createDiagnostic({
+          code: "output-name-collision",
+          target,
+          format: {
+            firstName: existing.name,
+            name,
+            first: existing.label,
+            second: ownerLabel,
+          },
+        })
+      : createDiagnostic({
+          code: "output-name-collision",
+          messageId: "case",
+          target,
+          format: {
+            firstName: existing.name,
+            name,
+            first: existing.label,
+            second: ownerLabel,
+          },
+        }),
+  );
+  return false;
+}
+
+/**
+ * Projects a service onto one API version with TypeSpec's versioning mutators, so
+ * every declaration reached from its operations has that version's name, type, and
+ * optionality, and returns the projected namespace with its HTTP operations.
+ *
+ * An unversioned service is returned as it is. A service that is not versioned but
+ * uses a specific version of a versioned library (`@useDependency`) is projected
+ * onto that dependency's version.
+ *
+ * @param program - The compiler program.
+ * @param serviceNs - The service namespace.
+ * @param operations - The service's operations, used when there is nothing to project.
+ * @param version - The API version to project onto, or `undefined` when unversioned.
+ * @returns The namespace and operations to emit.
+ */
+function projectService(
+  program: Program,
+  serviceNs: Namespace,
+  operations: HttpOperation[],
+  version: Version | undefined,
+): { namespace: Namespace; operations: HttpOperation[] } {
+  const mutators = getVersioningMutators(program, serviceNs);
+  const mutator =
+    mutators?.kind === "transient"
+      ? mutators.mutator
+      : mutators?.snapshots.find((s) => s.version.name === version?.name)
+          ?.mutator;
+  if (!mutator) return { namespace: serviceNs, operations };
+
+  const namespace = unsafe_mutateSubgraphWithNamespace(
+    program,
+    [mutator],
+    serviceNs,
+  ).type as Namespace;
+  // The unprojected service was already validated, and its diagnostics reported.
+  const [service] = getHttpService(program, namespace);
+  return { namespace, operations: service.operations };
+}
+
+/**
+ * Groups operations by the interface or namespace that declares them. The
+ * container itself is the key, not its simple name: two interfaces called `Items`
+ * in different child namespaces are different declarations, and must each reach
+ * the output-name reservation instead of being merged into one client.
+ *
+ * @param program - The compiler program.
+ * @param serviceNs - The service namespace, whose own operations take its name.
+ * @param operations - The operations to group.
+ * @returns The groups in declaration order, each with the client name it takes.
+ */
+function groupByContainer(
+  program: Program,
+  serviceNs: Namespace,
+  operations: HttpOperation[],
+): Map<
+  Interface | Namespace,
+  { name: string; container: Interface | Namespace; ops: HttpOperation[] }
+> {
+  const byContainer = new Map<
+    Interface | Namespace,
+    { name: string; container: Interface | Namespace; ops: HttpOperation[] }
+  >();
+  for (const op of operations) {
+    const c = op.container;
+    const name =
+      c.kind === "Interface"
+        ? (getClientName(program, c) ?? c.name)
+        : c === serviceNs
+          ? serviceNs.name
+          : c.name;
+    if (!byContainer.has(c))
+      byContainer.set(c, { name, container: c, ops: [] });
+    byContainer.get(c)!.ops.push(op);
+  }
+  return byContainer;
+}
+
+/**
+ * Determines which declared versions to emit: all versions in `all-versions`
+ * mode, the single `target-version` when specified, or the latest declared
+ * version by default. Reports a `version-not-found` diagnostic and returns
+ * `null` when an explicit `target-version` cannot be satisfied.
+ *
+ * @param program - The compiler program, used to report diagnostics.
+ * @param versions - All declared versions in declaration order (empty when unversioned).
+ * @param options - The resolved emitter options.
+ * @returns The versions to emit (possibly empty for unversioned APIs), or `null`
+ *   when the requested version is unresolvable.
+ */
+function resolveTargetVersions(
+  program: Program,
+  versions: Version[],
+  options: EmitterOptions,
+): Version[] | null {
+  const targetValue = options["target-version"];
+
+  // All-versions mode: emit every declared version (or fall through to unversioned).
+  if (options["all-versions"]) {
+    return versions; // may be empty for unversioned APIs
+  }
+
+  // Unversioned API: target-version is unsatisfiable.
+  if (versions.length === 0) {
+    if (targetValue) {
+      reportOnce(
+        program,
+        createDiagnostic({
+          code: "version-not-found",
+          target: NoTarget,
+          format: {
+            version: targetValue,
+            available: "none (API is not versioned)",
+          },
+        }),
+      );
+      return null;
+    }
+    return [];
+  }
+
+  // Versioned API with an explicit target.
+  if (targetValue) {
+    const found = versions.find((v) => v.value === targetValue);
+    if (!found) {
+      reportOnce(
+        program,
+        createDiagnostic({
+          code: "version-not-found",
+          target: NoTarget,
+          format: {
+            version: targetValue,
+            available: versions.map((v) => v.value).join(", "),
+          },
+        }),
+      );
+      return null;
+    }
+    return [found];
+  }
+
+  // Default: latest declared version (last in declaration order).
+  return [versions[versions.length - 1]];
+}
+
+/**
+ * The names of the C# types a service's emit unit can declare: every model and
+ * enum in its namespace and the namespaces nested in it (by their client names),
+ * the type parameters of its generic models, its endpoint interfaces and clients,
+ * and its aggregate client. It may name more than are written, which only means a
+ * framework type is written in full where it did not need to be.
+ *
+ * @param program - The compiler program, for client names.
+ * @param namespace - The (projected) service namespace.
+ * @param containers - The names of its endpoint containers.
+ * @param clientName - The aggregate client's name.
+ * @returns The type names.
+ */
+function generatedTypeNames(
+  program: Program,
+  namespace: Namespace,
+  containers: string[],
+  clientName: string,
+): Set<string> {
+  const names = new Set<string>([clientName, `${clientName}Extensions`]);
+  for (const container of containers) {
+    names.add(`I${container}`);
+    names.add(`${container}Endpoint`);
+  }
+  const visit = (ns: Namespace): void => {
+    for (const model of ns.models.values()) {
+      names.add(getClientName(program, model) ?? model.name);
+      for (const parameter of (
+        model.node as {
+          templateParameters?: TemplateParameterDeclarationNode[];
+        }
+      ).templateParameters ?? []) {
+        names.add(csTemplateParameterName(parameter).replace(/^@/, ""));
+      }
+    }
+    for (const declaration of ns.enums.values()) {
+      names.add(getClientName(program, declaration) ?? declaration.name);
+    }
+    for (const nested of ns.namespaces.values()) visit(nested);
+  };
+  visit(namespace);
+  return names;
+}

@@ -1,0 +1,77 @@
+{{!--
+  record.hbs — rendered once per TypeSpec model or visibility-filtered request
+  type as a C# `{{access}} record`.
+
+  Override via tspconfig.yaml:
+    options:
+      "@massivescale/tsp-flurl-client":
+        templates:
+          record: "./templates/record.hbs"
+
+  Template variables:
+
+  {{doc}}           — optional XML <summary> text (pre-escaped; may be falsy).
+                      Rendered as: /// <summary>{{doc}}</summary>
+
+  {{recordName}}    — PascalCase record name, e.g. "Widget" or "PetCreateRequest"
+
+  {{genericSuffix}} — generic type parameter string if the model is generic,
+                      e.g. "<T>" or "". Empty string for non-generic records.
+
+  {{properties}}    — array of property objects in declaration order. Each has:
+    .doc            —   optional XML <summary> text (pre-escaped; may be falsy). When it
+                        is falsy the template writes a generated summary, so every public
+                        member carries XML documentation.
+    .docName        —   the wire name, XML-escaped, for that generated summary
+    .numberAsString —   true for a number written as a JSON string (@encode("string")).
+                        Adds [JsonNumberHandling(...)] so it round-trips as a string.
+    .converter      —   the [JsonConverter] type for a property whose @encode the runtime
+                        implements (unixTimestamp, rfc7231, seconds, base64url, ...).
+    .writeNull      —   true for a required property whose type allows null. Adds
+                        [JsonIgnore(Condition = JsonIgnoreCondition.Never)] so a null is
+                        written as `null` rather than left out like an optional one.
+    .type           —   C# type string incl. optional "?", e.g. "string", "int?"
+    .name           —   PascalCase property name, e.g. "FirstName"
+    .jsonPropertyName — JSON wire name for [JsonPropertyName("...")], e.g. "firstName"
+    .defaultValue   —   default initializer expression (may be falsy), e.g.
+                        "default!" or "[]". Written as `= <defaultValue>;`.
+
+  {{baseRecordName}} — C# record to inherit from (may be falsy). Set when this
+                        record is a derived member of a `@discriminator` hierarchy.
+
+  {{discriminator}} — present when the model declares `@discriminator` (may be falsy). Has:
+    .propertyName   —   JSON wire name of the discriminator property, e.g. "petKind"
+    .derivedTypes   —   array of { typeName, value } pairs, one per known derived type
+
+  {{isAbstract}}    — when true, renders the `abstract` modifier. Set for
+                       `@discriminator` hierarchy members with no concrete wire
+                       shape of their own (may be falsy).
+
+  Built-in helpers:
+
+  {{indent <text>}}        — prefixes every non-empty line of <text> with 4 spaces
+  {{#if (isDefined val)}}  — true when val is not undefined
+  {{declaredName name}}    — the name to declare a type with: one of only lower-case
+                             letters is verbatim-escaped, as C# warns about it (CS8981)
+
+--}}
+/// <summary>
+{{#if doc}}/// {{docLines doc "/// "}}
+{{else}}/// The <c>{{recordName}}</c> model.
+{{/if}}/// </summary>
+{{#if discriminator}}[JsonPolymorphic(TypeDiscriminatorPropertyName = "{{discriminator.propertyName}}")]
+{{#each discriminator.derivedTypes}}[JsonDerivedType(typeof({{typeName}}), "{{value}}")]
+{{/each}}{{/if}}{{access}} {{#if isAbstract}}abstract {{/if}}record {{declaredName recordName}}{{genericSuffix}}{{#if baseRecordName}} : {{baseRecordName}}{{/if}}
+{
+{{#each properties}}    /// <summary>
+{{#if doc}}    /// {{docLines doc "    /// "}}
+{{else}}    /// The <c>{{docName}}</c> property.
+{{/if}}    /// </summary>
+    [JsonPropertyName("{{jsonPropertyName}}")]
+{{#if numberAsString}}    [JsonNumberHandling(JsonNumberHandling.WriteAsString | JsonNumberHandling.AllowReadingFromString)]
+{{/if}}{{#if writeNull}}    [JsonIgnore(Condition = JsonIgnoreCondition.Never)]
+{{/if}}{{#if converter}}    [JsonConverter(typeof({{{converter}}}))]
+{{/if}}    public {{type}} {{name}} { get; init; }{{#if defaultValue}} = {{defaultValue}};{{/if}}
+    
+{{/each}}
+}

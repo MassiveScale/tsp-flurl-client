@@ -1,0 +1,109 @@
+{{!--
+  enum.hbs — rendered once per TypeSpec enum as a C# `public enum` plus the
+  internal JSON converter that reads and writes it.
+
+  The converter is generated per enum because `JsonStringEnumConverter` does not
+  honour `[EnumMember]`: it would write the C# member name (`Blue`) where the API
+  declared a different wire value (`blue`), and it knows nothing of numeric
+  values. The converter maps each member to its declared value, as a JSON string
+  or a JSON number according to how the member was declared, and rejects values
+  it does not know instead of guessing.
+
+  Override via tspconfig.yaml:
+    options:
+      "@massivescale/tsp-flurl-client":
+        templates:
+          enum: "./templates/enum.hbs"
+
+  Template variables:
+
+  {{doc}}         — optional XML <summary> text (pre-escaped; may be falsy).
+
+  {{enumName}}    — PascalCase enum name, e.g. "OrderStatus"
+
+  {{members}}     — array of enum-member objects in declaration order. Each has:
+    .doc          —   optional XML <summary> text (pre-escaped; may be falsy). When it
+                      is falsy the template writes a generated summary.
+    .docValue     —   the text form of the declared value, XML-escaped, for that summary
+    .name         —   PascalCase member name, e.g. "Pending"
+    .memberValue  —   text form of the declared value for [EnumMember(Value = "...")],
+                      e.g. "pending" or "1" (already escaped for a C# string literal)
+    .numberLiteral —  set only when the member was declared with a number: the C#
+                      numeric literal, e.g. "1L" or "1.5D". Falsy for a string member.
+    .reads        —   true for the first member declared with its wire value, which
+                      reading that value gives; false for a later alias, which only writes
+
+  {{hasStringMembers}} — true when at least one member is declared as a string
+  {{hasNumberMembers}} — true when at least one member is declared as a number
+  {{expectedToken}}    — "a string", "a number", or "a string or a number"
+
+  Built-in helpers:
+
+  {{indent <text>}}      — prefixes every non-empty line of <text> with 4 spaces
+  {{eq a b}}             — strict equality
+  {{declaredName name}}  — the name to declare a type with: one of only lower-case
+                           letters is verbatim-escaped, as C# warns about it (CS8981)
+
+--}}
+/// <summary>
+{{#if doc}}/// {{docLines doc "/// "}}
+{{else}}/// The <c>{{enumName}}</c> enumeration.
+{{/if}}/// </summary>
+[JsonConverter(typeof({{enumName}}JsonConverter))]
+{{access}} enum {{declaredName enumName}}
+{
+{{#each members}}    /// <summary>
+{{#if doc}}    /// {{docLines doc "    /// "}}
+{{else}}    /// The <c>{{docValue}}</c> value.
+{{/if}}    /// </summary>
+    [EnumMember(Value = "{{memberValue}}")]
+    {{name}},
+
+{{/each}}
+}
+
+/// <summary>
+/// Reads and writes <see cref="{{enumName}}"/> as the values the API declares for its members.
+/// </summary>
+internal sealed class {{enumName}}JsonConverter : JsonConverter<{{enumName}}>
+{
+    /// <inheritdoc />
+    public override {{enumName}} Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+    {
+{{#if hasStringMembers}}        if (reader.TokenType == JsonTokenType.String)
+        {
+            var text = reader.GetString();
+            return text switch
+            {
+{{#each members}}{{#unless numberLiteral}}{{#if reads}}                "{{memberValue}}" => {{../enumName}}.{{name}},
+{{/if}}{{/unless}}{{/each}}                _ => throw new JsonException($"'{text}' is not a known {{enumName}} value."),
+            };
+        }
+
+{{/if}}{{#if hasNumberMembers}}        if (reader.TokenType == JsonTokenType.Number)
+        {
+            var number = reader.GetDouble();
+            return number switch
+            {
+{{#each members}}{{#if numberLiteral}}{{#if reads}}                {{numberLiteral}} => {{../enumName}}.{{name}},
+{{/if}}{{/if}}{{/each}}                _ => throw new JsonException($"{number} is not a known {{enumName}} value."),
+            };
+        }
+
+{{/if}}        throw new JsonException($"Expected {{expectedToken}} for {{enumName}} but found {reader.TokenType}.");
+    }
+
+    /// <inheritdoc />
+    public override void Write(Utf8JsonWriter writer, {{enumName}} value, JsonSerializerOptions options)
+    {
+        switch (value)
+        {
+{{#each members}}            case {{../enumName}}.{{name}}:
+{{#if numberLiteral}}                writer.WriteNumberValue({{numberLiteral}});
+{{else}}                writer.WriteStringValue("{{memberValue}}");
+{{/if}}                break;
+{{/each}}            default:
+                throw new JsonException($"{value} is not a known {{enumName}} value.");
+        }
+    }
+}

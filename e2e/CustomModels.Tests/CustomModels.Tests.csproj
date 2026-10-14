@@ -1,0 +1,20 @@
+<Project Sdk="MSTest.Sdk/4.2.3">
+
+  <PropertyGroup>
+    <TargetFrameworks>net8.0;net10.0</TargetFrameworks>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="../Shared/**/*.cs" LinkBase="Shared" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="AwesomeAssertions" Version="9.*" />
+    <ProjectReference Include="../../example/custom-models/tsp-output/MassiveScale.CustomModelsClient.csproj" />
+    <ProjectReference Include="../../example/all-versions/tsp-output/MassiveScale.AllVersionsClient.csproj" />
+    <ProjectReference Include="../../example/kitchen-sink/tsp-output/MassiveScale.KitchenSinkClient.csproj" />
+  </ItemGroup>
+
+</Project>

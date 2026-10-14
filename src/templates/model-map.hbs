@@ -1,0 +1,126 @@
+{{!--
+  model-map.hbs — static helper emitted once per namespace. `ModelMap` is the
+  public registry callers use to say "wherever you would read a `Widget`, read my
+  `MyWidget` instead".
+
+  The registry itself only stores and validates the mappings. The internal
+  `ClientRuntime` helper turns them into serializer behaviour.
+
+  Override via tspconfig.yaml:
+    options:
+      "@massivescale/tsp-flurl-client":
+        templates:
+          model-map: "./templates/model-map.hbs"
+
+  Template variables:
+
+  (none — this template renders a fully static class body)
+
+  Usage example:
+
+  public record MyWidget : Widget { public string? Sku { get; init; } }
+
+  services.AddApiClient(
+      c => c.BaseAddress = new Uri("https://api.example.com"),
+      configureModels: m => m.Map<Widget, MyWidget>());
+
+--}}
+/// <summary>
+/// Registry of custom models that replace generated ones when the client reads JSON.
+/// </summary>
+/// <remarks>
+/// <para>
+/// Register a custom model that derives from a generated one with <see cref="Map{TModel, TCustom}"/>.
+/// From then on, every instance of the generated model the client deserializes is created as the custom
+/// type instead, wherever it appears: as a response, as a property of another model, or as a list item.
+/// The custom type is also what gets serialized when it appears inside another model, so its extra
+/// properties reach the API.
+/// </para>
+/// <para>
+/// A model that sits in a <c>@discriminator</c> hierarchy is substituted when it is read through its
+/// base type. Map one of the base type's derived models; the base type itself cannot be mapped.
+/// </para>
+/// </remarks>
+public sealed class ModelMap
+{
+    private readonly Dictionary<Type, Type> _map = new();
+
+    /// <summary>
+    /// Replaces <typeparamref name="TModel"/> with <typeparamref name="TCustom"/> wherever the client reads it.
+    /// </summary>
+    /// <typeparam name="TModel">The generated model to replace.</typeparam>
+    /// <typeparam name="TCustom">The custom model that derives from <typeparamref name="TModel"/>.</typeparam>
+    /// <returns>This instance, so calls can be chained.</returns>
+    public ModelMap Map<TModel, TCustom>() where TCustom : TModel =>
+        Map(typeof(TModel), typeof(TCustom));
+
+    /// <summary>
+    /// Replaces <paramref name="model"/> with <paramref name="custom"/> wherever the client reads it.
+    /// Mapping a model to itself removes an earlier mapping.
+    /// </summary>
+    /// <param name="model">The generated model to replace.</param>
+    /// <param name="custom">The custom model that derives from <paramref name="model"/>.</param>
+    /// <returns>This instance, so calls can be chained.</returns>
+    /// <exception cref="ArgumentException">
+    /// <paramref name="custom"/> does not derive from <paramref name="model"/>, or cannot be instantiated.
+    /// </exception>
+    /// <exception cref="InvalidOperationException">
+    /// <paramref name="model"/> is the base of a <c>@discriminator</c> hierarchy.
+    /// </exception>
+    public ModelMap Map(Type model, Type custom)
+    {
+        if (model is null) throw new ArgumentNullException(nameof(model));
+        if (custom is null) throw new ArgumentNullException(nameof(custom));
+
+        if (model == custom)
+        {
+            _map.Remove(model);
+            return this;
+        }
+
+        if (!model.IsAssignableFrom(custom))
+        {
+            throw new ArgumentException(
+                $"{custom.Name} must derive from {model.Name} to replace it.",
+                nameof(custom));
+        }
+
+        if (custom.IsAbstract || custom.IsInterface)
+        {
+            throw new ArgumentException(
+                $"{custom.Name} cannot be instantiated, so it cannot replace {model.Name}.",
+                nameof(custom));
+        }
+
+        if (model.IsDefined(typeof(JsonPolymorphicAttribute), inherit: false))
+        {
+            throw new InvalidOperationException(
+                $"{model.Name} is the base of a discriminated hierarchy and cannot be replaced. "
+                + "Map one of its derived models instead.");
+        }
+
+        _map[model] = custom;
+        return this;
+    }
+
+    /// <summary>
+    /// Gets a value indicating whether no model has been mapped.
+    /// </summary>
+    internal bool IsEmpty => _map.Count == 0;
+
+    /// <summary>
+    /// Looks up the custom model registered for a generated one.
+    /// </summary>
+    internal bool TryGetCustomType(Type model, out Type custom) =>
+        _map.TryGetValue(model, out custom!);
+
+    /// <summary>
+    /// Returns <see langword="true"/> when <paramref name="type"/> was registered as a replacement.
+    /// </summary>
+    internal bool IsCustomType(Type type) => _map.ContainsValue(type);
+
+    /// <summary>
+    /// Returns the registered replacements keyed by the model they replace.
+    /// </summary>
+    internal IReadOnlyDictionary<Type, Type> Entries => _map;
+}

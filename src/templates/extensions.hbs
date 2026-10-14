@@ -1,0 +1,175 @@
+{{!--
+  extensions.hbs — generates two top-level declarations in one file:
+    1. A concrete `{clientClassName}` class that exposes each endpoint interface
+       as a named property (e.g. `client.Pets.ListAsync(ct)`), plus the Flurl
+       client it was built on and `Create` factories for use without DI.
+    2. A static `{className}` extension class that registers every endpoint
+       interface and the aggregate client with ASP.NET Core's DI container.
+
+  Override via tspconfig.yaml:
+    options:
+      "@massivescale/tsp-flurl-client":
+        templates:
+          extensions: "./templates/extensions.hbs"
+
+  Template variables:
+
+  {{clientClassName}} — name of the aggregate client class, e.g. "ApiClient"
+
+  {{className}}       — name of the static extensions class, e.g. "ApiClientExtensions"
+
+  {{methodName}}      — name of the public registration method, e.g. "AddApiClient"
+
+  {{httpClientName}}  — name of the named HttpClient the registration creates,
+                        unique per namespace and client
+
+  {{interfaces}}      — array of endpoint entry objects. Each has:
+    .name             —   C# interface name, e.g. "IPets"
+    .clientName       —   C# implementation class name, e.g. "PetsEndpoint"
+    .propertyName     —   property name on the aggregate client, e.g. "Pets"
+    .paramName        —   constructor parameter name as written in C#, e.g. "pets" or "@params"
+    .docParamName     —   the same name in XML documentation, never escaped, e.g. "params"
+    .access           —   "public" or "internal"; the property's access modifier
+
+  {{constructorAccess}} — "public", or "internal" when any endpoint is internal,
+                        because a public constructor cannot take an internal type
+
+  Usage example:
+
+  builder.Services.AddApiClient(
+      c => c.BaseAddress = new Uri("https://api.example.com"),
+      configureModels: m => m.Map<Pet, MyPet>());
+
+  // Inject and call:
+  public class MyService(ApiClient api)
+  {
+      public Task<MyPet> GetAsync(string id, CancellationToken ct) =>
+          api.Pets.ReadAsync<MyPet>(id, cancellationToken: ct);
+  }
+
+  Built-in helpers:
+
+  {{indent <text>}}  — prefixes every non-empty line of <text> with 4 spaces
+
+--}}
+/// <summary>
+/// Unified client providing access to all API endpoints.
+/// </summary>
+/// <remarks>
+/// Inject this class directly and call methods through its named endpoint properties,
+/// e.g. <c>client.Pets.ListAsync(ct)</c>. The underlying <see cref="IFlurlClient"/> is exposed
+/// as <see cref="FlurlClient"/> for requests the generated methods do not cover.
+/// </remarks>
+public class {{declaredName clientClassName}}
+{
+    /// <summary>
+    /// Gets the Flurl client every endpoint sends its requests through. It is already configured with
+    /// the serializer that applies this client's <see cref="ModelMap"/>, so reading a model through
+    /// it (for example <c>FlurlClient.Request("api/pets").GetJsonAsync&lt;Pet&gt;()</c>) yields the same
+    /// custom types as the generated methods.
+    /// </summary>
+    public IFlurlClient FlurlClient { get; }
+
+{{#each interfaces}}    /// <summary>Gets the <see cref="{{name}}"/> client.</summary>
+    {{access}} {{name}} {{propertyName}} { get; }
+
+{{/each}}
+    /// <summary>
+    /// Initializes a new instance of <see cref="{{clientClassName}}"/>.
+    /// </summary>
+    /// <param name="flurlClient">The Flurl client the endpoints send requests through.</param>
+{{#each interfaces}}    /// <param name="{{docParamName}}">The <see cref="{{name}}"/> client.</param>
+{{/each}}    {{constructorAccess}} {{clientClassName}}(IFlurlClient flurlClient{{#each interfaces}}, {{name}} {{paramName}}{{/each}})
+    {
+        FlurlClient = flurlClient ?? throw new ArgumentNullException(nameof(flurlClient));
+{{#each interfaces}}        this.{{propertyName}} = {{paramName}} ?? throw new ArgumentNullException(nameof({{paramName}}));
+{{/each}}    }
+
+    /// <summary>
+    /// Creates a client on top of an existing Flurl client, for use without dependency injection.
+    /// The Flurl client's JSON serializer is replaced with the one this API needs.
+    /// </summary>
+    /// <param name="flurlClient">The Flurl client to send requests through; set its base URL first.</param>
+    /// <param name="models">Optional custom models to substitute for the generated ones.</param>
+    public static {{clientClassName}} Create(IFlurlClient flurlClient, ModelMap? models = null)
+    {
+        ClientRuntime.Configure(flurlClient, models);
+        return new {{clientClassName}}(flurlClient{{#each interfaces}}, new {{clientName}}(flurlClient){{/each}});
+    }
+
+    /// <summary>
+    /// Creates a client that talks to <paramref name="baseUrl"/>, for use without dependency injection.
+    /// </summary>
+    /// <param name="baseUrl">The API base URL, e.g. <c>https://api.example.com</c>.</param>
+    /// <param name="configureModels">Optional callback that registers custom models.</param>
+    public static {{clientClassName}} Create(string baseUrl, Action<ModelMap>? configureModels = null)
+    {
+        var models = new ModelMap();
+        configureModels?.Invoke(models);
+        return Create(new FlurlClient(baseUrl), models);
+    }
+}
+
+/// <summary>
+/// Extension methods to register the <see cref="{{clientClassName}}"/> with the DI container.
+/// </summary>
+public static class {{className}}
+{
+    private const string HttpClientName = "{{httpClientName}}";
+
+    /// <summary>
+    /// Registers every endpoint interface and the <see cref="{{clientClassName}}"/> aggregate client with the DI container.
+    /// </summary>
+    /// <param name="services">The service collection.</param>
+    /// <param name="configureHttpClient">Configures the underlying <see cref="HttpClient"/> (e.g. set <c>BaseAddress</c>).</param>
+    /// <param name="configureBuilder">
+    /// Optional. Receives the <see cref="IHttpClientBuilder"/> for the client and returns it, allowing
+    /// additional configuration such as adding delegating handlers or resilience policies.
+    /// </param>
+    /// <param name="configureModels">
+    /// Optional. Registers custom models, e.g. <c>m =&gt; m.Map&lt;Widget, MyWidget&gt;()</c>, so every
+    /// <c>Widget</c> the client reads is deserialized as a <c>MyWidget</c>.
+    /// </param>
+    public static IServiceCollection {{methodName}}(
+        this IServiceCollection services,
+        Action<HttpClient> configureHttpClient,
+        Func<IHttpClientBuilder, IHttpClientBuilder>? configureBuilder = null,
+        Action<ModelMap>? configureModels = null)
+    {
+        if (services is null) throw new ArgumentNullException(nameof(services));
+        if (configureHttpClient is null) throw new ArgumentNullException(nameof(configureHttpClient));
+
+        // The map is captured here rather than registered by type: ModelMap is one type
+        // shared by every API version in this project, so a container registration would
+        // let one version's map replace another's.
+        var models = new ModelMap();
+        configureModels?.Invoke(models);
+
+        var builder = services.AddHttpClient(HttpClientName, configureHttpClient);
+        configureBuilder?.Invoke(builder);
+
+{{#each interfaces}}        services.AddTransient<{{name}}>(sp => new {{clientName}}(CreateFlurlClient(sp, models)));
+{{/each}}        services.AddTransient<{{clientClassName}}>(sp =>
+        {
+            var flurlClient = CreateFlurlClient(sp, models);
+            return new {{clientClassName}}(flurlClient{{#each interfaces}}, new {{clientName}}(flurlClient){{/each}});
+        });
+        return services;
+    }
+
+    /// <summary>
+    /// Creates a Flurl client around an <see cref="HttpClient"/> from <see cref="IHttpClientFactory"/>.
+    /// </summary>
+    /// <remarks>
+    /// Nothing here needs to be disposed. The factory owns and pools the message handler, and
+    /// gives out an <see cref="HttpClient"/> that does not dispose it, so disposing the client
+    /// (which is all <see cref="FlurlClient.Dispose"/> does) releases nothing. That is why the
+    /// Flurl client is not registered with the container, which would otherwise keep every
+    /// transient instance alive until the container itself is disposed.
+    /// </remarks>
+    private static IFlurlClient CreateFlurlClient(IServiceProvider services, ModelMap models)
+    {
+        var httpClient = services.GetRequiredService<IHttpClientFactory>().CreateClient(HttpClientName);
+        return ClientRuntime.Configure(new FlurlClient(httpClient), models);
+    }
+}

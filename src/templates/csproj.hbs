@@ -1,0 +1,70 @@
+{{!--
+  csproj.hbs — renders the generated .csproj project file for the Flurl client.
+
+  Override via tspconfig.yaml:
+    options:
+      "@massivescale/tsp-flurl-client":
+        templates:
+          csproj: "./templates/csproj.hbs"
+
+  Template variables:
+
+  {{rootNamespace}}     — C# root namespace, e.g. "Acme.Api.Client"
+  {{netVersion}}        — Target framework moniker(s). Single: "net8.0". Multi: "net8.0;net9.0"
+  {{isMultiTarget}}     — true when netVersion contains multiple TFMs
+  {{nugetDescription}}  — NuGet <Description> (always present)
+  {{nugetPackageId}}    — NuGet <PackageId> (optional)
+  {{nugetVersion}}      — NuGet <Version> (auto-derived from the targeted TypeSpec API version when available; falls back to CalVer YYYY.MM.DD; overridable via nuget-version option)
+  {{nugetAuthors}}      — NuGet <Authors> (optional)
+  {{nugetTitle}}        — NuGet <Title> (optional)
+  {{nugetTags}}         — NuGet <PackageTags> (optional)
+
+  Remarks:
+
+  The default implementation generates a class library project for use in an ASP.NET Core application.
+  If you want to generate a CLI application instead, change the Sdk to "Microsoft.NET.Sdk.Console".
+--}}
+  <!--
+    The project was auto-generated. Changes may be overwritten if the project is regenerated.
+    In order to ensure that desired changes are preserved, we recommend providing a custom
+    `csproj.hbs` template. Instructions can be found at https://github.com/MassiveScale/tsp-flurl-client
+  -->
+
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    {{#if isMultiTarget}}<TargetFrameworks>{{{netVersion}}}</TargetFrameworks>{{else}}<TargetFramework>{{{netVersion}}}</TargetFramework>{{/if}}
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <GenerateDocumentationFile>True</GenerateDocumentationFile>
+    <RootNamespace>{{{rootNamespace}}}</RootNamespace>
+  </PropertyGroup>
+
+  <!-- NuGet package metadata for publishing -->
+  <PropertyGroup>
+    <IsPackable>True</IsPackable>
+    {{#if nugetPackageId}}
+    <PackageId>{{{nugetPackageId}}}</PackageId>
+    {{/if}}
+    {{#if nugetVersion}}
+    <Version>{{{nugetVersion}}}</Version>
+    {{/if}}
+    {{#if nugetTitle}}
+    <Title>{{{nugetTitle}}}</Title>
+    {{/if}}
+    <Description>{{{nugetDescription}}}</Description>
+    {{#if nugetAuthors}}
+    <Authors>{{{nugetAuthors}}}</Authors>
+    {{/if}}
+    {{#if nugetTags}}
+    <PackageTags>{{{nugetTags}}}</PackageTags>
+    {{/if}}
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Flurl.Http" Version="4.*" />
+    <PackageReference Include="Microsoft.Extensions.Http" Version="8.*" />
+  </ItemGroup>
+
+</Project>

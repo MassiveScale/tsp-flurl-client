@@ -147,3 +147,17 @@ vite.config.ts.timestamp-*
 
 # Turbo Repo
 .turbo
+
+# TypeSpec emitter output
+tsp-output/
+
+# .NET build output
+bin/
+obj/
+
+# Visual Studio per-machine state
+.vs/
+
+# Compile matrix: the spec is generated on every run
+matrix/main.tsp
+matrix/package-lock.json

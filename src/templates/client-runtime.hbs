@@ -1,0 +1,848 @@
+{{!--
+  client-runtime.hbs — internal static helper emitted once per namespace. It is
+  the only place that knows how generated clients talk to Flurl and System.Text.Json:
+
+    - `Configure` installs the serializer on a Flurl client, including the
+      behaviour behind `ModelMap`.
+    - `ToQueryValue` / `ToWireString` / `EscapePathSegment` render parameter values
+      the way the API expects them (enum wire names, ISO dates, lower-case booleans).
+    - `BytesContent` / `TextContent` build non-JSON request bodies.
+
+  How custom models work:
+
+    Sending   A request body is serialized by its runtime type, so a derived model
+              keeps its extra properties without any registration.
+    Reading   `ReadAsync<MyWidget>` asks for a type outright. A `ModelMap` entry
+              swaps the type for every read, including nested ones, through a
+              converter. For `@discriminator` hierarchies the converter cannot be
+              used (System.Text.Json owns derived-type resolution there), so the
+              map rewrites the base type's derived-type list instead, and a
+              custom subtype used on its own registers itself so its
+              discriminator is still written.
+
+  Override via tspconfig.yaml:
+    options:
+      "@massivescale/tsp-flurl-client":
+        templates:
+          client-runtime: "./templates/client-runtime.hbs"
+
+  Template variables:
+
+  (none — this template renders a fully static class body)
+
+--}}
+/// <summary>
+/// Serializer configuration and wire-format helpers shared by every generated endpoint client.
+/// </summary>
+internal static class ClientRuntime
+{
+    /// <summary>
+    /// Installs the JSON serializer this API needs on a Flurl client.
+    /// </summary>
+    /// <param name="client">The Flurl client to configure.</param>
+    /// <param name="models">Optional custom models to substitute for the generated ones.</param>
+    /// <returns><paramref name="client"/>, so calls can be chained.</returns>
+    internal static IFlurlClient Configure(IFlurlClient client, ModelMap? models)
+    {
+        if (client is null) throw new ArgumentNullException(nameof(client));
+
+        client.Settings.JsonSerializer = new DefaultJsonSerializer(CreateJsonOptions(models));
+        return client;
+    }
+
+    /// <summary>
+    /// Builds the serializer options: web defaults, null properties omitted, and the behaviour behind
+    /// <see cref="ModelMap"/>.
+    /// </summary>
+    /// <param name="models">Optional custom models to substitute for the generated ones.</param>
+    /// <returns>New serializer options.</returns>
+    internal static JsonSerializerOptions CreateJsonOptions(ModelMap? models)
+    {
+        var map = models ?? new ModelMap();
+        var options = new JsonSerializerOptions(JsonSerializerDefaults.Web)
+        {
+            DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
+            TypeInfoResolver = new DefaultJsonTypeInfoResolver
+            {
+                Modifiers = { typeInfo => CustomizeContract(typeInfo, map) },
+            },
+        };
+
+        // TypeSpec durations are ISO 8601 (`PT1H`); System.Text.Json writes a TimeSpan as `01:00:00`.
+        options.Converters.Add(new Iso8601DurationConverter());
+
+        if (!map.IsEmpty)
+        {
+            options.Converters.Add(new MappedModelConverterFactory(map));
+        }
+
+        return options;
+    }
+
+    /// <summary>
+    /// Converts a value to the object Flurl puts in the query string.
+    /// </summary>
+    /// <param name="value">The parameter value.</param>
+    /// <returns>
+    /// <see langword="null"/> for <see langword="null"/>, a list for a sequence, otherwise a string.
+    /// </returns>
+    internal static object? ToQueryValue(object? value) => value switch
+    {
+        null => null,
+        string text => text,
+        Enum enumValue => EnumWireName(enumValue),
+        bool flag => flag ? "true" : "false",
+        DateTimeOffset dateTimeOffset => dateTimeOffset.ToString("O", CultureInfo.InvariantCulture),
+        DateTime dateTime => dateTime.ToString("O", CultureInfo.InvariantCulture),
+        DateOnly dateOnly => dateOnly.ToString("O", CultureInfo.InvariantCulture),
+        TimeOnly timeOnly => timeOnly.ToString("O", CultureInfo.InvariantCulture),
+        TimeSpan timeSpan => XmlConvert.ToString(timeSpan),
+        byte[] bytes => Convert.ToBase64String(bytes),
+        IFormattable formattable => formattable.ToString(null, CultureInfo.InvariantCulture),
+        IEnumerable sequence => sequence.Cast<object?>().Select(ToQueryValue).ToList(),
+        _ => value.ToString(),
+    };
+
+    /// <summary>
+    /// Converts an array query value to the single comma-separated value TypeSpec calls
+    /// <c>explode: false</c> (<c>tags=a,b</c>).
+    /// </summary>
+    /// <param name="value">The parameter value; <see langword="null"/> sends nothing.</param>
+    /// <returns><see langword="null"/> for <see langword="null"/>, otherwise the joined text.</returns>
+    internal static object? ToDelimitedQueryValue(object? value) =>
+        value is null ? null : ToWireString(value);
+
+    /// <summary>
+    /// Converts a value to the text sent in a header or path segment. A sequence is comma-separated.
+    /// </summary>
+    /// <param name="value">The parameter value.</param>
+    /// <returns>The wire text, or an empty string for <see langword="null"/>.</returns>
+    internal static string ToWireString(object? value) => ToQueryValue(value) switch
+    {
+        null => string.Empty,
+        IEnumerable<object?> sequence => string.Join(",", sequence),
+        var converted => converted.ToString() ?? string.Empty,
+    };
+
+    /// <summary>
+    /// Converts a value to a fully percent-encoded path segment, so a value containing <c>/</c> or
+    /// <c>?</c> cannot change the shape of the URL.
+    /// </summary>
+    /// <param name="value">The path parameter value.</param>
+    /// <returns>The encoded segment text.</returns>
+    internal static string EscapePathSegment(object? value) =>
+        Uri.EscapeDataString(ToWireString(value));
+
+    /// <summary>
+    /// Adds caller-supplied query parameters that are not part of the API contract.
+    /// </summary>
+    /// <param name="request">The request to add them to.</param>
+    /// <param name="parameters">The extra parameters; <see langword="null"/> adds nothing.</param>
+    internal static void AddQueryParameters(IFlurlRequest request, Dictionary<string, object>? parameters)
+    {
+        if (parameters is null) return;
+
+        foreach (var (name, value) in parameters)
+        {
+            request.SetQueryParam(name, ToQueryValue(value));
+        }
+    }
+
+    /// <summary>
+    /// Reads a plain-text payload (TypeSpec sends a scalar body as <c>text/plain</c>) as the value
+    /// it declares. It is the reverse of <see cref="ToWireString"/>: numbers and booleans in the
+    /// invariant culture, dates and times as ISO 8601, durations as ISO 8601 (<c>PT1H</c>), enums
+    /// by wire name.
+    /// </summary>
+    /// <typeparam name="T">The declared type.</typeparam>
+    /// <param name="text">The response text.</param>
+    /// <returns>
+    /// The parsed value. Empty text is an empty string for <see cref="string"/>, and
+    /// <see langword="null"/> for any other type that allows it.
+    /// </returns>
+    /// <exception cref="FormatException">The text is not a valid <typeparamref name="T"/>.</exception>
+    internal static T FromText<T>(string text)
+    {
+        var underlying = Nullable.GetUnderlyingType(typeof(T));
+        var target = underlying ?? typeof(T);
+        // Empty text is an empty string, not a missing one: a bodyless success status is
+        // answered with null before the body is read, so it never reaches here.
+        if (typeof(T) == typeof(string)) return (T)(object)text;
+        if (text.Length == 0 && (underlying is not null || !typeof(T).IsValueType))
+        {
+            return default!;
+        }
+
+        object value = target switch
+        {
+            _ when target == typeof(bool) => bool.Parse(text),
+            _ when target == typeof(DateTimeOffset) =>
+                DateTimeOffset.Parse(text, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal),
+            _ when target == typeof(DateTime) =>
+                DateTime.Parse(text, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind),
+            _ when target == typeof(DateOnly) => DateOnly.Parse(text, CultureInfo.InvariantCulture),
+            _ when target == typeof(TimeOnly) => TimeOnly.Parse(text, CultureInfo.InvariantCulture),
+            _ when target == typeof(TimeSpan) => XmlConvert.ToTimeSpan(text),
+            _ when target == typeof(Guid) => Guid.Parse(text),
+            _ when target == typeof(byte[]) => Convert.FromBase64String(text),
+            _ when target == typeof(Uri) => new Uri(text, UriKind.RelativeOrAbsolute),
+            _ when target == typeof(JsonElement) => TextToJsonElement(text),
+            _ when target.IsEnum => ParseEnum(target, text),
+            _ => Convert.ChangeType(text, target, CultureInfo.InvariantCulture),
+        };
+        return (T)value;
+    }
+
+    /// <summary>
+    /// Reads the text of a union of scalars: a number or boolean as that JSON value, anything else
+    /// as a JSON string, so <c>42</c> and <c>hello</c> both arrive as the value that was sent.
+    /// </summary>
+    private static JsonElement TextToJsonElement(string text)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(text);
+            if (document.RootElement.ValueKind is JsonValueKind.Number or JsonValueKind.True or JsonValueKind.False)
+            {
+                return document.RootElement.Clone();
+            }
+        }
+        catch (JsonException)
+        {
+        }
+
+        return JsonSerializer.SerializeToElement(text);
+    }
+
+    /// <summary>
+    /// Finds the enum member whose wire name (see <see cref="EnumMemberAttribute"/>) is <paramref name="text"/>.
+    /// </summary>
+    private static object ParseEnum(System.Type enumType, string text)
+    {
+        foreach (var value in Enum.GetValues(enumType))
+        {
+            if (EnumWireName((Enum)value) == text) return value;
+        }
+
+        throw new FormatException($"'{text}' is not a value of {enumType.Name}.");
+    }
+
+    /// <summary>
+    /// Serializes a JSON request body with the request's configured serializer (so the model map
+    /// and wire formats apply) and sends it with a declared JSON media type other than
+    /// <c>application/json</c>, such as <c>application/vnd.acme+json</c>.
+    /// </summary>
+    /// <param name="request">The request whose serializer writes the body.</param>
+    /// <param name="body">The value to send.</param>
+    /// <param name="contentType">The JSON media type the operation declares.</param>
+    /// <returns>The request content.</returns>
+    internal static HttpContent JsonContent(IFlurlRequest request, object? body, string contentType) =>
+        EncodedContent(request.Settings.JsonSerializer.Serialize(body!), contentType);
+
+    /// <summary>
+    /// Reads a response declared as both JSON and plain text (for example a <c>string</c> that may
+    /// arrive as <c>application/json</c> or <c>text/plain</c>) according to the <c>Content-Type</c>
+    /// the server actually sent. A response with no <c>Content-Type</c> is read as JSON.
+    /// </summary>
+    /// <typeparam name="T">The declared type.</typeparam>
+    /// <param name="response">The response to read.</param>
+    /// <returns>The value.</returns>
+    internal static async Task<T> ReadJsonOrTextAsync<T>(IFlurlResponse response)
+    {
+        var mediaType = response.ResponseMessage.Content.Headers.ContentType?.MediaType;
+        if (mediaType is null || IsJsonMediaType(mediaType))
+        {
+            return (await response.GetJsonAsync<T>().ConfigureAwait(false))!;
+        }
+
+        return FromText<T>(await response.GetStringAsync().ConfigureAwait(false));
+    }
+
+    /// <summary>
+    /// Whether a media type is one JSON document: <c>application/json</c>, <c>text/json</c>, or a
+    /// structured <c>+json</c> type.
+    /// </summary>
+    private static bool IsJsonMediaType(string mediaType) =>
+        mediaType.Equals("application/json", StringComparison.OrdinalIgnoreCase)
+        || mediaType.Equals("text/json", StringComparison.OrdinalIgnoreCase)
+        || mediaType.EndsWith("+json", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Wraps raw bytes as a request body.
+    /// </summary>
+    /// <param name="data">The bytes to send.</param>
+    /// <param name="contentType">The media type, e.g. <c>application/octet-stream</c>.</param>
+    /// <returns>The request content.</returns>
+    internal static HttpContent BytesContent(byte[] data, string contentType)
+    {
+        var content = new ByteArrayContent(data);
+        content.Headers.ContentType = MediaTypeHeaderValue.Parse(contentType);
+        return content;
+    }
+
+    /// <summary>
+    /// Wraps raw text as a request body.
+    /// </summary>
+    /// <param name="text">The text to send.</param>
+    /// <param name="contentType">The media type, e.g. <c>text/plain</c>.</param>
+    /// <returns>The request content.</returns>
+    internal static HttpContent TextContent(string text, string contentType) =>
+        EncodedContent(text, contentType);
+
+    /// <summary>
+    /// Encodes text with the charset its media type declares (UTF-8 when it declares none, which
+    /// is then added to the header), so a declaration such as <c>text/plain; charset=utf-16</c> is
+    /// honoured instead of rejected.
+    /// </summary>
+    /// <param name="text">The text to send.</param>
+    /// <param name="contentType">The full media type, possibly with parameters.</param>
+    /// <returns>The request content.</returns>
+    /// <exception cref="ArgumentException">The declared charset is not a known encoding.</exception>
+    private static HttpContent EncodedContent(string text, string contentType)
+    {
+        var mediaType = MediaTypeHeaderValue.Parse(contentType);
+        var charSet = mediaType.CharSet?.Trim('"');
+        var encoding = string.IsNullOrEmpty(charSet) ? Encoding.UTF8 : FindEncoding(charSet);
+        if (string.IsNullOrEmpty(charSet)) mediaType.CharSet = encoding.WebName;
+        var content = new ByteArrayContent(encoding.GetBytes(text));
+        content.Headers.ContentType = mediaType;
+        return content;
+    }
+
+    /// <summary>
+    /// Finds an encoding by its charset name, including the Windows and IBM code pages
+    /// (<c>windows-1252</c>, <c>shift_jis</c>, ...) that .NET only knows through
+    /// <see cref="CodePagesEncodingProvider"/>. The provider is asked directly rather than
+    /// registered, so the application's own encoding setup is left alone.
+    /// </summary>
+    private static Encoding FindEncoding(string charSet) =>
+        CodePagesEncodingProvider.Instance.GetEncoding(charSet) ?? Encoding.GetEncoding(charSet);
+
+    /// <summary>
+    /// Returns the wire name of an enum value, honouring <see cref="EnumMemberAttribute"/>.
+    /// </summary>
+    /// <exception cref="ArgumentException">
+    /// The value is not one of the enum's declared members, such as <c>(Color)99</c>. It is
+    /// rejected rather than sent as its number, as the generated JSON converters reject it too.
+    /// </exception>
+    private static string EnumWireName(Enum value)
+    {
+        var name = value.ToString();
+        var member = value.GetType().GetField(name, BindingFlags.Public | BindingFlags.Static)
+            ?? throw new ArgumentException(
+                $"'{name}' is not a declared value of {value.GetType().Name}.", nameof(value));
+        return member.GetCustomAttribute<EnumMemberAttribute>()?.Value ?? name;
+    }
+
+    /// <summary>
+    /// Adjusts the serializer contract of a type so custom models behave: it swaps mapped models into the
+    /// derived-type list of a discriminated base, and registers a custom subtype that is used on its own so
+    /// its discriminator is still written.
+    /// </summary>
+    private static void CustomizeContract(JsonTypeInfo typeInfo, ModelMap models)
+    {
+        if (typeInfo.Kind != JsonTypeInfoKind.Object) return;
+
+        if (typeInfo.PolymorphismOptions is { } polymorphism)
+        {
+            for (var i = 0; i < polymorphism.DerivedTypes.Count; i++)
+            {
+                var derived = polymorphism.DerivedTypes[i];
+                if (models.TryGetCustomType(derived.DerivedType, out var custom))
+                {
+                    polymorphism.DerivedTypes[i] = Register(custom, derived.TypeDiscriminator);
+                }
+            }
+
+            return;
+        }
+
+        // A mapped replacement is registered under the base type by the swap above, and System.Text.Json
+        // writes its discriminator through that registration even when it is sent on its own (a request
+        // body is serialized as object, which resolves the nearest polymorphic ancestor). Registering it
+        // here as well would write the discriminator twice.
+        if (models.IsCustomType(typeInfo.Type)) return;
+
+        if (FindRegistration(typeInfo.Type) is { } registration && registration.Registered != typeInfo.Type)
+        {
+            typeInfo.PolymorphismOptions = new JsonPolymorphismOptions
+            {
+                TypeDiscriminatorPropertyName = registration.DiscriminatorProperty,
+                DerivedTypes = { Register(typeInfo.Type, registration.Discriminator) },
+            };
+        }
+    }
+
+    /// <summary>
+    /// Creates a derived-type entry for a type under an existing discriminator value.
+    /// </summary>
+    private static JsonDerivedType Register(Type type, object? discriminator) => discriminator switch
+    {
+        string text => new JsonDerivedType(type, text),
+        int number => new JsonDerivedType(type, number),
+        _ => new JsonDerivedType(type),
+    };
+
+    /// <summary>
+    /// Finds the nearest type, starting at <paramref name="type"/> itself, that a discriminated base
+    /// declares through <see cref="JsonDerivedTypeAttribute"/>.
+    /// </summary>
+    private static (string DiscriminatorProperty, object? Discriminator, Type Registered)? FindRegistration(Type type)
+    {
+        for (var current = type; current is not null; current = current.BaseType)
+        {
+            for (var root = current.BaseType; root is not null; root = root.BaseType)
+            {
+                var polymorphic = root.GetCustomAttribute<JsonPolymorphicAttribute>(inherit: false);
+                if (polymorphic is null) continue;
+
+                var registration = root
+                    .GetCustomAttributes<JsonDerivedTypeAttribute>(inherit: false)
+                    .FirstOrDefault(attribute => attribute.DerivedType == current);
+                if (registration is not null)
+                {
+                    return (polymorphic.TypeDiscriminatorPropertyName ?? "$type", registration.TypeDiscriminator, current);
+                }
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// A wire format a TypeSpec <c>@encode</c> asks for. <see cref="Encode"/> applies it to parameters and
+    /// plain-text bodies, <see cref="FromText{T}(string, WireEncoding)"/> reads it back, and the matching
+    /// converters apply it to JSON properties.
+    /// </summary>
+    internal enum WireEncoding
+    {
+        /// <summary><c>unixTimestamp</c>: whole seconds since 1970-01-01T00:00:00Z.</summary>
+        UnixSeconds,
+
+        /// <summary><c>rfc7231</c>: an HTTP date such as <c>Tue, 15 Nov 1994 08:12:31 GMT</c>.</summary>
+        Rfc7231,
+
+        /// <summary><c>seconds</c> as a number that can have a fraction.</summary>
+        Seconds,
+
+        /// <summary><c>seconds</c> as a whole number.</summary>
+        WholeSeconds,
+
+        /// <summary><c>milliseconds</c> as a number that can have a fraction.</summary>
+        Milliseconds,
+
+        /// <summary><c>milliseconds</c> as a whole number.</summary>
+        WholeMilliseconds,
+
+        /// <summary><c>base64url</c>: URL-safe base64 without padding.</summary>
+        Base64Url,
+
+        /// <summary><c>ArrayEncoding.pipeDelimited</c>: <c>a|b</c>.</summary>
+        PipeDelimited,
+
+        /// <summary><c>ArrayEncoding.spaceDelimited</c>: <c>a b</c>.</summary>
+        SpaceDelimited,
+
+        /// <summary><c>ArrayEncoding.commaDelimited</c>: <c>a,b</c>.</summary>
+        CommaDelimited,
+
+        /// <summary><c>ArrayEncoding.newlineDelimited</c>: one item per line.</summary>
+        NewlineDelimited,
+    }
+
+    /// <summary>
+    /// Applies a wire format to a parameter or plain-text body before it is written, returning the
+    /// number or text that travels. A list in a delimited format becomes one string.
+    /// </summary>
+    /// <param name="value">The value; <see langword="null"/> stays <see langword="null"/>.</param>
+    /// <param name="encoding">The format.</param>
+    /// <returns>The value in that format, for <see cref="ToWireString"/> or <see cref="ToQueryValue"/>.</returns>
+    internal static object? Encode(object? value, WireEncoding encoding)
+    {
+        if (value is null) return null;
+        if (Separator(encoding) is { } separator)
+        {
+            return value is IEnumerable items and not string
+                ? string.Join(separator, items.Cast<object?>().Select(ToWireString))
+                : ToWireString(value);
+        }
+
+        return value switch
+        {
+            DateTimeOffset at when encoding == WireEncoding.UnixSeconds => at.ToUnixTimeSeconds(),
+            DateTimeOffset at when encoding == WireEncoding.Rfc7231 => at.ToString("r", CultureInfo.InvariantCulture),
+            TimeSpan span => encoding switch
+            {
+                WireEncoding.Seconds => span.TotalSeconds,
+                WireEncoding.WholeSeconds => (long)span.TotalSeconds,
+                WireEncoding.Milliseconds => span.TotalMilliseconds,
+                WireEncoding.WholeMilliseconds => (long)span.TotalMilliseconds,
+                _ => span,
+            },
+            byte[] bytes when encoding == WireEncoding.Base64Url => ToBase64Url(bytes),
+            _ => value,
+        };
+    }
+
+    /// <summary>
+    /// Reads a plain-text payload written in a wire format, the reverse of <see cref="Encode"/>.
+    /// </summary>
+    /// <typeparam name="T">The declared type.</typeparam>
+    /// <param name="text">The response text.</param>
+    /// <param name="encoding">The format.</param>
+    /// <returns>The value; <see langword="null"/> for empty text when the type allows it.</returns>
+    /// <exception cref="FormatException">The text is not in that format.</exception>
+    internal static T FromText<T>(string text, WireEncoding encoding)
+    {
+        if (text.Length == 0 && default(T) is null) return default!;
+
+        object value = encoding switch
+        {
+            WireEncoding.UnixSeconds =>
+                DateTimeOffset.FromUnixTimeSeconds(long.Parse(text, NumberStyles.Integer, CultureInfo.InvariantCulture)),
+            WireEncoding.Rfc7231 =>
+                DateTimeOffset.ParseExact(text, "r", CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal),
+            WireEncoding.Seconds or WireEncoding.WholeSeconds =>
+                TimeSpan.FromSeconds(double.Parse(text, NumberStyles.Float, CultureInfo.InvariantCulture)),
+            WireEncoding.Milliseconds or WireEncoding.WholeMilliseconds =>
+                TimeSpan.FromMilliseconds(double.Parse(text, NumberStyles.Float, CultureInfo.InvariantCulture)),
+            WireEncoding.Base64Url => FromBase64Url(text),
+            _ => throw new NotSupportedException($"{encoding} is not a plain-text format."),
+        };
+        return (T)value;
+    }
+
+    /// <summary>
+    /// The separator of a delimited list format, or <see langword="null"/> for any other format.
+    /// </summary>
+    private static string? Separator(WireEncoding encoding) => encoding switch
+    {
+        WireEncoding.PipeDelimited => "|",
+        WireEncoding.SpaceDelimited => " ",
+        WireEncoding.CommaDelimited => ",",
+        WireEncoding.NewlineDelimited => "\n",
+        _ => null,
+    };
+
+    /// <summary>
+    /// Encodes bytes as URL-safe base64 without padding.
+    /// </summary>
+    private static string ToBase64Url(byte[] bytes) =>
+        Convert.ToBase64String(bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_');
+
+    /// <summary>
+    /// Decodes URL-safe base64, with or without padding.
+    /// </summary>
+    /// <exception cref="FormatException">The text is not base64url.</exception>
+    private static byte[] FromBase64Url(string text)
+    {
+        var base64 = text.Replace('-', '+').Replace('_', '/');
+        return Convert.FromBase64String(base64.PadRight(base64.Length + ((4 - (base64.Length % 4)) % 4), '='));
+    }
+
+    /// <summary>
+    /// Reads and writes a date-time as a Unix timestamp in whole seconds (<c>unixTimestamp</c>).
+    /// </summary>
+    internal sealed class UnixSecondsConverter : JsonConverter<DateTimeOffset>
+    {
+        /// <inheritdoc />
+        public override DateTimeOffset Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options) =>
+            reader.TokenType == JsonTokenType.Number
+                ? DateTimeOffset.FromUnixTimeSeconds(reader.GetInt64())
+                : throw new JsonException($"Expected a Unix timestamp but found {reader.TokenType}.");
+
+        /// <inheritdoc />
+        public override void Write(Utf8JsonWriter writer, DateTimeOffset value, JsonSerializerOptions options) =>
+            writer.WriteNumberValue(value.ToUnixTimeSeconds());
+    }
+
+    /// <summary>
+    /// Reads and writes a date-time as an HTTP date (<c>rfc7231</c>), such as
+    /// <c>Tue, 15 Nov 1994 08:12:31 GMT</c>.
+    /// </summary>
+    internal sealed class Rfc7231Converter : JsonConverter<DateTimeOffset>
+    {
+        /// <inheritdoc />
+        public override DateTimeOffset Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+        {
+            if (reader.TokenType != JsonTokenType.String)
+            {
+                throw new JsonException($"Expected an RFC 7231 date but found {reader.TokenType}.");
+            }
+
+            try
+            {
+                return FromText<DateTimeOffset>(reader.GetString()!, WireEncoding.Rfc7231);
+            }
+            catch (FormatException exception)
+            {
+                throw new JsonException($"'{reader.GetString()}' is not an RFC 7231 date.", exception);
+            }
+        }
+
+        /// <inheritdoc />
+        public override void Write(Utf8JsonWriter writer, DateTimeOffset value, JsonSerializerOptions options) =>
+            writer.WriteStringValue(value.ToString("r", CultureInfo.InvariantCulture));
+    }
+
+    /// <summary>
+    /// Reads and writes a duration as a number of seconds or milliseconds.
+    /// </summary>
+    internal abstract class DurationNumberConverter : JsonConverter<TimeSpan>
+    {
+        private readonly bool _milliseconds;
+        private readonly bool _whole;
+
+        /// <summary>
+        /// Creates a converter for one unit, written as a whole number or with a fraction.
+        /// </summary>
+        protected DurationNumberConverter(bool milliseconds, bool whole)
+        {
+            _milliseconds = milliseconds;
+            _whole = whole;
+        }
+
+        /// <inheritdoc />
+        public override TimeSpan Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+        {
+            if (reader.TokenType != JsonTokenType.Number)
+            {
+                throw new JsonException($"Expected a duration as a number but found {reader.TokenType}.");
+            }
+
+            var units = reader.GetDouble();
+            return _milliseconds ? TimeSpan.FromMilliseconds(units) : TimeSpan.FromSeconds(units);
+        }
+
+        /// <inheritdoc />
+        public override void Write(Utf8JsonWriter writer, TimeSpan value, JsonSerializerOptions options)
+        {
+            var units = _milliseconds ? value.TotalMilliseconds : value.TotalSeconds;
+            if (_whole)
+            {
+                writer.WriteNumberValue((long)units);
+            }
+            else
+            {
+                writer.WriteNumberValue(units);
+            }
+        }
+    }
+
+    /// <summary>Reads and writes a duration as seconds that can have a fraction (<c>seconds</c>).</summary>
+    internal sealed class SecondsConverter : DurationNumberConverter
+    {
+        /// <summary>Creates the converter.</summary>
+        public SecondsConverter() : base(milliseconds: false, whole: false) { }
+    }
+
+    /// <summary>Reads and writes a duration as whole seconds (<c>seconds</c> encoded as an integer).</summary>
+    internal sealed class WholeSecondsConverter : DurationNumberConverter
+    {
+        /// <summary>Creates the converter.</summary>
+        public WholeSecondsConverter() : base(milliseconds: false, whole: true) { }
+    }
+
+    /// <summary>Reads and writes a duration as milliseconds that can have a fraction (<c>milliseconds</c>).</summary>
+    internal sealed class MillisecondsConverter : DurationNumberConverter
+    {
+        /// <summary>Creates the converter.</summary>
+        public MillisecondsConverter() : base(milliseconds: true, whole: false) { }
+    }
+
+    /// <summary>Reads and writes a duration as whole milliseconds (<c>milliseconds</c> encoded as an integer).</summary>
+    internal sealed class WholeMillisecondsConverter : DurationNumberConverter
+    {
+        /// <summary>Creates the converter.</summary>
+        public WholeMillisecondsConverter() : base(milliseconds: true, whole: true) { }
+    }
+
+    /// <summary>
+    /// Reads and writes bytes as URL-safe base64 without padding (<c>base64url</c>).
+    /// </summary>
+    internal sealed class Base64UrlConverter : JsonConverter<byte[]>
+    {
+        /// <inheritdoc />
+        public override byte[] Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+        {
+            if (reader.TokenType != JsonTokenType.String)
+            {
+                throw new JsonException($"Expected base64url text but found {reader.TokenType}.");
+            }
+
+            try
+            {
+                return FromBase64Url(reader.GetString()!);
+            }
+            catch (FormatException exception)
+            {
+                throw new JsonException($"'{reader.GetString()}' is not base64url.", exception);
+            }
+        }
+
+        /// <inheritdoc />
+        public override void Write(Utf8JsonWriter writer, byte[] value, JsonSerializerOptions options) =>
+            writer.WriteStringValue(ToBase64Url(value));
+    }
+
+    /// <summary>
+    /// Reads and writes a list as one delimited string (<c>ArrayEncoding</c>), each item in its
+    /// plain-text form.
+    /// </summary>
+    /// <typeparam name="T">The item type.</typeparam>
+    internal abstract class DelimitedConverter<T> : JsonConverter<List<T>>
+    {
+        private readonly string _separator;
+
+        /// <summary>
+        /// Creates a converter for one separator.
+        /// </summary>
+        protected DelimitedConverter(string separator) => _separator = separator;
+
+        /// <inheritdoc />
+        public override List<T> Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+        {
+            if (reader.TokenType != JsonTokenType.String)
+            {
+                throw new JsonException($"Expected a delimited list as a string but found {reader.TokenType}.");
+            }
+
+            var text = reader.GetString()!;
+            return text.Length == 0
+                ? []
+                : text.Split(_separator).Select(item => FromText<T>(item)).ToList();
+        }
+
+        /// <inheritdoc />
+        public override void Write(Utf8JsonWriter writer, List<T> value, JsonSerializerOptions options) =>
+            writer.WriteStringValue(string.Join(_separator, value.Select(item => ToWireString(item))));
+    }
+
+    /// <summary>Reads and writes a list as <c>a|b</c> (<c>ArrayEncoding.pipeDelimited</c>).</summary>
+    /// <typeparam name="T">The item type.</typeparam>
+    internal sealed class PipeDelimitedConverter<T> : DelimitedConverter<T>
+    {
+        /// <summary>Creates the converter.</summary>
+        public PipeDelimitedConverter() : base("|") { }
+    }
+
+    /// <summary>Reads and writes a list as <c>a b</c> (<c>ArrayEncoding.spaceDelimited</c>).</summary>
+    /// <typeparam name="T">The item type.</typeparam>
+    internal sealed class SpaceDelimitedConverter<T> : DelimitedConverter<T>
+    {
+        /// <summary>Creates the converter.</summary>
+        public SpaceDelimitedConverter() : base(" ") { }
+    }
+
+    /// <summary>Reads and writes a list as <c>a,b</c> (<c>ArrayEncoding.commaDelimited</c>).</summary>
+    /// <typeparam name="T">The item type.</typeparam>
+    internal sealed class CommaDelimitedConverter<T> : DelimitedConverter<T>
+    {
+        /// <summary>Creates the converter.</summary>
+        public CommaDelimitedConverter() : base(",") { }
+    }
+
+    /// <summary>Reads and writes a list with one item per line (<c>ArrayEncoding.newlineDelimited</c>).</summary>
+    /// <typeparam name="T">The item type.</typeparam>
+    internal sealed class NewlineDelimitedConverter<T> : DelimitedConverter<T>
+    {
+        /// <summary>Creates the converter.</summary>
+        public NewlineDelimitedConverter() : base("\n") { }
+    }
+
+    /// <summary>
+    /// Reads and writes a <see cref="TimeSpan"/> as an ISO 8601 duration, which is what a TypeSpec
+    /// <c>duration</c> is on the wire.
+    /// </summary>
+    private sealed class Iso8601DurationConverter : JsonConverter<TimeSpan>
+    {
+        public override TimeSpan Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+        {
+            if (reader.TokenType != JsonTokenType.String)
+            {
+                throw new JsonException($"Expected an ISO 8601 duration string but found {reader.TokenType}.");
+            }
+
+            try
+            {
+                return XmlConvert.ToTimeSpan(reader.GetString()!);
+            }
+            catch (FormatException exception)
+            {
+                throw new JsonException($"'{reader.GetString()}' is not an ISO 8601 duration.", exception);
+            }
+        }
+
+        public override void Write(Utf8JsonWriter writer, TimeSpan value, JsonSerializerOptions options) =>
+            writer.WriteStringValue(XmlConvert.ToString(value));
+    }
+
+    /// <summary>
+    /// Applies <see cref="ModelMap"/> entries to models that are not part of a discriminated hierarchy.
+    /// </summary>
+    private sealed class MappedModelConverterFactory : JsonConverterFactory
+    {
+        private readonly Type? _excluded;
+
+        public MappedModelConverterFactory(ModelMap models, Type? excluded = null)
+        {
+            Models = models;
+            _excluded = excluded;
+        }
+
+        public ModelMap Models { get; }
+
+        public override bool CanConvert(Type typeToConvert) =>
+            typeToConvert != _excluded
+            && Models.TryGetCustomType(typeToConvert, out _)
+            && FindRegistration(typeToConvert) is null;
+
+        public override JsonConverter CreateConverter(Type typeToConvert, JsonSerializerOptions options)
+        {
+            Models.TryGetCustomType(typeToConvert, out var custom);
+            return (JsonConverter)Activator.CreateInstance(
+                typeof(MappedModelConverter<,>).MakeGenericType(typeToConvert, custom!),
+                this)!;
+        }
+    }
+
+    /// <summary>
+    /// Reads <typeparamref name="TModel"/> as <typeparamref name="TCustom"/>, and writes a value by its runtime
+    /// type so a custom model nested in another model keeps its extra properties.
+    /// </summary>
+    private sealed class MappedModelConverter<TModel, TCustom> : JsonConverter<TModel>
+        where TCustom : TModel
+    {
+        private readonly MappedModelConverterFactory _factory;
+        private JsonSerializerOptions? _plainOptions;
+
+        public MappedModelConverter(MappedModelConverterFactory factory) => _factory = factory;
+
+        public override TModel? Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options) =>
+            JsonSerializer.Deserialize<TCustom>(ref reader, options);
+
+        public override void Write(Utf8JsonWriter writer, TModel value, JsonSerializerOptions options)
+        {
+            var runtimeType = value!.GetType();
+            if (runtimeType != typeof(TModel))
+            {
+                JsonSerializer.Serialize(writer, value, runtimeType, options);
+                return;
+            }
+
+            // A plain TModel would be routed straight back to this converter, so it is written with a copy
+            // of the options that leaves out the mapping for TModel alone. Every other mapping stays, so a
+            // custom model of another mapped type nested inside it keeps its extra properties.
+            _plainOptions ??= WithoutFactory(options);
+            JsonSerializer.Serialize(writer, value, typeof(TModel), _plainOptions);
+        }
+
+        private JsonSerializerOptions WithoutFactory(JsonSerializerOptions options)
+        {
+            var copy = new JsonSerializerOptions(options);
+            copy.Converters.Remove(_factory);
+            copy.Converters.Add(new MappedModelConverterFactory(_factory.Models, typeof(TModel)));
+            return copy;
+        }
+    }
+}
