@@ -15,7 +15,11 @@ enum PetKind {
 
 @doc("Represents a pet in the pet store.")
 @discriminator("petKind")
-model Pet is EntityBase {
+model Pet {
+    // A spread copies EntityBase's properties but not its decorators. `model Pet is
+    // EntityBase` would also copy `@clientName("BaseEntity")` and rename Pet.
+    ...EntityBase;
+
     @doc("The discriminator property for the pet type.")
     @visibility(Lifecycle.Read)
     petKind: PetKind;
