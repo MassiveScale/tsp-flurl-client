@@ -122,23 +122,21 @@ public sealed class ReadingCustomModelsTests
     [TestMethod]
     public async Task A_mapped_model_nested_in_a_list_body_keeps_its_extra_properties_when_sent()
     {
-        var (client, handler) = Harness.Create(m => m.Map<Widget, MyWidget>());
-        handler.RespondJson("[]");
+        var (client, handler) = Harness.Create(m => m.Map<Owner, MyOwner>());
 
-        await client.Widgets.CreateManyAsync(new List<Widget> { new MyWidget { Id = "1", Name = "a", Sku = "S-1" } });
+        await client.Owners.CreateManyAsync(new List<Owner> { new MyOwner { Name = "a", Nickname = "n" } });
 
-        handler.Last.Body.Should().Contain("\"sku\":\"S-1\"");
+        handler.Last.Body.Should().Contain("\"nickname\":\"n\"");
     }
 
     [TestMethod]
     public async Task A_plain_instance_of_a_mapped_model_is_still_sent_without_recursing()
     {
-        var (client, handler) = Harness.Create(m => m.Map<Widget, MyWidget>());
-        handler.RespondJson("[]");
+        var (client, handler) = Harness.Create(m => m.Map<Owner, MyOwner>());
 
-        await client.Widgets.CreateManyAsync(new List<Widget> { new Widget { Id = "1", Name = "a" } });
+        await client.Owners.CreateManyAsync(new List<Owner> { new Owner { Name = "a" } });
 
-        handler.Last.Body.Should().Be("""[{"id":"1","name":"a"}]""");
+        handler.Last.Body.Should().Be("""[{"name":"a"}]""");
     }
 
     [TestMethod]

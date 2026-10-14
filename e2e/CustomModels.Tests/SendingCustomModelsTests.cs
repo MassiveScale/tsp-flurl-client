@@ -38,10 +38,11 @@ public sealed class SendingCustomModelsTests
         var (client, handler) = Harness.Create();
         handler.RespondJson("[]");
 
-        await client.Widgets.CreateManyAsync(new List<MyWidget> { new() { Id = "1", Name = "a", Sku = "S-1" } });
+        await client.Widgets.CreateManyAsync(new List<MyCreateRequest> { new() { Name = "a", Sku = "S-1" } });
 
         using var sent = JsonDocument.Parse(handler.Last.Body!);
         sent.RootElement[0].GetProperty("sku").GetString().Should().Be("S-1");
+        sent.RootElement[0].TryGetProperty("id", out _).Should().BeFalse("id is read-only, so a bulk create does not send it");
     }
 
     [TestMethod]

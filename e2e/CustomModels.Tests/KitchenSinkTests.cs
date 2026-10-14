@@ -453,6 +453,17 @@ public sealed class KitchenSinkTests
         sent.RootElement.GetProperty("nothing").ValueKind.Should().Be(JsonValueKind.Null);
     }
 
+    [TestMethod]
+    public async Task Empty_text_is_an_empty_string_not_null()
+    {
+        var (client, handler) = Create();
+        handler.RespondText("");
+
+        var label = await client.Misc.LabelAsync();
+
+        label.Should().NotBeNull().And.BeEmpty();
+    }
+
     private static int CountOf(string text, string value) =>
         (text.Length - text.Replace(value, string.Empty).Length) / value.Length;
 

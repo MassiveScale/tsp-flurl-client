@@ -154,6 +154,52 @@ function filterPropsForRequest(
 }
 
 /**
+ * Looks through arrays and records to the type they hold: `Widget[][]` is `Widget`
+ * inside two arrays.
+ *
+ * @param type - A body type.
+ * @returns The innermost element, and the collections around it from the outside in.
+ */
+function unwrapCollections(type: Type): {
+  element: Type;
+  wrappers: ("array" | "record")[];
+} {
+  const wrappers: ("array" | "record")[] = [];
+  let element = type;
+  while (
+    element.kind === "Model" &&
+    element.indexer &&
+    (isArrayModelType(element) || isRecordModelType(element))
+  ) {
+    wrappers.push(isArrayModelType(element) ? "array" : "record");
+    element = element.indexer.value;
+  }
+  return { element, wrappers };
+}
+
+/**
+ * Puts a C# element type back inside the collections a body declared, as the
+ * covariant interfaces a body parameter takes (see `resolveBodyParamType`), so a
+ * `List<MyWidgetCreateRequest>` is still accepted.
+ *
+ * @param csType - The element's C# type.
+ * @param wrappers - The collections around it, from the outside in.
+ * @returns The C# body parameter type.
+ */
+function wrapCollections(
+  csType: string,
+  wrappers: ("array" | "record")[],
+): string {
+  return wrappers.reduceRight(
+    (inner, wrapper) =>
+      wrapper === "array"
+        ? `IEnumerable<${inner}>`
+        : `IReadOnlyDictionary<string, ${inner}>`,
+    csType,
+  );
+}
+
+/**
  * Whether two request records carry exactly the same properties, so one record
  * can serve both operations.
  *
@@ -648,12 +694,16 @@ function buildMethodView(
       usedHelpers,
     );
 
+    // A bulk body (`Widget[]`, `Record<Widget>`) is filtered through to its element
+    // model, so a property hidden from the request (a read-only `id`) is not sent for
+    // each item either.
+    const { element, wrappers } = unwrapCollections(bodyInfo.type);
     if (
       bodyInfo.bodyKind === "single" &&
-      bodyInfo.type.kind === "Model" &&
+      element.kind === "Model" &&
       (op.verb === "post" || op.verb === "patch" || op.verb === "put")
     ) {
-      const bodyModel = bodyInfo.type as Model;
+      const bodyModel = element;
       if (bodyModel.name && !isSynthesizedMergePatchModel(bodyModel)) {
         const visibility = resolveRequestVisibility(
           program,
@@ -688,7 +738,10 @@ function buildMethodView(
             requestTypes,
           );
           if (suffix === undefined) return undefined;
-          bodyType = `${getClientName(program, bodyModel) ?? bodyModel.name}${suffix}`;
+          bodyType = wrapCollections(
+            `${getClientName(program, bodyModel) ?? bodyModel.name}${suffix}`,
+            wrappers,
+          );
         }
       }
     }

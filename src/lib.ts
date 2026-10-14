@@ -317,6 +317,12 @@ export const $lib = createTypeSpecLibrary({
   },
 });
 
+/**
+ * The library's typed diagnostic helpers. `createDiagnostic` builds a diagnostic
+ * from one of the codes declared above with its message parameters, for
+ * `reportOnce` or `program.reportDiagnostic`; `reportDiagnostic` builds and reports
+ * one in a single call.
+ */
 export const { reportDiagnostic, createDiagnostic } = $lib;
 
 /** The diagnostics already reported while emitting, per program. */

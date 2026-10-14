@@ -156,12 +156,18 @@ internal static class ClientRuntime
     /// </summary>
     /// <typeparam name="T">The declared type.</typeparam>
     /// <param name="text">The response text.</param>
-    /// <returns>The parsed value; <see langword="null"/> for empty text when the type allows it.</returns>
+    /// <returns>
+    /// The parsed value. Empty text is an empty string for <see cref="string"/>, and
+    /// <see langword="null"/> for any other type that allows it.
+    /// </returns>
     /// <exception cref="FormatException">The text is not a valid <typeparamref name="T"/>.</exception>
     internal static T FromText<T>(string text)
     {
         var underlying = Nullable.GetUnderlyingType(typeof(T));
         var target = underlying ?? typeof(T);
+        // Empty text is an empty string, not a missing one: a bodyless success status is
+        // answered with null before the body is read, so it never reaches here.
+        if (typeof(T) == typeof(string)) return (T)(object)text;
         if (text.Length == 0 && (underlying is not null || !typeof(T).IsValueType))
         {
             return default!;
@@ -169,7 +175,6 @@ internal static class ClientRuntime
 
         object value = target switch
         {
-            _ when target == typeof(string) => text,
             _ when target == typeof(bool) => bool.Parse(text),
             _ when target == typeof(DateTimeOffset) =>
                 DateTimeOffset.Parse(text, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal),

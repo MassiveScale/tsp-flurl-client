@@ -122,6 +122,12 @@ interface Gadgets {
   @patch update(@path id: string, @body body: MergePatchUpdate<Gadget>): Gadget;
 }
 
+/** A bulk body of a model with nothing hidden, so its items are the model itself. */
+@route("/owners")
+interface Owners {
+  @post createMany(@body body: Owner[]): void;
+}
+
 @access(Access.internal)
 @route("/admin")
 interface Admin {

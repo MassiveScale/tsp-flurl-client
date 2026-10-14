@@ -3,6 +3,10 @@ import { expectDiagnosticEmpty } from "@typespec/compiler/testing";
 import { createTester } from "@typespec/compiler/testing";
 import type { EmitterOptions } from "../src/lib.js";
 
+/**
+ * The compiler tester every suite starts from: this emitter's TypeSpec library
+ * with `@typespec/http` and `@typespec/versioning` available to the test specs.
+ */
 export const BaseTester = createTester(
   resolvePath(import.meta.dirname, "../.."),
   {
@@ -21,6 +25,14 @@ function testerFor(options?: EmitterOptions) {
   );
 }
 
+/**
+ * Compiles a spec, runs the emitter, and returns what it wrote together with every
+ * diagnostic, for tests that expect diagnostics.
+ *
+ * @param code - The TypeSpec source.
+ * @param options - Emitter options, as under the emitter's key in `tspconfig.yaml`.
+ * @returns The emitted files keyed by path, and the diagnostics.
+ */
 export async function emitWithDiagnostics(
   code: string,
   options?: EmitterOptions,
@@ -30,6 +42,13 @@ export async function emitWithDiagnostics(
   return [outputs, diagnostics];
 }
 
+/**
+ * Compiles a spec and runs the emitter, failing the test on any diagnostic.
+ *
+ * @param code - The TypeSpec source.
+ * @param options - Emitter options, as under the emitter's key in `tspconfig.yaml`.
+ * @returns The emitted files keyed by path.
+ */
 export async function emit(
   code: string,
   options?: EmitterOptions,
