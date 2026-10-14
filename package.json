@@ -1,6 +1,6 @@
 {
   "name": "@massivescale/tsp-flurl-client",
-  "version": "1.0.0-beta.2",
+  "version": "1.0.0-beta.1",
   "description": "TypeSpec emitter that generates C# API clients built on Flurl.Http, with extensible models.",
   "license": "MIT",
   "publishConfig": {
