@@ -173,3 +173,47 @@ describe("using directives", () => {
     );
   });
 });
+
+describe("encodings of every success response body", () => {
+  it("reports a later status whose body cannot be read with its encoding", async () => {
+    const [results, diagnostics] = await emitWithDiagnostics(`${PREAMBLE}
+      @route("/n") interface Numbers {
+        @get read():
+          | { @statusCode _: 200; @header contentType: "application/json"; @body n: int64 }
+          | { @statusCode _: 201; @header contentType: "application/json"; @body @encode("string") m: int64 };
+      }
+    `);
+
+    const messages = messagesFor(diagnostics, "unsupported-encoding");
+    strictEqual(messages.length, 1, messages.join("; "));
+    ok(messages[0].includes('The body "m"'));
+    ok(fileContent(results, "INumbers.g.cs").includes("Task<long> ReadAsync("));
+  });
+
+  it("checks every body when the bodies differ and the result is a JsonElement", async () => {
+    const [, diagnostics] = await emitWithDiagnostics(`${PREAMBLE}
+      model Item { name: string; }
+      @route("/n") interface Things {
+        @get read():
+          | { @statusCode _: 200; @body item: Item }
+          | { @statusCode _: 201; @header contentType: "application/json"; @body @encode(DurationKnownEncoding.seconds, int32) took: duration };
+      }
+    `);
+
+    const messages = messagesFor(diagnostics, "unsupported-encoding");
+    strictEqual(messages.length, 1, messages.join("; "));
+    ok(messages[0].includes('The body "took"'));
+  });
+
+  it("accepts a number encoded as a string when that body travels as plain text", async () => {
+    const [, diagnostics] = await emitWithDiagnostics(`${PREAMBLE}
+      @route("/n") interface Numbers {
+        @get read():
+          | { @statusCode _: 200; @body n: int64 }
+          | { @statusCode _: 201; @body @encode("string") m: int64 };
+      }
+    `);
+
+    strictEqual(messagesFor(diagnostics, "unsupported-encoding").length, 0);
+  });
+});

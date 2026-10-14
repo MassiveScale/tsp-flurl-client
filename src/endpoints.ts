@@ -937,6 +937,17 @@ function resolveResponse(
   const mapped = bodies.map((body) =>
     resolveBodyType(body, program, models, enums, usedHelpers),
   );
+  // Each body is checked against how its own media types are read: a 201 whose
+  // number is `@encode("string")` breaks reading even when the 200 beside it is a
+  // plain number of the same C# type.
+  for (const each of bodies) {
+    const ownKind = classifyPayload(
+      each.contentTypes,
+      each.type,
+      "response",
+    ) as PayloadKind;
+    checkBodyEncoding(program, each, ownKind);
+  }
   if (new Set(mapped.map(withoutNullable)).size > 1) {
     return {
       view: { kind: "json", type: optional("JsonElement"), emptyWhen },
@@ -950,7 +961,6 @@ function resolveResponse(
     body.type,
     "response",
   ) as PayloadKind;
-  checkBodyEncoding(program, body, kind);
 
   const resultType = anyNullable ? `${withoutNullable(mapped[0])}?` : mapped[0];
   const view: ResponseView = { kind, type: optional(resultType), emptyWhen };
