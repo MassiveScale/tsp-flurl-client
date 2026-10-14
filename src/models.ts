@@ -1059,6 +1059,7 @@ export function buildEnum(
 
   const members: EnumMemberView[] = [];
   const memberNames = new Set<string>();
+  const wireValues = new Set<string>();
   for (const [, member] of e.members) {
     if (!isInVersion(program, member, version)) continue;
     const memberDoc = docText(program, member);
@@ -1083,6 +1084,10 @@ export function buildEnum(
         : isNumber
           ? String(member.value)
           : member.name;
+    // Two members may share a wire value (`first: "x", second: "x"`). Reading that
+    // value can give only one of them, the first declared, since a switch cannot
+    // match one value twice (CS8510); each still writes its own.
+    const wireKey = isNumber ? `number:${member.value}` : `string:${text}`;
     members.push({
       doc: memberDoc,
       docValue: escapeXml(text),
@@ -1091,7 +1096,9 @@ export function buildEnum(
       numberLiteral: isNumber
         ? csNumberLiteral(member.value as number)
         : undefined,
+      reads: !wireValues.has(wireKey),
     });
+    wireValues.add(wireKey);
   }
   const hasNumberMembers = members.some((m) => m.numberLiteral !== undefined);
   const hasStringMembers = members.some((m) => m.numberLiteral === undefined);

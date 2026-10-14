@@ -127,6 +127,12 @@ export interface EnumMemberView {
    * number, so it travels as a JSON number. Absent for a string member.
    */
   numberLiteral?: string;
+  /**
+   * Whether reading the member's wire value gives this member: the first member
+   * declared with that value. A later member with the same value (an alias) still
+   * writes it, but is never read.
+   */
+  reads: boolean;
 }
 
 /** View model for a C# `public enum` declaration. */
@@ -285,6 +291,27 @@ export interface MethodView {
   response?: ResponseView;
   /** Present when the response contains a model callers can substitute. */
   generic?: GenericOverloadView;
+  /** Present when the body holds a dictionary of models, which callers can substitute. */
+  bodyGeneric?: BodyGenericView;
+}
+
+/**
+ * The overloads added to a method whose body holds a dictionary of models. A
+ * dictionary is not covariant in its values, so these are generic in the item type
+ * instead: `ReplaceAsync<TBody>(..., IReadOnlyDictionary<string, TBody> body)`
+ * accepts a `Dictionary<string, MyWidget>`.
+ */
+export interface BodyGenericView {
+  /** C# type the items must derive from, e.g. `"WidgetReplaceRequest"`. */
+  constraint: string;
+  /** The parameter list with the body typed by `TBody`. */
+  paramsText: string;
+  /**
+   * Whether to add the overload generic in the items alone, beside the one generic
+   * in both the response and the items. It is left out where it would be ambiguous
+   * with the response overload.
+   */
+  itemsOnly: boolean;
 }
 
 /** View model for an endpoint interface (`IWidgets`). */
@@ -329,8 +356,10 @@ export interface InterfaceEntry {
   clientName: string;
   /** Property name on the aggregate client class, e.g. `"Stores"`. */
   propertyName: string;
-  /** Constructor parameter name, e.g. `"stores"`. */
+  /** Constructor parameter name as written in C#, verbatim-escaped when needed, e.g. `"stores"` or `"@params"`. */
   paramName: string;
+  /** The parameter name in its XML documentation, never escaped, e.g. `"params"`. */
+  docParamName: string;
   /** C# access modifier of the property: the interface's own, `"public"` or `"internal"`. */
   access: string;
 }
@@ -507,17 +536,6 @@ function renderDocLines(
 }
 
 /**
- * The `<typeparam>` doc line for a generic overload.
- *
- * @param constraint - The type the type argument derives from.
- * @returns The XML doc line (without the `///` prefix).
- */
-function typeParamDoc(constraint: string): string {
-  const escaped = constraint.replace(/</g, "&lt;").replace(/>/g, "&gt;");
-  return `<typeparam name="TResult">A custom type deriving from <c>${escaped}</c> to deserialize the response into.</typeparam>`;
-}
-
-/**
  * The generated summary of a method whose operation has no documentation, so every
  * public member still carries XML documentation.
  *
@@ -528,31 +546,100 @@ function methodSummary(m: MethodView): string {
   return `Sends the <c>${m.httpMethod.toUpperCase()}</c> request of the <c>${m.methodName}</c> operation.`;
 }
 
+/** A type parameter a method overload can take: the response type, or the body's item type. */
+type OverloadParameter = "TResult" | "TBody";
+
 /**
- * Renders the interface members for one method: the declared signature and, when
- * the response holds a customizable model, the generic overload.
+ * The overloads of a method, each by the type parameters it takes: the declared
+ * one with none; `<TResult>` when the response holds a model the caller can
+ * substitute; and `<TBody>` and `<TResult, TBody>` when the body holds a
+ * dictionary of models. The last one lists every type parameter the method has,
+ * and carries the implementation that the others forward to.
+ *
+ * @param m - The method view.
+ * @returns The overloads, the most general last.
+ */
+function overloadsOf(m: MethodView): OverloadParameter[][] {
+  const overloads: OverloadParameter[][] = [[]];
+  if (m.generic) overloads.push(["TResult"]);
+  if (m.bodyGeneric) {
+    if (m.bodyGeneric.itemsOnly) overloads.push(["TBody"]);
+    if (m.generic) overloads.push(["TResult", "TBody"]);
+  }
+  return overloads;
+}
+
+/**
+ * The signature of one overload of a method, without its access or body.
+ *
+ * @param m - The method view.
+ * @param parameters - The overload's type parameters.
+ * @param modifiers - What comes before the return type, e.g. `"public async "`.
+ * @returns The signature line and its `where` clauses.
+ */
+function overloadSignature(
+  m: MethodView,
+  parameters: OverloadParameter[],
+  modifiers: string,
+): string[] {
+  const returnType = parameters.includes("TResult")
+    ? m.generic!.returnType
+    : m.returnType;
+  const paramsText = parameters.includes("TBody")
+    ? m.bodyGeneric!.paramsText
+    : m.paramsText;
+  const typeParameters = parameters.length ? `<${parameters.join(", ")}>` : "";
+  return [
+    `    ${modifiers}${returnType} ${m.methodName}${typeParameters}(${paramsText})`,
+    ...parameters.map(
+      (p) =>
+        `        where ${p} : ${p === "TResult" ? m.generic!.constraint : m.bodyGeneric!.constraint}`,
+    ),
+  ];
+}
+
+/**
+ * The `<typeparam>` doc lines for an overload's type parameters.
+ *
+ * @param m - The method view.
+ * @param parameters - The overload's type parameters.
+ * @returns The XML doc lines (without the `///` prefix).
+ */
+function typeParamDocs(
+  m: MethodView,
+  parameters: OverloadParameter[],
+): string[] {
+  const escape = (t: string): string =>
+    t.replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  return parameters.map((p) =>
+    p === "TResult"
+      ? `<typeparam name="TResult">A custom type deriving from <c>${escape(m.generic!.constraint)}</c> to deserialize the response into.</typeparam>`
+      : `<typeparam name="TBody">A custom type deriving from <c>${escape(m.bodyGeneric!.constraint)}</c> that the body's items are.</typeparam>`,
+  );
+}
+
+/**
+ * Renders the interface members for one method: one per overload (see
+ * {@link overloadsOf}).
  *
  * @param m - The method view.
  * @returns The rendered members, indented for placement inside an interface.
  */
 function renderInterfaceMethod(m: MethodView): string {
-  const lines = [
-    ...renderDocLines(m.doc, [], methodSummary(m)),
-    `    ${m.returnType} ${m.methodName}(${m.paramsText});`,
-  ];
-  if (m.generic) {
-    lines.push(
-      "",
-      ...renderDocLines(
-        m.doc,
-        [typeParamDoc(m.generic.constraint)],
-        methodSummary(m),
-      ),
-      `    ${m.generic.returnType} ${m.methodName}<TResult>(${m.paramsText})`,
-      `        where TResult : ${m.generic.constraint};`,
-    );
-  }
-  return lines.join("\n");
+  return overloadsOf(m)
+    .map((parameters) => {
+      const signature = overloadSignature(m, parameters, "");
+      signature[signature.length - 1] += ";";
+      return [
+        ...renderDocLines(
+          m.doc,
+          typeParamDocs(m, parameters),
+          methodSummary(m),
+        ),
+        ...signature,
+      ].join("\n");
+    })
+    .join("\n\n");
 }
 
 /**
@@ -643,37 +730,46 @@ function renderRequestBody(m: MethodView, responseType: string): string[] {
 }
 
 /**
- * Renders the class members for one method. A method with a generic overload gets
- * a thin declared-type wrapper that forwards to the generic implementation; any
- * other method carries the implementation itself.
+ * Renders the class members for one method. The overload with every type parameter
+ * the method has carries the implementation, and each other overload forwards to
+ * it, filling in the declared types for the type parameters it does not take.
  *
  * @param m - The method view.
  * @returns The rendered members, indented for placement inside a class.
  */
 function renderClientMethod(m: MethodView): string {
   const inherit = "    /// <inheritdoc />";
-  if (m.generic) {
+  const overloads = overloadsOf(m);
+  const full = overloads[overloads.length - 1];
+  const declared = (p: OverloadParameter): string =>
+    p === "TResult" ? m.generic!.constraint : m.bodyGeneric!.constraint;
+  const members = overloads.slice(0, -1).map((parameters) => {
+    const signature = overloadSignature(m, parameters, "public ");
+    const typeArguments = full.map((p) =>
+      parameters.includes(p) ? p : declared(p),
+    );
     return [
       inherit,
-      `    public ${m.returnType} ${m.methodName}(${m.paramsText}) =>`,
-      `        ${m.methodName}<${m.generic.constraint}>(${m.argsText});`,
-      "",
-      inherit,
-      `    public async ${m.generic.returnType} ${m.methodName}<TResult>(${m.paramsText})`,
-      `        where TResult : ${m.generic.constraint}`,
-      "    {",
-      ...renderRequestBody(m, m.generic.responseType),
-      "    }",
+      ...signature.slice(0, -1),
+      `${signature[signature.length - 1]} =>`,
+      `        ${m.methodName}<${typeArguments.join(", ")}>(${m.argsText});`,
     ].join("\n");
-  }
-
-  return [
-    inherit,
-    `    public async ${m.returnType} ${m.methodName}(${m.paramsText})`,
-    "    {",
-    ...renderRequestBody(m, m.response?.type ?? ""),
-    "    }",
-  ].join("\n");
+  });
+  members.push(
+    [
+      inherit,
+      ...overloadSignature(m, full, "public async "),
+      "    {",
+      ...renderRequestBody(
+        m,
+        full.includes("TResult")
+          ? m.generic!.responseType
+          : (m.response?.type ?? ""),
+      ),
+      "    }",
+    ].join("\n"),
+  );
+  return members.join("\n\n");
 }
 
 /**

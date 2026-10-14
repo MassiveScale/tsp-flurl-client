@@ -33,6 +33,8 @@ export interface EndpointName {
  *   `I` stripped. An internal interface becomes an internal property, and any internal
  *   interface makes the aggregate client's constructor internal.
  * @param renderer - Handlebars renderer used to produce the file contents.
+ * @param additionalUsings - Extra `using` directives from the `additional-usings`
+ *   option, which apply to every emitted file.
  * @returns The full C# source of the generated extensions file.
  */
 export function buildExtensions(
@@ -40,23 +42,32 @@ export function buildExtensions(
   csNs: string,
   endpoints: EndpointName[],
   renderer: Renderer,
+  additionalUsings: Iterable<string> = [],
 ): string {
   const className = `${serviceName}Extensions`;
   const methodName = `Add${serviceName}`;
   const clientClassName = serviceName;
+  // Each endpoint is a constructor parameter beside `flurlClient`. Two endpoint
+  // names that differ only in the case of their first letter, or one that becomes
+  // `flurlClient`, would declare the same parameter twice (CS0100).
+  const takenParams = new Set(["flurlClient"]);
   const interfaces: InterfaceEntry[] = endpoints.map(
     ({ interfaceName, clientName, access }) => {
       const propertyName = interfaceName.startsWith("I")
         ? interfaceName.slice(1)
         : interfaceName;
-      const paramName = escapeCsIdentifier(
-        propertyName.charAt(0).toLowerCase() + propertyName.slice(1),
-      );
+      const base = propertyName.charAt(0).toLowerCase() + propertyName.slice(1);
+      let unescaped = base;
+      for (let n = 1; takenParams.has(unescaped); n++) {
+        unescaped = n === 1 ? `${base}Endpoint` : `${base}Endpoint${n}`;
+      }
+      takenParams.add(unescaped);
       return {
         name: interfaceName,
         clientName,
         propertyName,
-        paramName,
+        paramName: escapeCsIdentifier(unescaped),
+        docParamName: unescaped,
         access,
       };
     },
@@ -76,10 +87,13 @@ export function buildExtensions(
   const fileView: FileView = {
     namespace: csNs,
     usings: sortUsings([
-      "Flurl.Http",
-      "Microsoft.Extensions.DependencyInjection",
-      "System",
-      "System.Net.Http",
+      ...new Set([
+        "Flurl.Http",
+        "Microsoft.Extensions.DependencyInjection",
+        "System",
+        "System.Net.Http",
+        ...additionalUsings,
+      ]),
     ]),
     body,
     fileName: `${className}.g.cs`,

@@ -906,7 +906,13 @@ async function emitService(
       await writeFile(
         program,
         resolvePath(dir, `${clientName}Extensions.g.cs`),
-        buildExtensions(clientName, endpointNs, endpointNames, renderer),
+        buildExtensions(
+          clientName,
+          endpointNs,
+          endpointNames,
+          renderer,
+          additionalUsings,
+        ),
       );
     }
 

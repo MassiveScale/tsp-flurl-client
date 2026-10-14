@@ -27,7 +27,8 @@
     .name             —   C# interface name, e.g. "IPets"
     .clientName       —   C# implementation class name, e.g. "PetsEndpoint"
     .propertyName     —   property name on the aggregate client, e.g. "Pets"
-    .paramName        —   constructor parameter name, e.g. "pets"
+    .paramName        —   constructor parameter name as written in C#, e.g. "pets" or "@params"
+    .docParamName     —   the same name in XML documentation, never escaped, e.g. "params"
     .access           —   "public" or "internal"; the property's access modifier
 
   {{constructorAccess}} — "public", or "internal" when any endpoint is internal,
@@ -59,7 +60,7 @@
 /// e.g. <c>client.Pets.ListAsync(ct)</c>. The underlying <see cref="IFlurlClient"/> is exposed
 /// as <see cref="FlurlClient"/> for requests the generated methods do not cover.
 /// </remarks>
-public class {{clientClassName}}
+public class {{declaredName clientClassName}}
 {
     /// <summary>
     /// Gets the Flurl client every endpoint sends its requests through. It is already configured with
@@ -77,11 +78,11 @@ public class {{clientClassName}}
     /// Initializes a new instance of <see cref="{{clientClassName}}"/>.
     /// </summary>
     /// <param name="flurlClient">The Flurl client the endpoints send requests through.</param>
-{{#each interfaces}}    /// <param name="{{paramName}}">The <see cref="{{name}}"/> client.</param>
+{{#each interfaces}}    /// <param name="{{docParamName}}">The <see cref="{{name}}"/> client.</param>
 {{/each}}    {{constructorAccess}} {{clientClassName}}(IFlurlClient flurlClient{{#each interfaces}}, {{name}} {{paramName}}{{/each}})
     {
         FlurlClient = flurlClient ?? throw new ArgumentNullException(nameof(flurlClient));
-{{#each interfaces}}        {{propertyName}} = {{paramName}} ?? throw new ArgumentNullException(nameof({{paramName}}));
+{{#each interfaces}}        this.{{propertyName}} = {{paramName}} ?? throw new ArgumentNullException(nameof({{paramName}}));
 {{/each}}    }
 
     /// <summary>

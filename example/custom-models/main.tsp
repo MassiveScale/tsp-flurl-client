@@ -87,6 +87,9 @@ interface Widgets {
 
   @route("bulk") @post createMany(@body body: Widget[]): Widget[];
 
+  /** Creates widgets by key: a dictionary body, which takes a dictionary of a derived type too. */
+  @route("keyed") @post createKeyed(@body body: Record<Widget>): Record<Widget>;
+
   @patch update(
     @path id: string,
     @body body: MergePatchUpdate<Widget>,

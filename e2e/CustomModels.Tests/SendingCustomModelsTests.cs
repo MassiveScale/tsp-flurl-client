@@ -46,6 +46,47 @@ public sealed class SendingCustomModelsTests
     }
 
     [TestMethod]
+    public async Task A_dictionary_body_of_a_derived_request_type_is_accepted_and_sent()
+    {
+        var (client, handler) = Harness.Create();
+        handler.RespondJson("""{"a":{"id":"1","name":"a"}}""");
+
+        var created = await client.Widgets.CreateKeyedAsync(
+            new Dictionary<string, MyCreateRequest> { ["a"] = new() { Name = "a", Sku = "S-1" } });
+
+        using var sent = JsonDocument.Parse(handler.Last.Body!);
+        sent.RootElement.GetProperty("a").GetProperty("sku").GetString().Should().Be("S-1");
+        sent.RootElement.GetProperty("a").TryGetProperty("id", out _).Should().BeFalse("id is read-only");
+        created["a"].Should().BeOfType<Widget>();
+    }
+
+    [TestMethod]
+    public async Task A_dictionary_body_and_its_response_can_both_be_custom_types()
+    {
+        var (client, handler) = Harness.Create();
+        handler.RespondJson("""{"a":{"id":"1","name":"a","sku":"S-9"}}""");
+
+        var created = await client.Widgets.CreateKeyedAsync<MyWidget, MyCreateRequest>(
+            new Dictionary<string, MyCreateRequest> { ["a"] = new() { Name = "a", Sku = "S-1" } });
+
+        created["a"].Sku.Should().Be("S-9");
+        using var sent = JsonDocument.Parse(handler.Last.Body!);
+        sent.RootElement.GetProperty("a").GetProperty("sku").GetString().Should().Be("S-1");
+    }
+
+    [TestMethod]
+    public async Task A_dictionary_body_of_the_declared_type_still_uses_the_declared_overloads()
+    {
+        var (client, handler) = Harness.Create();
+        handler.RespondJson("""{"a":{"id":"1","name":"a","sku":"S-9"}}""")
+            .RespondJson("""{"a":{"id":"1","name":"a","sku":"S-9"}}""");
+        var body = new Dictionary<string, WidgetCreateRequest> { ["a"] = new() { Name = "a" } };
+
+        (await client.Widgets.CreateKeyedAsync(body))["a"].Should().BeOfType<Widget>();
+        (await client.Widgets.CreateKeyedAsync<MyWidget>(body))["a"].Sku.Should().Be("S-9");
+    }
+
+    [TestMethod]
     public async Task A_merge_patch_against_a_derived_model_is_accepted_and_sent()
     {
         var (client, handler) = Harness.Create();

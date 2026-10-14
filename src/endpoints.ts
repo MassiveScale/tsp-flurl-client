@@ -826,6 +826,8 @@ function buildMethodView(
   }
 
   let body: BodyView | undefined;
+  let bodyGeneric:
+    { constraint: string; decl: string; optional: boolean } | undefined;
   if (op.parameters.body) {
     const bodyInfo = op.parameters.body;
     let bodyType = resolveBodyParamType(
@@ -840,6 +842,14 @@ function buildMethodView(
     // filtered through to its element model, so a property hidden from the request (a
     // read-only `id`) is not sent for each item either.
     const { element, wrappers } = unwrapType(bodyInfo.type);
+    // The model at the core of the body, when it is one, as written in C#: what a
+    // dictionary body's generic overload constrains its items to (see below).
+    let bodyElement =
+      element.kind === "Model" &&
+      element.name &&
+      !isSynthesizedMergePatchModel(program, element)
+        ? mapType(element, program, models, enums, usedHelpers)
+        : undefined;
     if (
       bodyInfo.bodyKind === "single" &&
       element.kind === "Model" &&
@@ -892,10 +902,8 @@ function buildMethodView(
             requestTypes,
           );
           if (suffix === undefined) return undefined;
-          bodyType = wrapBody(
-            requestRecordName(program, bodyModel, suffix),
-            wrappers,
-          );
+          bodyElement = requestRecordName(program, bodyModel, suffix);
+          bodyType = wrapBody(bodyElement, wrappers);
         }
       }
     }
@@ -920,11 +928,22 @@ function buildMethodView(
       optional: optionalBody,
       encoding: bodyEncoding(program, bodyInfo, kind).wire,
     };
-    if (optionalBody) {
-      const nullable = bodyType.endsWith("?") ? bodyType : `${bodyType}?`;
-      optionalParams.unshift({ decl: `${nullable} body = null`, name: "body" });
-    } else {
-      requiredParams.push({ decl: `${bodyType} body`, name: "body" });
+    const bodyDecl = (csType: string): string =>
+      optionalBody
+        ? `${csType.endsWith("?") ? csType : `${csType}?`} body = null`
+        : `${csType} body`;
+    (optionalBody ? optionalParams : requiredParams)[
+      optionalBody ? "unshift" : "push"
+    ]({ decl: bodyDecl(bodyType), name: "body" });
+    // A list is covariant (`IEnumerable<MyWidget>` is an `IEnumerable<Widget>`), but
+    // a dictionary is not, so a body holding a dictionary of models gets overloads
+    // generic in its items, which accept a dictionary of a derived type.
+    if (kind === "json" && bodyElement && wrappers.includes("record")) {
+      bodyGeneric = {
+        constraint: bodyElement,
+        decl: bodyDecl(wrapBody("TBody", wrappers)),
+        optional: optionalBody,
+      };
     }
   }
 
@@ -948,6 +967,15 @@ function buildMethodView(
       ? `${fx("Task", "generic")}<${response.view.type}>`
       : fx("Task"),
     paramsText: allParams.map((p) => p.decl).join(", "),
+    bodyGeneric: bodyGeneric && {
+      constraint: bodyGeneric.constraint,
+      paramsText: allParams
+        .map((p) => (p.name === "body" ? bodyGeneric!.decl : p.decl))
+        .join(", "),
+      // With an optional body, `ReadAsync<MyWidget>()` would match both one-type
+      // overloads, so only the overload generic in both is added.
+      itemsOnly: !(bodyGeneric.optional && response?.generic),
+    },
     argsText: allParams.map((p) => p.name).join(", "),
     httpMethod: capitalize(op.verb),
     route: buildRouteExpression(rawPath, pathParams),

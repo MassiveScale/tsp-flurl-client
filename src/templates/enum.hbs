@@ -30,6 +30,8 @@
                       e.g. "pending" or "1" (already escaped for a C# string literal)
     .numberLiteral —  set only when the member was declared with a number: the C#
                       numeric literal, e.g. "1L" or "1.5D". Falsy for a string member.
+    .reads        —   true for the first member declared with its wire value, which
+                      reading that value gives; false for a later alias, which only writes
 
   {{hasStringMembers}} — true when at least one member is declared as a string
   {{hasNumberMembers}} — true when at least one member is declared as a number
@@ -73,8 +75,8 @@ internal sealed class {{enumName}}JsonConverter : JsonConverter<{{enumName}}>
             var text = reader.GetString();
             return text switch
             {
-{{#each members}}{{#unless numberLiteral}}                "{{memberValue}}" => {{../enumName}}.{{name}},
-{{/unless}}{{/each}}                _ => throw new JsonException($"'{text}' is not a known {{enumName}} value."),
+{{#each members}}{{#unless numberLiteral}}{{#if reads}}                "{{memberValue}}" => {{../enumName}}.{{name}},
+{{/if}}{{/unless}}{{/each}}                _ => throw new JsonException($"'{text}' is not a known {{enumName}} value."),
             };
         }
 
@@ -83,8 +85,8 @@ internal sealed class {{enumName}}JsonConverter : JsonConverter<{{enumName}}>
             var number = reader.GetDouble();
             return number switch
             {
-{{#each members}}{{#if numberLiteral}}                {{numberLiteral}} => {{../enumName}}.{{name}},
-{{/if}}{{/each}}                _ => throw new JsonException($"{number} is not a known {{enumName}} value."),
+{{#each members}}{{#if numberLiteral}}{{#if reads}}                {{numberLiteral}} => {{../enumName}}.{{name}},
+{{/if}}{{/if}}{{/each}}                _ => throw new JsonException($"{number} is not a known {{enumName}} value."),
             };
         }
 

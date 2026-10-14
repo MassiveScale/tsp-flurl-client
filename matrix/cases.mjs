@@ -475,6 +475,26 @@ export function buildCases() {
     `@route("/lowerCaseHierarchy") @post lowerCaseHierarchy(@body body: lowerbase): lowerbase;`,
   ]);
 
+  add(
+    "enumAliases",
+    "Names",
+    [
+      `@route("/enumAliases/string") @get enumAliasesString(@query v: AliasedString): AliasedString[];`,
+      `@route("/enumAliases/number") @get enumAliasesNumber(@query v: AliasedNumber): AliasedNumber[];`,
+    ],
+    [
+      `enum AliasedString { first: "x", second: "x", third: "y" }`,
+      `enum AliasedNumber { first: 1, second: 1, third: 2.5, fourth: 2.5 }`,
+    ],
+  );
+
+  // Each interface is a property of the aggregate client and a parameter of its
+  // constructor, beside \`flurlClient\`, so these are names that need care there.
+  for (const name of ["flurlClient", "Params", "Class", "Event", "Await"]) {
+    const id = idOf("endpointNamed", name);
+    add(id, name, [`@route("/${id}") @get ${id}(): void;`]);
+  }
+
   const visibility = [
     ["nestedCreate", `@post nestedCreate(@body body: Wrapper): Wrapper;`],
     ["nestedReplace", `@put nestedReplace(@body body: Wrapper): Wrapper;`],

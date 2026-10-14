@@ -177,6 +177,7 @@ reported headerParameter16 name-collision
 reported headerParameter17 invalid-name
 reported headerParameter19 invalid-name
 reported modelNamedClientRuntime output-name-collision
+reported modelNamedIFlurlClient output-name-collision
 reported modelNamedIMergePatch output-name-collision
 reported modelNamedMatrixClient output-name-collision
 reported modelNamedMergePatch output-name-collision
