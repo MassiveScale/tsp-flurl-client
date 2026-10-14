@@ -42,6 +42,7 @@ import {
   escapeCsString,
   isInVersion,
   declarationKey,
+  type TypeSubstitute,
   type UsedHelpers,
 } from "./utils.js";
 
@@ -76,12 +77,10 @@ function recordReservedMembers(recordName: string): [string, string][] {
  * @param enums - Accumulator for referenced named enums (see {@link mapType}).
  * @param usedHelpers - Accumulator for required helper classes (see {@link mapType}).
  * @param recordName - The C# record the properties belong to.
- * @param inherited - The properties the record inherits from its base record, keyed
- *   by C# name with their TypeSpec name. A property with another TypeSpec name
- *   that becomes one of these C# names is a collision (C# would hide the inherited
- *   member, `CS0108`); a property with the same TypeSpec name is an override that
- *   narrows the inherited one, which the inherited member already carries, so it is
- *   left out.
+ * @param inherited - The names the record already uses, from its base record and
+ *   its hierarchy's discriminator (see {@link InheritedNames}).
+ * @param substitute - For a request record, the request records its property types
+ *   write in place of models (see {@link mapType}).
  * @returns One {@link PropertyView} per input property.
  */
 function buildPropertyViews(
@@ -91,28 +90,38 @@ function buildPropertyViews(
   enums: Map<string, Enum>,
   usedHelpers: UsedHelpers,
   recordName: string,
-  inherited: Map<string, string> = new Map(),
+  inherited: InheritedNames = { members: new Map(), json: new Map() },
+  substitute?: TypeSubstitute,
 ): PropertyView[] {
   const result: PropertyView[] = [];
   const scope = new MemberScope(program, "property", `record ${recordName}`, [
     ...recordReservedMembers(recordName),
-    ...[...inherited].map(
+    ...[...inherited.members].map(
       ([csName, name]) =>
         [csName, `the inherited property "${name}"`] as [string, string],
     ),
   ]);
+  const jsonOwners = new Map(inherited.json);
   for (const [, prop] of props) {
     const propDoc = docText(program, prop);
-    const csType = mapPropertyType(prop, program, models, enums, usedHelpers);
+    const csType = mapPropertyType(
+      prop,
+      program,
+      models,
+      enums,
+      usedHelpers,
+      substitute,
+    );
     const nullable = prop.optional && !csType.endsWith("?") ? "?" : "";
     const declaredName = getClientName(program, prop) ?? prop.name;
     // A property whose name is not a valid C# identifier is reported and left out.
     if (!checkName(program, "property", declaredName, prop)) continue;
     const propName = toCsPropName(declaredName);
-    if (inherited.get(propName) === prop.name) continue;
+    if (inherited.members.get(propName) === prop.name) continue;
     // Two properties can become the same C# name (`foo` and `Foo`), and a property
     // cannot share its record's name or a member the record generates.
     if (!scope.claim(propName, `"${prop.name}"`, prop)) continue;
+    if (!claimJsonName(program, jsonOwners, recordName, prop)) continue;
     const encoding = checkEncoding(program, prop, "property");
     const defaultVal = prop.optional
       ? undefined
@@ -135,38 +144,116 @@ function buildPropertyViews(
 }
 
 /**
- * The properties a derived record inherits from its base record in a
- * `@discriminator` hierarchy, keyed by C# name with their TypeSpec name (see
- * `buildPropertyViews`). The discriminator itself is not a member, and a request
- * record inherits only the properties visible in the request.
+ * The names a record already uses before its own properties are added.
+ *
+ * - `members`: the properties it inherits from its base record, keyed by C# name
+ *   with their TypeSpec name. A property with another TypeSpec name that becomes
+ *   one of these C# names is a collision (C# would hide the inherited member,
+ *   `CS0108`); a property with the same TypeSpec name is an override that narrows
+ *   the inherited one, which the inherited member already carries, so it is left out.
+ * - `json`: the JSON names already written for the record, keyed in lower case
+ *   (the client reads JSON without regard to case) with the name and what writes
+ *   it: the inherited properties and the hierarchy's discriminator.
+ */
+interface InheritedNames {
+  members: Map<string, string>;
+  json: Map<string, { name: string; owner: string }>;
+}
+
+/**
+ * The names a record in a `@discriminator` hierarchy already uses (see
+ * {@link InheritedNames}). The discriminator itself is not a member, and a
+ * request record inherits only the properties visible in the request.
  *
  * @param program - The compiler program.
- * @param model - The derived model.
- * @param parent - The discriminated root it derives from, or `undefined` when it does not.
+ * @param model - The model being rendered.
+ * @param hierarchy - The discriminated root it belongs to: its parent's for a
+ *   derived model, its own for the root. `undefined` when it is in no hierarchy.
+ * @param derived - Whether the model derives from `hierarchy.root`, and so inherits
+ *   its base record's properties.
  * @param version - The API version being emitted, or `undefined` when unversioned.
  * @param request - The request context, for a request record.
- * @returns The inherited names; empty for a model with no discriminated parent.
+ * @returns The names; empty for a model in no discriminated hierarchy.
  */
 function inheritedNames(
   program: Program,
   model: Model,
-  parent: { discriminator: Discriminator } | undefined,
+  hierarchy: { root: Model; discriminator: Discriminator } | undefined,
+  derived: boolean,
   version: Version | undefined,
   request: RequestRecordContext | undefined,
-): Map<string, string> {
-  const names = new Map<string, string>();
-  if (!parent || !model.baseModel) return names;
+): InheritedNames {
+  const names: InheritedNames = { members: new Map(), json: new Map() };
+  if (!hierarchy) return names;
+  const discriminator = discriminatorWireName(
+    program,
+    hierarchy.root,
+    hierarchy.discriminator.propertyName,
+  );
+  names.json.set(discriminator.toLowerCase(), {
+    name: discriminator,
+    owner: `the discriminator "${discriminator}"`,
+  });
+  if (!derived || !model.baseModel) return names;
   const base = versionProps(
     flattenProperties(model.baseModel),
     program,
     version,
   );
   for (const [name, prop] of base) {
-    if (name === parent.discriminator.propertyName) continue;
+    if (name === hierarchy.discriminator.propertyName) continue;
     if (request && !isVisible(program, prop, request.visibility)) continue;
-    names.set(toCsPropName(getClientName(program, prop) ?? prop.name), name);
+    names.members.set(
+      toCsPropName(getClientName(program, prop) ?? prop.name),
+      name,
+    );
+    const json = jsonName(program, prop);
+    names.json.set(json.toLowerCase(), {
+      name: json,
+      owner: `the inherited property "${name}"`,
+    });
   }
   return names;
+}
+
+/**
+ * Claims a property's JSON name in a record, reporting a `name-collision` when
+ * another property, or the discriminator, already writes that name. Names are
+ * compared without regard to case, as the client reads them.
+ *
+ * @param program - The compiler program.
+ * @param owners - The JSON names claimed so far, keyed in lower case.
+ * @param recordName - The C# record, for the message.
+ * @param prop - The property claiming its name.
+ * @returns `true` when the name was free and is now claimed; `false` after reporting.
+ */
+function claimJsonName(
+  program: Program,
+  owners: Map<string, { name: string; owner: string }>,
+  recordName: string,
+  prop: ModelProperty,
+): boolean {
+  const name = jsonName(program, prop);
+  const existing = owners.get(name.toLowerCase());
+  if (existing) {
+    reportOnce(
+      program,
+      createDiagnostic({
+        code: "name-collision",
+        messageId: "json",
+        target: prop,
+        format: {
+          name,
+          scope: `record ${recordName}`,
+          first: existing.owner,
+          second: `"${prop.name}"`,
+        },
+      }),
+    );
+    return false;
+  }
+  owners.set(name.toLowerCase(), { name, owner: `"${prop.name}"` });
+  return true;
 }
 
 /**
@@ -396,7 +483,18 @@ export function buildRecord(
       enums,
       usedHelpers,
       recordName,
-      inheritedNames(program, model, parentDiscriminated, version, request),
+      inheritedNames(
+        program,
+        model,
+        parentDiscriminated ??
+          (selfDiscriminator
+            ? { root: model, discriminator: selfDiscriminator }
+            : undefined),
+        parentDiscriminated !== undefined,
+        version,
+        request,
+      ),
+      request?.substitute,
     ),
     baseRecordName,
     discriminator,
@@ -439,6 +537,8 @@ export function buildRecord(
  *   option, appended to every emitted file regardless of whether this particular
  *   file references anything from them (see `EmitterOptions["additional-usings"]`).
  * @param access - C# access modifier of the record (`public` / `internal`).
+ * @param substitute - The request records its property types write in place of
+ *   models (see {@link mapType}).
  * @returns The full C# source of the generated record file.
  */
 export function buildFilteredRecord(
@@ -453,6 +553,7 @@ export function buildFilteredRecord(
   renderer: Renderer,
   additionalUsings: Set<string>,
   access: string = "public",
+  substitute?: TypeSubstitute,
 ): string {
   const recordView: RecordView = {
     doc,
@@ -466,6 +567,8 @@ export function buildFilteredRecord(
       enums,
       usedHelpers,
       name,
+      undefined,
+      substitute,
     ),
   };
 
@@ -579,6 +682,8 @@ export interface RequestRecordContext {
   visibility: Visibility;
   /** The request record name of a model of the hierarchy, e.g. `Dog` to `DogCreateRequest`. */
   nameOf: (model: Model) => string;
+  /** The request records the property types write in place of models (see {@link mapType}). */
+  substitute: TypeSubstitute;
 }
 
 /**

@@ -391,6 +391,54 @@ public sealed class KitchenSinkTests
     }
 
     [TestMethod]
+    public async Task Read_only_properties_of_nested_models_are_not_sent()
+    {
+        var (client, handler) = Create();
+        handler.RespondJson("""{"id":"f","name":"north","vehicles":[],"depot":null}""");
+
+        await client.Vehicles.CreateFleetAsync(new FleetCreateRequest
+        {
+            Name = "north",
+            Vehicles = [new CarCreateRequest { Wheels = 4, Seats = 5 }, new BikeCreateRequest { Wheels = 2 }],
+            Depot = new DepotCreateRequest { City = "Oslo" },
+        });
+
+        using var sent = JsonDocument.Parse(handler.Last.Body!);
+        sent.RootElement.TryGetProperty("id", out _).Should().BeFalse("the fleet's id is read-only");
+        var vehicles = sent.RootElement.GetProperty("vehicles");
+        vehicles[0].GetProperty("type").GetString().Should().Be("car");
+        vehicles[0].TryGetProperty("vin", out _).Should().BeFalse("a nested car's vin is read-only");
+        vehicles[1].GetProperty("type").GetString().Should().Be("bike");
+        var depot = sent.RootElement.GetProperty("depot");
+        depot.GetProperty("city").GetString().Should().Be("Oslo");
+        depot.TryGetProperty("id", out _).Should().BeFalse("a nested depot's id is read-only");
+    }
+
+    [TestMethod]
+    public void Nested_request_records_have_no_read_only_members()
+    {
+        typeof(CarCreateRequest).GetProperty("Vin").Should().BeNull();
+        typeof(DepotCreateRequest).GetProperty("Id").Should().BeNull();
+        typeof(FleetCreateRequest).GetProperty("Depot")!.PropertyType.Should().Be<DepotCreateRequest>();
+    }
+
+    [TestMethod]
+    public async Task A_nullable_body_is_filtered_and_can_be_sent_as_null()
+    {
+        var (client, handler) = Create();
+
+        await client.Vehicles.CreateDepotAsync(new DepotCreateRequest { City = "Oslo" });
+        using (var sent = JsonDocument.Parse(handler.Last.Body!))
+        {
+            sent.RootElement.GetProperty("city").GetString().Should().Be("Oslo");
+            sent.RootElement.TryGetProperty("id", out _).Should().BeFalse("id is read-only");
+        }
+
+        await client.Vehicles.CreateDepotAsync(null);
+        handler.Last.Body.Should().Be("null");
+    }
+
+    [TestMethod]
     public async Task An_omitted_optional_body_sends_no_content()
     {
         var (client, handler) = Create();

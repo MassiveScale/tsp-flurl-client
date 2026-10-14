@@ -185,11 +185,27 @@ model Bike extends Vehicle {
   type: "bike";
 }
 
+/** A body whose read-only properties are nested too, so each nested model is filtered as well. */
+model Fleet {
+  @visibility(Lifecycle.Read) id: string;
+  name: string;
+  vehicles: Vehicle[];
+  depot: Depot | null;
+}
+
+/** A model with a read-only property, nested in a request and sent as a nullable body. */
+model Depot {
+  @visibility(Lifecycle.Read) id: string;
+  city: string;
+}
+
 @route("/vehicles")
 interface Vehicles {
   @post create(@body body: Vehicle): Vehicle;
   @route("cars") @post createCar(@body body: Car): Car;
   @route("optional") @post maybeCreate(@body body?: Vehicle): void;
+  @route("fleets") @post createFleet(@body body: Fleet): Fleet;
+  @route("depots") @post createDepot(@body body: Depot | null): void;
 }
 
 @error

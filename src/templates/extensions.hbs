@@ -156,6 +156,16 @@ public static class {{className}}
         return services;
     }
 
+    /// <summary>
+    /// Creates a Flurl client around an <see cref="HttpClient"/> from <see cref="IHttpClientFactory"/>.
+    /// </summary>
+    /// <remarks>
+    /// Nothing here needs to be disposed. The factory owns and pools the message handler, and
+    /// gives out an <see cref="HttpClient"/> that does not dispose it, so disposing the client
+    /// (which is all <see cref="FlurlClient.Dispose"/> does) releases nothing. That is why the
+    /// Flurl client is not registered with the container, which would otherwise keep every
+    /// transient instance alive until the container itself is disposed.
+    /// </remarks>
     private static IFlurlClient CreateFlurlClient(IServiceProvider services, ModelMap models)
     {
         var httpClient = services.GetRequiredService<IHttpClientFactory>().CreateClient(HttpClientName);

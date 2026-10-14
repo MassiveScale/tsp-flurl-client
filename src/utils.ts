@@ -61,6 +61,12 @@ export const CLIENT_RUNTIME_HELPER_NAME = "ClientRuntime";
 export type UsedHelpers = Set<string>;
 
 /**
+ * Gives the C# type to write in place of a named model, or `undefined` to map
+ * the model as usual (see {@link mapType}).
+ */
+export type TypeSubstitute = (model: Model) => string | undefined;
+
+/**
  * The key a model or enum is collected under: its fully qualified name. Keying by
  * simple name would let `A.Widget` and `B.Widget`, which are flattened into one C#
  * namespace, silently replace each other before any collision could be reported.
@@ -89,6 +95,9 @@ export function declarationKey(declaration: Model | Enum): string {
  * @param models - Accumulator that collects referenced named models by name.
  * @param enums - Accumulator that collects referenced named enums by name.
  * @param usedHelpers - Accumulator that collects required helper class names.
+ * @param substitute - Gives the C# type to write in place of a named model, or
+ *   `undefined` to map it as usual. A request record uses it to write the request
+ *   record of a nested model (`ChildCreateRequest`) instead of the model.
  * @returns The C# type expression as a string (`"object"` for unmappable types).
  */
 export function mapType(
@@ -97,6 +106,7 @@ export function mapType(
   models: Map<string, Model>,
   enums: Map<string, Enum>,
   usedHelpers: UsedHelpers,
+  substitute?: TypeSubstitute,
 ): string {
   switch (type.kind) {
     case "Scalar":
@@ -105,15 +115,17 @@ export function mapType(
     case "Model": {
       const m = type as Model;
       if (isArrayModelType(m)) {
-        return `List<${mapType(m.indexer!.value, program, models, enums, usedHelpers)}>`;
+        return `List<${mapType(m.indexer!.value, program, models, enums, usedHelpers, substitute)}>`;
       }
       if (isRecordModelType(m)) {
-        return `Dictionary<string, ${mapType(m.indexer!.value, program, models, enums, usedHelpers)}>`;
+        return `Dictionary<string, ${mapType(m.indexer!.value, program, models, enums, usedHelpers, substitute)}>`;
       }
       if (isErrorModel(program, m)) {
         // Still emit, just note it
       }
       if (!m.name) return "object";
+      const substituted = substitute?.(m);
+      if (substituted) return substituted;
 
       // `MergePatchUpdate<T>` (and its `ReplaceOnly`/`CreateOrUpdate` siblings) synthesize a
       // distinct, flattened, all-optional Model rather than a template instance of `T` — so the
@@ -165,7 +177,14 @@ export function mapType(
     }
 
     case "Union":
-      return mapUnion(type as Union, program, models, enums, usedHelpers);
+      return mapUnion(
+        type as Union,
+        program,
+        models,
+        enums,
+        usedHelpers,
+        substitute,
+      );
 
     case "String":
       return "string";
@@ -338,6 +357,8 @@ function templateArguments(
  * @param models - Accumulator that collects referenced named models by name.
  * @param enums - Accumulator that collects referenced named enums by name.
  * @param usedHelpers - Accumulator that collects required helper class names.
+ * @param substitute - See {@link mapType}. It applies to the type of `T | null`
+ *   only: a `JsonElement` holds whatever the caller puts in it.
  * @returns The C# type expression.
  */
 function mapUnion(
@@ -346,6 +367,7 @@ function mapUnion(
   models: Map<string, Model>,
   enums: Map<string, Enum>,
   usedHelpers: UsedHelpers,
+  substitute?: TypeSubstitute,
 ): string {
   const variants = [...union.variants.values()].map((v) => v.type);
   const present = variants.filter((t) => !isNullType(t));
@@ -354,7 +376,14 @@ function mapUnion(
 
   let mapped: string;
   if (present.length === 1) {
-    mapped = mapType(present[0], program, models, enums, usedHelpers);
+    mapped = mapType(
+      present[0],
+      program,
+      models,
+      enums,
+      usedHelpers,
+      substitute,
+    );
   } else if (present.every(isStringLike)) {
     mapped = "string";
   } else {
@@ -409,6 +438,7 @@ function isStringLike(type: Type): boolean {
  * @param models - Accumulator that collects referenced named models by name.
  * @param enums - Accumulator that collects referenced named enums by name.
  * @param usedHelpers - Accumulator that collects required helper class names.
+ * @param substitute - See {@link mapType}.
  * @returns The C# type expression as a string.
  */
 export function mapPropertyType(
@@ -417,6 +447,7 @@ export function mapPropertyType(
   models: Map<string, Model>,
   enums: Map<string, Enum>,
   usedHelpers: UsedHelpers,
+  substitute?: TypeSubstitute,
 ): string {
   const encode = getEncode(program, prop);
   const encodesAsString =
@@ -443,7 +474,7 @@ export function mapPropertyType(
     if (format === "uuid") return "Guid";
     if (format === "uri" || format === "url") return "Uri";
   }
-  return mapType(prop.type, program, models, enums, usedHelpers);
+  return mapType(prop.type, program, models, enums, usedHelpers, substitute);
 }
 
 /**
@@ -720,8 +751,9 @@ export interface ModelSlot {
  * Finds the named model at the core of a type, looking through arrays and records.
  * That model is the "slot" generated clients expose as a generic parameter, so a
  * caller can ask for a derived type (`ReadAsync<MyWidget>`) instead of the declared
- * one. Scalars, enums, unions, anonymous models, and merge-patch payloads have no
- * slot because nothing can derive from them.
+ * one. A nullable model (`Item | null`) has its model's slot. Scalars, enums, other
+ * unions, anonymous models, and merge-patch payloads have no slot because nothing
+ * can derive from them.
  *
  * As with {@link mapType}, any named model reached is registered into `models`.
  *
@@ -739,6 +771,28 @@ export function findModelSlot(
   enums: Map<string, Enum>,
   usedHelpers: UsedHelpers,
 ): ModelSlot | undefined {
+  // `Item | null` has the same slot as `Item`, and stays nullable around it.
+  if (type.kind === "Union") {
+    const present = [...type.variants.values()]
+      .map((v) => v.type)
+      .filter((t) => !isNullType(t));
+    if (present.length !== 1 || present.length === type.variants.size) {
+      return undefined;
+    }
+    const inner = findModelSlot(
+      present[0],
+      program,
+      models,
+      enums,
+      usedHelpers,
+    );
+    return (
+      inner && {
+        constraint: inner.constraint,
+        wrap: (x) => `${inner.wrap(x)}?`,
+      }
+    );
+  }
   if (type.kind !== "Model") return undefined;
   const model = type as Model;
 

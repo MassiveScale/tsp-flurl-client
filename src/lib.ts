@@ -290,6 +290,7 @@ export const $lib = createTypeSpecLibrary({
       severity: "error",
       messages: {
         default: paramMessage`The C# ${"kind"} name "${"name"}" in ${"scope"} is produced by both ${"first"} and ${"second"}. Give one of them another name with @clientName.`,
+        json: paramMessage`The JSON property name "${"name"}" in ${"scope"} is used by both ${"first"} and ${"second"}, which System.Text.Json rejects. JSON names are read without regard to case, so names that differ only in case collide too. The second is left out; give one of them another name with @encodedName("application/json", ...).`,
       },
     },
     "invalid-option": {

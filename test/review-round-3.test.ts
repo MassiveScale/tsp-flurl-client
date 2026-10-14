@@ -310,8 +310,9 @@ describe("property names that collide", () => {
   });
 
   it("resolves a collision with @clientName", async () => {
+    // The JSON names must differ too: the client reads JSON without regard to case.
     const { results, messages } = await model(
-      'foo: string; @clientName("fooTwo") Foo: string;',
+      'foo: string; @clientName("fooTwo") @encodedName("application/json", "foo2") Foo: string;',
     );
 
     strictEqual(messages.length, 0);

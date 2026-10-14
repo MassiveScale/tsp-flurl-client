@@ -43,7 +43,12 @@ import { EmitterOptions, createDiagnostic, reportOnce } from "./lib.js";
 import { isCsNamespace, isCsTypeName } from "./identifiers.js";
 import { checkName, MemberScope } from "./names.js";
 import { getClientName, getAccess } from "./decorators.js";
-import { buildEndpoint, RequestType } from "./endpoints.js";
+import {
+  buildEndpoint,
+  requestRecordName,
+  requestSubstitute,
+  RequestType,
+} from "./endpoints.js";
 import {
   buildRecord,
   buildFilteredRecord,
@@ -768,12 +773,13 @@ async function emitService(
       ) {
         continue;
       }
+      const substitute = requestSubstitute(program, rt);
       await writeFile(
         program,
         resolvePath(modelsDir, `${rt.name}.g.cs`),
-        rt.hierarchy
+        rt.discriminated
           ? buildRecord(
-              rt.hierarchy.model,
+              rt.model,
               modelNs,
               program,
               models,
@@ -784,9 +790,9 @@ async function emitService(
               additionalUsings,
               version,
               {
-                visibility: rt.hierarchy.visibility,
-                nameOf: (m) =>
-                  `${getClientName(program, m) ?? m.name}${rt.hierarchy!.suffix}`,
+                visibility: rt.visibility,
+                nameOf: (m) => requestRecordName(program, m, rt.suffix),
+                substitute,
               },
             )
           : buildFilteredRecord(
@@ -801,6 +807,7 @@ async function emitService(
               renderer,
               additionalUsings,
               rt.access,
+              substitute,
             ),
       );
     }

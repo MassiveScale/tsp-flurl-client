@@ -12,6 +12,7 @@ import {
   Type,
   Program,
   isArrayModelType,
+  isNullType,
   isRecordModelType,
 } from "@typespec/compiler";
 import {
@@ -77,35 +78,79 @@ import {
 
 /**
  * A visibility-filtered request payload synthesized for a write operation whose
- * body model has properties hidden in the request context. Collected while
- * building methods and rendered as a record by `buildFilteredRecord`.
+ * body has properties hidden in the request context, at any depth. Collected while
+ * building methods and rendered as a record by `buildFilteredRecord`, or by
+ * `buildRecord` for a model of a `@discriminator` hierarchy.
  */
 export interface RequestType {
   /** C# record name for the synthesized request type (e.g. `WidgetCreateRequest`). */
   name: string;
-  /** Doc comment carried over from the source body model, if any. */
+  /** The model this record mirrors. */
+  model: Model;
+  /** Doc comment carried over from the source model, if any. */
   doc: string | undefined;
   /** The properties visible in the request context, keyed by property name. */
   props: Map<string, ModelProperty>;
   /**
-   * C# access modifier of the record: that of the source body model, so a record
-   * built from an internal model can still reference other internal types.
+   * C# access modifier of the record: that of the source model, so a record built
+   * from an internal model can still reference other internal types.
    */
   access: string;
+  /** The operation's request visibility. */
+  visibility: Visibility;
   /**
-   * Set when the body is part of a `@discriminator` hierarchy: the record is one of
-   * a set of request records mirroring that hierarchy (`PetCreateRequest`,
-   * `DogCreateRequest`, ...), rendered from `model` so it keeps its base record and
+   * The models this record's properties hold that have request records of their
+   * own, which the properties are written as instead: `Wrapper { child: Child }`
+   * becomes `WrapperCreateRequest { ChildCreateRequest Child }`.
+   */
+  writes: ReadonlySet<Model>;
+  /** What every request record of the operation appends to its model's name, e.g. `CreateRequest`. */
+  suffix: string;
+  /**
+   * Whether the model is part of a `@discriminator` hierarchy. Its record is then
+   * one of a set mirroring that hierarchy (`PetCreateRequest`, `DogCreateRequest`,
+   * ...), rendered from the model so it keeps its base record and
    * `[JsonDerivedType]` list, and so still writes the discriminator.
    */
-  hierarchy?: {
-    /** The model this record mirrors. */
-    model: Model;
-    /** The operation's request visibility. */
-    visibility: Visibility;
-    /** What every record of the hierarchy appends to its model's name, e.g. `CreateRequest`. */
-    suffix: string;
-  };
+  discriminated: boolean;
+}
+
+/**
+ * The C# name a model's request record has under a suffix, e.g. `Widget` and
+ * `CreateRequest` give `WidgetCreateRequest`. It follows the model's effective
+ * (client) name, so renaming `Widget` to `Product` gives `ProductCreateRequest`.
+ *
+ * @param program - The compiler program.
+ * @param model - The model.
+ * @param suffix - The operation's request record suffix.
+ * @returns The request record's name.
+ */
+export function requestRecordName(
+  program: Program,
+  model: Model,
+  suffix: string,
+): string {
+  return `${getClientName(program, model) ?? model.name}${suffix}`;
+}
+
+/**
+ * The C# type a request record writes in place of a model: the model's request
+ * record when it is one the record writes (see {@link RequestType.writes}),
+ * otherwise nothing, so the model maps as usual. Passed to the type mapping as its
+ * `substitute`.
+ *
+ * @param program - The compiler program.
+ * @param requestType - The request record.
+ * @returns The substitution.
+ */
+export function requestSubstitute(
+  program: Program,
+  requestType: RequestType,
+): (model: Model) => string | undefined {
+  return (model) =>
+    requestType.writes.has(model)
+      ? requestRecordName(program, model, requestType.suffix)
+      : undefined;
 }
 
 /** The two C# source files generated for one operation container. */
@@ -161,55 +206,165 @@ function filterPropsForRequest(
   return result;
 }
 
+/** What a body type wraps its element in: a collection, or `| null`. */
+type BodyWrapper = "array" | "record" | "nullable";
+
 /**
- * Looks through arrays and records to the type they hold: `Widget[][]` is `Widget`
- * inside two arrays.
+ * The type a value of a union holds when the union only adds `null` to it:
+ * `Widget` for `Widget | null`.
  *
- * @param type - A body type.
- * @returns The innermost element, and the collections around it from the outside in.
+ * @param type - Any type.
+ * @returns The non-null type, or `undefined` when the type is not such a union.
  */
-function unwrapCollections(type: Type): {
-  element: Type;
-  wrappers: ("array" | "record")[];
-} {
-  const wrappers: ("array" | "record")[] = [];
-  let element = type;
-  while (
-    element.kind === "Model" &&
-    element.indexer &&
-    (isArrayModelType(element) || isRecordModelType(element))
-  ) {
-    wrappers.push(isArrayModelType(element) ? "array" : "record");
-    element = element.indexer.value;
-  }
-  return { element, wrappers };
+function withoutNullVariant(type: Type): Type | undefined {
+  if (type.kind !== "Union") return undefined;
+  const present = [...type.variants.values()]
+    .map((v) => v.type)
+    .filter((t) => !isNullType(t));
+  return present.length === 1 && present.length !== type.variants.size
+    ? present[0]
+    : undefined;
 }
 
 /**
- * Puts a C# element type back inside the collections a body declared, as the
- * covariant interfaces a body parameter takes (see `resolveBodyParamType`), so a
- * `List<MyWidgetCreateRequest>` is still accepted.
+ * Looks through arrays, records and `| null` to the type they hold:
+ * `(Widget | null)[]` is `Widget`, nullable, inside an array.
+ *
+ * @param type - A body type.
+ * @returns The innermost element, and what wraps it from the outside in.
+ */
+function unwrapBody(type: Type): { element: Type; wrappers: BodyWrapper[] } {
+  const wrappers: BodyWrapper[] = [];
+  let element = type;
+  for (;;) {
+    const inner = withoutNullVariant(element);
+    if (inner) {
+      wrappers.push("nullable");
+      element = inner;
+    } else if (
+      element.kind === "Model" &&
+      element.indexer &&
+      (isArrayModelType(element) || isRecordModelType(element))
+    ) {
+      wrappers.push(isArrayModelType(element) ? "array" : "record");
+      element = element.indexer.value;
+    } else {
+      return { element, wrappers };
+    }
+  }
+}
+
+/**
+ * Puts a C# element type back inside what a body declared around it: collections
+ * as the covariant interfaces a body parameter takes (see `resolveBodyParamType`),
+ * so a `List<MyWidgetCreateRequest>` is still accepted, and `| null` as `?`.
  *
  * @param csType - The element's C# type.
- * @param wrappers - The collections around it, from the outside in.
+ * @param wrappers - What wraps it, from the outside in.
  * @returns The C# body parameter type.
  */
-function wrapCollections(
-  csType: string,
-  wrappers: ("array" | "record")[],
-): string {
+function wrapBody(csType: string, wrappers: BodyWrapper[]): string {
   return wrappers.reduceRight(
     (inner, wrapper) =>
       wrapper === "array"
         ? `IEnumerable<${inner}>`
-        : `IReadOnlyDictionary<string, ${inner}>`,
+        : wrapper === "record"
+          ? `IReadOnlyDictionary<string, ${inner}>`
+          : inner.endsWith("?")
+            ? inner
+            : `${inner}?`,
     csType,
   );
 }
 
 /**
- * Whether two request records carry exactly the same properties, so one record
- * can serve both operations.
+ * The named models a property type writes as JSON objects of their own, looking
+ * through arrays, records and `| null`. A union of several types is held as a
+ * `JsonElement`, an anonymous model as `object`, and a merge-patch payload is
+ * already purpose-built, so none of them leads anywhere.
+ *
+ * @param program - The compiler program.
+ * @param type - The property type.
+ * @returns The models it reaches.
+ */
+function modelsWrittenBy(program: Program, type: Type): Model[] {
+  const { element } = unwrapBody(type);
+  if (
+    element.kind !== "Model" ||
+    !element.name ||
+    isSynthesizedMergePatchModel(program, element)
+  ) {
+    return [];
+  }
+  return [element];
+}
+
+/**
+ * The models of a request body that need a request record of their own. A model
+ * needs one when it has a property hidden in the request, when one of its visible
+ * properties holds a model that needs one (so `Wrapper { child: Child }` needs one
+ * when `Child` has a read-only `id`), or when another model of its
+ * `@discriminator` hierarchy needs one, since the records of a hierarchy inherit
+ * from one another.
+ *
+ * @param program - The compiler program.
+ * @param body - The body model.
+ * @param visibility - The operation's request visibility.
+ * @param version - The API version being emitted, or `undefined` when unversioned.
+ * @returns The models that need a request record, the body first when it does;
+ *   empty when the body can be sent as it is.
+ */
+function findRequestModels(
+  program: Program,
+  body: Model,
+  visibility: Visibility,
+  version: Version | undefined,
+): Model[] {
+  const reached: Model[] = [];
+  const writes = new Map<Model, Model[]>();
+  const hierarchies = new Map<Model, Model[]>();
+  const queue = [body];
+  while (queue.length > 0) {
+    const model = queue.shift()!;
+    if (reached.includes(model)) continue;
+    reached.push(model);
+    const discriminated = findDiscriminatedRoot(program, model);
+    if (discriminated) {
+      const members = hierarchyOf(program, discriminated.root, version);
+      hierarchies.set(model, members);
+      queue.push(...members);
+    }
+    const written = [
+      ...filterPropsForRequest(model, visibility, version, program).values(),
+    ].flatMap((prop) => modelsWrittenBy(program, prop.type));
+    writes.set(model, written);
+    queue.push(...written);
+  }
+
+  const needs = new Set(
+    reached.filter((model) =>
+      hasHiddenProperties(model, visibility, version, program),
+    ),
+  );
+  for (let changed = true; changed;) {
+    changed = false;
+    for (const model of reached) {
+      if (needs.has(model)) continue;
+      const needed =
+        writes.get(model)!.some((m) => needs.has(m)) ||
+        (hierarchies.get(model) ?? []).some((m) => needs.has(m));
+      if (needed) {
+        needs.add(model);
+        changed = true;
+      }
+    }
+  }
+  return reached.filter((model) => needs.has(model));
+}
+
+/**
+ * Whether two request records carry exactly the same properties, and write the
+ * same models as request records, so one record can serve both operations.
  *
  * @param a - One record.
  * @param b - The other record.
@@ -222,27 +377,31 @@ function sameRequestShape(a: RequestType, b: RequestType): boolean {
     left.length === right.length &&
     left.every(
       ([name, prop], i) => right[i][0] === name && right[i][1] === prop,
-    )
+    ) &&
+    a.writes.size === b.writes.size &&
+    [...a.writes].every((m) => b.writes.has(m))
   );
 }
 
 /**
- * Names and registers the request records for an operation's body: one record for
- * a plain model, or one for every model of a `@discriminator` hierarchy. All of
- * them share one suffix, so `Pet`, `Dog` and `Cat` become `PetCreateRequest`,
+ * Names and registers the request records for an operation's body: one for every
+ * model that needs one (see `findRequestModels`), which can be the body alone, the
+ * models of its `@discriminator` hierarchy, or models nested in it. All of them
+ * share one suffix, so `Pet`, `Dog` and `Cat` become `PetCreateRequest`,
  * `DogCreateRequest` and `CatCreateRequest`.
  *
  * Visibility is resolved per operation (`@parameterVisibility` can differ between
- * two creates of the same model), so a record is shared only when its properties
- * match. The suffixes tried, in order, are `{Verb}Request` (`CreateRequest`),
+ * two creates of the same model), so a record is shared only when its shape
+ * matches. The suffixes tried, in order, are `{Verb}Request` (`CreateRequest`),
  * `{Operation}Request` (`CreateDraftRequest`), and `{Container}{Operation}Request`.
- * A suffix is used only when every record it names is free or already identical.
- * When none is, a `name-collision` is reported.
+ * A suffix is used only when every record it names is free or already identical,
+ * and no two of the operation's models would share a name. When none is, a
+ * `name-collision` is reported.
  *
  * @param program - The compiler program, used to report diagnostics.
  * @param op - The operation the records are for.
  * @param operationName - The operation's effective (client) name.
- * @param records - The records to register, each with its model and properties.
+ * @param records - The records to register, not yet named.
  * @param requestTypes - The records registered so far for this unit.
  * @returns The suffix used, or `undefined` after reporting a collision.
  */
@@ -250,7 +409,7 @@ function claimRequestTypes(
   program: Program,
   op: HttpOperation,
   operationName: string,
-  records: { model: Model; requestType: RequestType }[],
+  records: Omit<RequestType, "name" | "suffix">[],
   requestTypes: Map<string, RequestType>,
 ): string | undefined {
   const container = op.container;
@@ -266,29 +425,24 @@ function claimRequestTypes(
       `${capitalize(containerName)}${operation}Request`,
     ]),
   ];
-  // Named after each model's effective (client) name, so renaming `Widget` to
-  // `Product` gives `ProductCreateRequest`, and two same-named models with
-  // different client names get different records.
-  const nameOf = (model: Model, suffix: string): string =>
-    `${getClientName(program, model) ?? model.name}${suffix}`;
 
   for (const suffix of suffixes) {
-    const usable = records.every(({ model, requestType }) => {
-      const existing = requestTypes.get(nameOf(model, suffix));
-      return !existing || sameRequestShape(existing, requestType);
-    });
-    if (!usable) continue;
-    for (const { model, requestType } of records) {
-      const name = nameOf(model, suffix);
-      if (requestTypes.has(name)) continue;
-      requestTypes.set(name, {
-        ...requestType,
-        name,
-        hierarchy: requestType.hierarchy && {
-          ...requestType.hierarchy,
-          suffix,
-        },
+    const named = records.map((record) => ({
+      ...record,
+      name: requestRecordName(program, record.model, suffix),
+      suffix,
+    }));
+    const usable =
+      new Set(named.map((r) => r.name)).size === named.length &&
+      named.every((record) => {
+        const existing = requestTypes.get(record.name);
+        return !existing || sameRequestShape(existing, record);
       });
+    if (!usable) continue;
+    for (const record of named) {
+      if (!requestTypes.has(record.name)) {
+        requestTypes.set(record.name, record);
+      }
     }
     return suffix;
   }
@@ -300,7 +454,11 @@ function claimRequestTypes(
       target: op.operation,
       format: {
         kind: "request record",
-        name: nameOf(records[0].model, suffixes[suffixes.length - 1]),
+        name: requestRecordName(
+          program,
+          records[0].model,
+          suffixes[suffixes.length - 1],
+        ),
         scope: "the generated models",
         first:
           "another operation whose request has different visible properties",
@@ -327,20 +485,23 @@ function isSynthesizedMergePatchModel(program: Program, model: Model): boolean {
 }
 
 /**
- * Whether a body model has at least one property hidden in the given request
- * context — i.e. a dedicated request type is needed instead of the full model.
+ * Whether a model has at least one property hidden in the given request context,
+ * among those of the version being emitted.
  *
- * @param model - The request body model.
+ * @param model - The model.
  * @param visibility - The resolved request visibility for the operation.
+ * @param version - The API version being emitted, or `undefined` when unversioned.
  * @param program - The compiler program.
  * @returns `true` if any (flattened) property is not visible.
  */
 function hasHiddenProperties(
   model: Model,
   visibility: Visibility,
+  version: Version | undefined,
   program: Program,
 ): boolean {
   for (const [, prop] of flattenProperties(model)) {
+    if (!isInVersion(program, prop, version)) continue;
     if (!isVisible(program, prop, visibility)) return true;
   }
   return false;
@@ -719,10 +880,10 @@ function buildMethodView(
       usedHelpers,
     );
 
-    // A bulk body (`Widget[]`, `Record<Widget>`) is filtered through to its element
-    // model, so a property hidden from the request (a read-only `id`) is not sent for
-    // each item either.
-    const { element, wrappers } = unwrapCollections(bodyInfo.type);
+    // A bulk or nullable body (`Widget[]`, `Record<Widget>`, `Widget | null`) is
+    // filtered through to its element model, so a property hidden from the request (a
+    // read-only `id`) is not sent for each item either.
+    const { element, wrappers } = unwrapBody(bodyInfo.type);
     if (
       bodyInfo.bodyKind === "single" &&
       element.kind === "Model" &&
@@ -735,26 +896,38 @@ function buildMethodView(
           op.operation,
           op.verb,
         );
-        // A body in a `@discriminator` hierarchy is filtered as a whole hierarchy,
+        // A model in a `@discriminator` hierarchy is filtered as a whole hierarchy,
         // so the caller can still pass any subtype and its discriminator is written;
-        // a single flat record would lose both.
-        const discriminated = findDiscriminatedRoot(program, bodyModel);
-        const members = discriminated
-          ? hierarchyOf(program, discriminated.root, version)
-          : [bodyModel];
-        if (members.some((m) => hasHiddenProperties(m, visibility, program))) {
-          const records = members.map((model) => ({
-            model,
-            requestType: {
-              name: "",
+        // a single flat record would lose both. A model nested in the body is
+        // filtered too, so a read-only property is not sent at any depth.
+        const needing = findRequestModels(
+          program,
+          bodyModel,
+          visibility,
+          version,
+        );
+        if (needing.length > 0) {
+          const records = needing.map((model) => {
+            const props = filterPropsForRequest(
+              model,
+              visibility,
+              version,
+              program,
+            );
+            const writes = [...props.values()]
+              .flatMap((prop) => modelsWrittenBy(program, prop.type))
+              .filter((m) => needing.includes(m));
+            return {
+              model,
               doc: docText(program, model),
               access: getAccess(program, model) ?? "public",
-              props: filterPropsForRequest(model, visibility, version, program),
-              hierarchy: discriminated
-                ? { model, visibility, suffix: "" }
-                : undefined,
-            } satisfies RequestType,
-          }));
+              props,
+              visibility,
+              writes: new Set(writes),
+              discriminated:
+                findDiscriminatedRoot(program, model) !== undefined,
+            };
+          });
           const suffix = claimRequestTypes(
             program,
             op,
@@ -763,8 +936,8 @@ function buildMethodView(
             requestTypes,
           );
           if (suffix === undefined) return undefined;
-          bodyType = wrapCollections(
-            `${getClientName(program, bodyModel) ?? bodyModel.name}${suffix}`,
+          bodyType = wrapBody(
+            requestRecordName(program, bodyModel, suffix),
             wrappers,
           );
         }
@@ -1074,7 +1247,9 @@ function resolveResponse(
   if (!slot) return { view };
 
   const wrapped = slot.wrap("TResult");
-  const responseType = optional(anyNullable ? `${wrapped}?` : wrapped);
+  const responseType = optional(
+    anyNullable && !wrapped.endsWith("?") ? `${wrapped}?` : wrapped,
+  );
   return {
     view,
     generic: {
