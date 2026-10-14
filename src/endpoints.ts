@@ -12,7 +12,6 @@ import {
   Type,
   Program,
   isArrayModelType,
-  isNullType,
   isRecordModelType,
 } from "@typespec/compiler";
 import {
@@ -60,6 +59,8 @@ import {
   toCsMethodName,
   toCsParamName,
   escapeCsIdentifier,
+  unwrapType,
+  type TypeWrapper,
   escapeCsString,
   sortUsings,
   isInVersion,
@@ -208,54 +209,6 @@ function filterPropsForRequest(
   return result;
 }
 
-/** What a body type wraps its element in: a collection, or `| null`. */
-type BodyWrapper = "array" | "record" | "nullable";
-
-/**
- * The type a value of a union holds when the union only adds `null` to it:
- * `Widget` for `Widget | null`.
- *
- * @param type - Any type.
- * @returns The non-null type, or `undefined` when the type is not such a union.
- */
-function withoutNullVariant(type: Type): Type | undefined {
-  if (type.kind !== "Union") return undefined;
-  const present = [...type.variants.values()]
-    .map((v) => v.type)
-    .filter((t) => !isNullType(t));
-  return present.length === 1 && present.length !== type.variants.size
-    ? present[0]
-    : undefined;
-}
-
-/**
- * Looks through arrays, records and `| null` to the type they hold:
- * `(Widget | null)[]` is `Widget`, nullable, inside an array.
- *
- * @param type - A body type.
- * @returns The innermost element, and what wraps it from the outside in.
- */
-function unwrapBody(type: Type): { element: Type; wrappers: BodyWrapper[] } {
-  const wrappers: BodyWrapper[] = [];
-  let element = type;
-  for (;;) {
-    const inner = withoutNullVariant(element);
-    if (inner) {
-      wrappers.push("nullable");
-      element = inner;
-    } else if (
-      element.kind === "Model" &&
-      element.indexer &&
-      (isArrayModelType(element) || isRecordModelType(element))
-    ) {
-      wrappers.push(isArrayModelType(element) ? "array" : "record");
-      element = element.indexer.value;
-    } else {
-      return { element, wrappers };
-    }
-  }
-}
-
 /**
  * Puts a C# element type back inside what a body declared around it: collections
  * as the covariant interfaces a body parameter takes (see `resolveBodyParamType`),
@@ -265,7 +218,7 @@ function unwrapBody(type: Type): { element: Type; wrappers: BodyWrapper[] } {
  * @param wrappers - What wraps it, from the outside in.
  * @returns The C# body parameter type.
  */
-function wrapBody(csType: string, wrappers: BodyWrapper[]): string {
+function wrapBody(csType: string, wrappers: TypeWrapper[]): string {
   return wrappers.reduceRight(
     (inner, wrapper) =>
       wrapper === "array"
@@ -290,7 +243,7 @@ function wrapBody(csType: string, wrappers: BodyWrapper[]): string {
  * @returns The models it reaches.
  */
 function modelsWrittenBy(program: Program, type: Type): Model[] {
-  const { element } = unwrapBody(type);
+  const { element } = unwrapType(type);
   if (
     element.kind !== "Model" ||
     !element.name ||
@@ -885,7 +838,7 @@ function buildMethodView(
     // A bulk or nullable body (`Widget[]`, `Record<Widget>`, `Widget | null`) is
     // filtered through to its element model, so a property hidden from the request (a
     // read-only `id`) is not sent for each item either.
-    const { element, wrappers } = unwrapBody(bodyInfo.type);
+    const { element, wrappers } = unwrapType(bodyInfo.type);
     if (
       bodyInfo.bodyKind === "single" &&
       element.kind === "Model" &&

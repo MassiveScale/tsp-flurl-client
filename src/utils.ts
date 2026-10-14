@@ -64,6 +64,9 @@ export const CLIENT_RUNTIME_HELPER_NAME = "ClientRuntime";
  */
 export type UsedHelpers = Set<string>;
 
+/** What wraps the element of a type: a list, a dictionary, or `| null`. */
+export type TypeWrapper = "array" | "record" | "nullable";
+
 /**
  * Gives the C# type to write in place of a named model, or `undefined` to map
  * the model as usual (see {@link mapType}).
@@ -352,6 +355,59 @@ function templateArguments(
 }
 
 /**
+ * The one type a union stands for when every other variant is `null`:
+ * `Widget` for `Widget | null` (nullable) or for a one-variant union (not). This
+ * is the single place that decides it, so the type mapping, the request filtering,
+ * the generic overloads, the encodings, and the lint rule all agree.
+ *
+ * @param type - Any type.
+ * @returns The variant and whether `null` is beside it, or `undefined` when the
+ *   type is not such a union.
+ */
+export function soleVariant(
+  type: Type,
+): { type: Type; nullable: boolean } | undefined {
+  if (type.kind !== "Union") return undefined;
+  const variants = [...type.variants.values()].map((v) => v.type);
+  const present = variants.filter((t) => !isNullType(t));
+  return present.length === 1
+    ? { type: present[0], nullable: present.length !== variants.length }
+    : undefined;
+}
+
+/**
+ * Looks through lists, dictionaries and `| null` to the type they hold, as the
+ * type mapping writes them: `(Widget | null)[]` is `Widget`, nullable, inside a
+ * list.
+ *
+ * @param type - Any type.
+ * @returns The innermost element, and what wraps it from the outside in.
+ */
+export function unwrapType(type: Type): {
+  element: Type;
+  wrappers: TypeWrapper[];
+} {
+  const wrappers: TypeWrapper[] = [];
+  let element = type;
+  for (;;) {
+    const sole = soleVariant(element);
+    if (sole) {
+      if (sole.nullable) wrappers.push("nullable");
+      element = sole.type;
+    } else if (
+      element.kind === "Model" &&
+      element.indexer &&
+      (isArrayModelType(element) || isRecordModelType(element))
+    ) {
+      wrappers.push(isArrayModelType(element) ? "array" : "record");
+      element = element.indexer.value;
+    } else {
+      return { element, wrappers };
+    }
+  }
+}
+
+/**
  * Maps a TypeSpec union, which C# cannot express directly:
  *
  * - `T | null` is `T?`.
@@ -384,10 +440,11 @@ function mapUnion(
   const nullable = present.length !== variants.length;
   if (present.length === 0) return "object";
 
+  const sole = soleVariant(union);
   let mapped: string;
-  if (present.length === 1) {
+  if (sole) {
     mapped = mapType(
-      present[0],
+      sole.type,
       program,
       models,
       enums,
@@ -797,68 +854,29 @@ export function findModelSlot(
   enums: Map<string, Enum>,
   usedHelpers: UsedHelpers,
 ): ModelSlot | undefined {
-  // `Item | null` has the same slot as `Item`, and stays nullable around it.
-  if (type.kind === "Union") {
-    const present = [...type.variants.values()]
-      .map((v) => v.type)
-      .filter((t) => !isNullType(t));
-    if (present.length !== 1 || present.length === type.variants.size) {
-      return undefined;
-    }
-    const inner = findModelSlot(
-      present[0],
-      program,
-      models,
-      enums,
-      usedHelpers,
-    );
-    return (
-      inner && {
-        constraint: inner.constraint,
-        wrap: (x) => `${inner.wrap(x)}?`,
-      }
-    );
-  }
-  if (type.kind !== "Model") return undefined;
-  const model = type as Model;
-
-  if (isArrayModelType(model)) {
-    const inner = findModelSlot(
-      model.indexer!.value,
-      program,
-      models,
-      enums,
-      usedHelpers,
-    );
-    return (
-      inner && {
-        constraint: inner.constraint,
-        wrap: (x) => `List<${inner.wrap(x)}>`,
-      }
-    );
-  }
-  if (isRecordModelType(model)) {
-    const inner = findModelSlot(
-      model.indexer!.value,
-      program,
-      models,
-      enums,
-      usedHelpers,
-    );
-    return (
-      inner && {
-        constraint: inner.constraint,
-        wrap: (x) => `Dictionary<string, ${inner.wrap(x)}>`,
-      }
-    );
-  }
+  // `Item | null` has the same slot as `Item`, and stays nullable around it, as
+  // do the items of a list or dictionary.
+  const { element, wrappers } = unwrapType(type);
+  if (element.kind !== "Model") return undefined;
+  const model = element;
 
   if (!model.name || model.name === "Array") return undefined;
   if (getMergePatchSource(program, model)) return undefined;
 
   return {
     constraint: mapType(model, program, models, enums, usedHelpers),
-    wrap: (x) => x,
+    wrap: (x) =>
+      wrappers.reduceRight(
+        (inner, wrapper) =>
+          wrapper === "array"
+            ? `List<${inner}>`
+            : wrapper === "record"
+              ? `Dictionary<string, ${inner}>`
+              : inner.endsWith("?")
+                ? inner
+                : `${inner}?`,
+        x,
+      ),
   };
 }
 

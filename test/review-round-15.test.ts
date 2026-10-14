@@ -692,3 +692,34 @@ describe("value template parameters", () => {
     ok(messagesFor(diagnostics, "unsupported-value-template").length > 0);
   });
 });
+
+describe("one type-walker for lists, dictionaries and nullables", () => {
+  it("treats a one-variant union like its variant everywhere", async () => {
+    const results = await emit(`${PREAMBLE}
+      model Item { @visibility(Lifecycle.Read) id: string; name: string; }
+      union Only { item: Item }
+      @route("/o") interface Things {
+        @get read(): { @body body: Only };
+        @post create(@body body: Only): void;
+      }
+    `);
+
+    const iface = fileContent(results, "IThings.g.cs");
+    ok(iface.includes("Task<Item> ReadAsync("), iface);
+    ok(iface.includes("Task<TResult> ReadAsync<TResult>("), iface);
+    ok(iface.includes("CreateAsync(ItemCreateRequest body,"), iface);
+  });
+
+  it("wraps a generic overload in every list, dictionary and nullable around the model", async () => {
+    const results = await emit(`${PREAMBLE}
+      model Item { name: string; }
+      @route("/o") interface Things { @get read(): { @body body: Record<(Item | null)[]> | null }; }
+    `);
+
+    ok(
+      fileContent(results, "IThings.g.cs").includes(
+        "Task<Dictionary<string, List<TResult?>>?> ReadAsync<TResult>(",
+      ),
+    );
+  });
+});

@@ -23,6 +23,7 @@ import { getMergePatchSource } from "@typespec/http/experimental/merge-patch";
 import { getAccess } from "../decorators.js";
 import { flattenProperties, findDiscriminatedRoot } from "../models.js";
 import { bodyShape, successBodies } from "../endpoints.js";
+import { soleVariant } from "../utils.js";
 
 /**
  * Returns the declaration the emitter generates for a model. A template instance
@@ -78,10 +79,8 @@ function resolveNamedTypes(program: Program, type: Type): (Model | Enum)[] {
       // Mirrors `mapUnion`: only a union with a single non-null variant (an optional
       // `T | null`) is emitted as that type. A union of several variants is a
       // `JsonElement` or `string` and names no model or enum in the signature.
-      const present = [...type.variants.values()]
-        .map((variant) => variant.type)
-        .filter((t) => !(t.kind === "Intrinsic" && t.name === "null"));
-      return present.length === 1 ? resolve(present[0]) : [];
+      const sole = soleVariant(type);
+      return sole ? resolve(sole.type) : [];
     }
     default:
       return [];

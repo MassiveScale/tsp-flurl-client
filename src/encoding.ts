@@ -12,7 +12,7 @@ import {
   type Type,
 } from "@typespec/compiler";
 import { createDiagnostic, reportOnce } from "./lib.js";
-import { builtinScalarName } from "./utils.js";
+import { builtinScalarName, soleVariant } from "./utils.js";
 
 /**
  * A wire format the generated runtime implements. Each name is a member of the
@@ -128,11 +128,7 @@ function isTextItem(type: Type): boolean {
  * @returns The non-null type.
  */
 function withoutNull(type: Type): Type {
-  if (type.kind !== "Union") return type;
-  const present = [...type.variants.values()]
-    .map((v) => v.type)
-    .filter((t) => !(t.kind === "Intrinsic" && t.name === "null"));
-  return present.length === 1 ? present[0] : type;
+  return soleVariant(type)?.type ?? type;
 }
 
 /**
