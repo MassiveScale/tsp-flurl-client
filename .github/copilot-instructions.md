@@ -65,6 +65,7 @@ Generation logic is split by output domain, each with a matching `test/<name>.te
 - **`src/client.ts`** — The aggregate client class (with `Create` factories) and the DI registration extension class.
 - **`src/project.ts`** — `.csproj` generation and NuGet `<Version>` derivation.
 - **`src/utils.ts`** — Dependency-light shared helpers: C# type mapping (`mapType`), `findModelSlot`, and name/formatting utilities. A leaf module — never imports the other codegen modules.
+- **`src/framework.ts`** — The .NET types the generated C# names (`FRAMEWORK_TYPES`) and `fx`, which writes each one by its short name unless a generated type of the same name would hide it, in which case it is written in full (`global::System.Type`). Templates are routed through it when they load (`qualifyTemplate`); TypeScript that writes C# calls `fx` itself. The compile matrix fails when the generated code names a .NET type the registry is missing. A leaf module.
 - **`src/renderer.ts`** — Handlebars renderer, view interfaces, and the method-block renderers. **`src/decorators.ts`** — `@clientName` / `@access` decorator implementations.
 - **`src/templates/*.hbs`** — The C# templates, copied to `dist/templates` by `scripts/copy-templates.mjs`. Each documents its variables in a header comment.
 

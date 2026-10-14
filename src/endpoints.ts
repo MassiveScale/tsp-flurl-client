@@ -4,6 +4,7 @@
 // custom response model, and collects the visibility-filtered request payload
 // types referenced by write operations (rendered as records by ./models.ts).
 
+import { fx } from "./framework.js";
 import {
   getEncode,
   Model,
@@ -222,9 +223,9 @@ function wrapBody(csType: string, wrappers: TypeWrapper[]): string {
   return wrappers.reduceRight(
     (inner, wrapper) =>
       wrapper === "array"
-        ? `IEnumerable<${inner}>`
+        ? `${fx("IEnumerable", "generic")}<${inner}>`
         : wrapper === "record"
-          ? `IReadOnlyDictionary<string, ${inner}>`
+          ? `${fx("IReadOnlyDictionary", "generic")}<string, ${inner}>`
           : inner.endsWith("?")
             ? inner
             : `${inner}?`,
@@ -931,11 +932,11 @@ function buildMethodView(
     ...requiredParams,
     ...optionalParams,
     {
-      decl: "Dictionary<string, object>? additionalQueryParameters = null",
+      decl: `${fx("Dictionary", "generic")}<string, object>? additionalQueryParameters = null`,
       name: "additionalQueryParameters",
     },
     {
-      decl: "CancellationToken cancellationToken = default",
+      decl: `${fx("CancellationToken")} cancellationToken = default`,
       name: "cancellationToken",
     },
   ];
@@ -943,7 +944,9 @@ function buildMethodView(
   return {
     doc,
     methodName,
-    returnType: response ? `Task<${response.view.type}>` : "Task",
+    returnType: response
+      ? `${fx("Task", "generic")}<${response.view.type}>`
+      : fx("Task"),
     paramsText: allParams.map((p) => p.decl).join(", "),
     argsText: allParams.map((p) => p.name).join(", "),
     httpMethod: capitalize(op.verb),
@@ -1175,7 +1178,7 @@ function resolveResponse(
   );
   if (new Set(mapped.map(withoutNullable)).size > 1) {
     return {
-      view: { kind: "json", type: optional("JsonElement"), emptyWhen },
+      view: { kind: "json", type: optional(fx("JsonElement")), emptyWhen },
     };
   }
   const anyNullable = mapped.some((csType) => csType.endsWith("?"));
@@ -1209,7 +1212,7 @@ function resolveResponse(
     view,
     generic: {
       constraint: slot.constraint,
-      returnType: `Task<${responseType}>`,
+      returnType: `${fx("Task", "generic")}<${responseType}>`,
       responseType,
     },
   };
@@ -1390,8 +1393,8 @@ function mapBodyParamType(
         usedHelpers,
       );
       return isArray
-        ? `IEnumerable<${inner}>`
-        : `IReadOnlyDictionary<string, ${inner}>`;
+        ? `${fx("IEnumerable", "generic")}<${inner}>`
+        : `${fx("IReadOnlyDictionary", "generic")}<string, ${inner}>`;
     }
   }
   return mapType(type, program, models, enums, usedHelpers);

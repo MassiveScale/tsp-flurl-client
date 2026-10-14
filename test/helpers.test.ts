@@ -202,11 +202,28 @@ describe("helper files", () => {
       ),
       "Expected an output-name-collision diagnostic for ModelMap",
     );
+    // The helper keeps its name, since the generated code refers to it; the model
+    // is the one reported, at its declaration.
     ok(
-      !Object.keys(results).some((k) =>
+      diagnostics.some(
+        (d) =>
+          d.code === "@massivescale/tsp-flurl-client/output-name-collision" &&
+          d.target !== undefined &&
+          typeof d.target === "object" &&
+          "kind" in d.target &&
+          d.target.kind === "Model",
+      ),
+      "Expected the collision to be reported on the model",
+    );
+    ok(
+      Object.keys(results).some((k) =>
         k.endsWith("Infrastructure/ModelMap.g.cs"),
       ),
-      "The helper must not overwrite the user's model",
+      "The helper is written",
+    );
+    ok(
+      !Object.keys(results).some((k) => k.endsWith("Models/ModelMap.g.cs")),
+      "The model is not written over it",
     );
   });
 });

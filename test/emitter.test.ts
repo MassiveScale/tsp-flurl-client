@@ -543,11 +543,13 @@ describe("emitter", () => {
         ),
         "Expected output-name-collision diagnostic",
       );
+      // The helper keeps the name, since the endpoints take IMergePatch<T>; the
+      // user's model is reported and not written over it.
       const helperFile = findHelper(results);
-      ok(helperFile, "Expected the user's own MergePatch.g.cs to survive");
+      ok(helperFile, "Expected MergePatch.g.cs");
       ok(
-        !results[helperFile].includes("public class MergePatch<T>"),
-        "Expected the user's model to win, not be overwritten by the helper",
+        results[helperFile].includes("public class MergePatch<T>"),
+        "Expected the helper, not the user's model",
       );
     });
 

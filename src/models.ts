@@ -3,6 +3,7 @@
 // namespace-based emission filters that decide which models/enums belong to the
 // service being emitted.
 
+import { fx } from "./framework.js";
 import {
   Model,
   ModelProperty,
@@ -645,7 +646,12 @@ export function flattenProperties(model: Model): Map<string, ModelProperty> {
  * @returns `true` for a non-nullable value type.
  */
 export function isCsValueType(csType: string, type: Type): boolean {
-  return type.kind === "Enum" || CS_VALUE_TYPES.has(csType);
+  // Compared with how the type is written, so a model named `Guid` (written
+  // `Guid` while the framework type is written in full) is not taken for one.
+  return (
+    type.kind === "Enum" ||
+    [...CS_VALUE_TYPES].some((name) => fx(name) === csType)
+  );
 }
 
 /** C# types that are value types, which can never be null and so need no initializer. */
@@ -691,8 +697,8 @@ function defaultForProperty(
 ): string | undefined {
   // A nullable type (`T | null`) can be left unset.
   if (csType.endsWith("?")) return undefined;
-  if (csType.startsWith("List<")) return "[]";
-  if (csType.startsWith("Dictionary<")) return "new()";
+  if (csType.startsWith(`${fx("List", "generic")}<`)) return "[]";
+  if (csType.startsWith(`${fx("Dictionary", "generic")}<`)) return "new()";
   if (isCsValueType(csType, prop.type)) return undefined;
   return "default!";
 }

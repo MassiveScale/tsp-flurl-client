@@ -4,6 +4,7 @@
 // and decorators, never on the other codegen modules — so it can be imported
 // freely without cycles.
 
+import { fx } from "./framework.js";
 import {
   getDoc,
   Model,
@@ -126,10 +127,10 @@ export function mapType(
     case "Model": {
       const m = type as Model;
       if (isArrayModelType(m)) {
-        return `List<${mapType(m.indexer!.value, program, models, enums, usedHelpers, substitute)}>`;
+        return `${fx("List", "generic")}<${mapType(m.indexer!.value, program, models, enums, usedHelpers, substitute)}>`;
       }
       if (isRecordModelType(m)) {
-        return `Dictionary<string, ${mapType(m.indexer!.value, program, models, enums, usedHelpers, substitute)}>`;
+        return `${fx("Dictionary", "generic")}<string, ${mapType(m.indexer!.value, program, models, enums, usedHelpers, substitute)}>`;
       }
       if (isErrorModel(program, m)) {
         // Still emit, just note it
@@ -170,7 +171,7 @@ export function mapType(
         );
         // Array<T> represented as a template instance (unresolved element type) → List<T>
         if (m.name === "Array" && args.length === 1) {
-          return `List<${args[0]}>`;
+          return `${fx("List", "generic")}<${args[0]}>`;
         }
         models.set(declarationKey(decl ?? m), decl ?? m);
         const csName = getClientName(program, decl ?? m) ?? m.name;
@@ -463,7 +464,7 @@ function mapUnion(
     for (const variant of present) {
       mapType(variant, program, models, enums, usedHelpers);
     }
-    mapped = "JsonElement";
+    mapped = fx("JsonElement");
   }
   return nullable && !mapped.endsWith("?") ? `${mapped}?` : mapped;
 }
@@ -542,8 +543,8 @@ export function mapPropertyType(
     builtinScalarName(prop.type as Scalar) === "string"
   ) {
     const format = getFormat(program, prop);
-    if (format === "uuid") return "Guid";
-    if (format === "uri" || format === "url") return "Uri";
+    if (format === "uuid") return fx("Guid");
+    if (format === "uri" || format === "url") return fx("Uri");
   }
   return mapType(prop.type, program, models, enums, usedHelpers, substitute);
 }
@@ -559,8 +560,8 @@ export function mapPropertyType(
  */
 function mapScalar(scalar: Scalar, program: Program): string {
   const fmt = getFormat(program, scalar);
-  if (fmt === "uuid") return "Guid";
-  if (fmt === "uri" || fmt === "url") return "Uri";
+  if (fmt === "uuid") return fx("Guid");
+  if (fmt === "uri" || fmt === "url") return fx("Uri");
 
   const builtin = builtinScalarName(scalar);
   switch (builtin) {
@@ -597,15 +598,15 @@ function mapScalar(scalar: Scalar, program: Program): string {
       return "byte[]";
     case "utcDateTime":
     case "offsetDateTime":
-      return "DateTimeOffset";
+      return fx("DateTimeOffset");
     case "plainDate":
-      return "DateOnly";
+      return fx("DateOnly");
     case "plainTime":
-      return "TimeOnly";
+      return fx("TimeOnly");
     case "duration":
-      return "TimeSpan";
+      return fx("TimeSpan");
     case "url":
-      return "Uri";
+      return fx("Uri");
     case "integer":
       return "long";
     case "numeric":
@@ -925,9 +926,9 @@ export function findModelSlot(
       wrappers.reduceRight(
         (inner, wrapper) =>
           wrapper === "array"
-            ? `List<${inner}>`
+            ? `${fx("List", "generic")}<${inner}>`
             : wrapper === "record"
-              ? `Dictionary<string, ${inner}>`
+              ? `${fx("Dictionary", "generic")}<string, ${inner}>`
               : inner.endsWith("?")
                 ? inner
                 : `${inner}?`,

@@ -6,6 +6,8 @@
  * accepts".
  */
 
+import { FRAMEWORK_TYPES } from "../dist/src/framework.js";
+
 /**
  * @typedef {object} Case
  * @property {string} id - Unique, a valid identifier, and the operation's route.
@@ -282,43 +284,37 @@ const AWKWARD_NAMES = [
   "GetType",
 ];
 
-/** Model names that are also names the generated code uses for other types. */
-const SHADOWING_MODEL_NAMES = [
-  "Task",
-  "List",
-  "Dictionary",
-  "String",
-  "Object",
-  "Uri",
-  "Guid",
-  "Exception",
-  "JsonElement",
-  "JsonSerializer",
-  "JsonSerializerOptions",
-  "IMergePatch",
-  "MergePatch",
-  "ClientRuntime",
-  "ModelMap",
-  "HttpClient",
-  "HttpMethod",
-  "FlurlClient",
-  "IFlurlClient",
-  "CancellationToken",
-  "IEnumerable",
-  "IReadOnlyDictionary",
-  "Enum",
-  "Type",
-  "Action",
-  "Func",
-  "Nullable",
-  "DateTimeOffset",
-  "TimeSpan",
-  "Int32",
-  "Encoding",
-  "Stream",
-  "ArgumentNullException",
-  "Matrix",
-  "MatrixClient",
+/**
+ * The framework types the generated code only ever uses with type arguments, and
+ * how many: a generated type hides one only when it takes as many.
+ */
+const GENERIC_ONLY = { List: 1, Dictionary: 2, IReadOnlyDictionary: 2 };
+
+/**
+ * Every name a generated type could take that would hide a framework type the
+ * generated code uses: each registered framework type, each attribute by its short
+ * name, and the root namespaces, as `[name, type parameter count]`. All are
+ * declared at once, so every one is hidden in the same build. The names of the
+ * emitter's own types come last; those are reported rather than generated.
+ */
+const SHADOWING = [
+  ...Object.keys(FRAMEWORK_TYPES).map((name) => [
+    name,
+    GENERIC_ONLY[name] ?? 0,
+  ]),
+  ...Object.keys(FRAMEWORK_TYPES)
+    .filter((name) => name.endsWith("Attribute"))
+    .map((name) => [name.slice(0, -"Attribute".length), 0])
+    .filter(([name]) => !(name in FRAMEWORK_TYPES)),
+  ["System", 0],
+  ["Flurl", 0],
+  ["Microsoft", 0],
+  ["IMergePatch", 0],
+  ["MergePatch", 0],
+  ["ClientRuntime", 0],
+  ["ModelMap", 0],
+  ["Matrix", 0],
+  ["MatrixClient", 0],
 ];
 
 /**
@@ -390,13 +386,21 @@ export function buildCases() {
 
   AWKWARD_NAMES.forEach((name, i) => {
     const quoted = `\`${name}\``;
-    const param = idOf("parameter", String(i));
-    add(param, "Names", [
-      `@route("/${param}/{${quoted}}") @get ${param}(@path ${quoted}: string): void;`,
-      `@route("/${param}/query") @get ${param}Query(@query ${quoted}?: string): void;`,
-      `@route("/${param}/header") @get ${param}Header(@header ${quoted}?: string): void;`,
-      `@route("/${param}/cookie") @get ${param}Cookie(@cookie ${quoted}?: string): void;`,
-    ]);
+    // One case per position, so TypeSpec rejecting one does not drop the others.
+    for (const [position, decorator] of [
+      ["path", "@path"],
+      ["query", "@query"],
+      ["header", "@header"],
+      ["cookie", "@cookie"],
+    ]) {
+      const param = idOf(position, "parameter", String(i));
+      // A route template names the parameter as it is, without TypeSpec's backticks.
+      const route = position === "path" ? `/${param}/{${name}}` : `/${param}`;
+      const optional = position === "path" ? "" : "?";
+      add(param, "Names", [
+        `@route("${route}") @get ${param}(${decorator} ${quoted}${optional}: string): void;`,
+      ]);
+    }
     const bodyParam = idOf("bodyParameter", String(i));
     add(bodyParam, "Names", [
       `@route("/${bodyParam}") @post ${bodyParam}(@query ${quoted}: string, @body body: Item): void;`,
@@ -430,17 +434,24 @@ export function buildCases() {
     );
   });
 
-  for (const name of SHADOWING_MODEL_NAMES) {
+  for (const [name, arity] of SHADOWING) {
     const id = idOf("modelNamed", name);
+    const parameters = Array.from({ length: arity }, (_, i) => `T${i}`);
+    const quoted = `\`${name}\``;
+    const declared = arity ? `${quoted}<${parameters.join(", ")}>` : quoted;
+    const used = arity
+      ? `${quoted}<${parameters.map(() => "Item").join(", ")}>`
+      : quoted;
+    const fields = parameters.map((p, i) => ` p${i}: ${p};`).join("");
     add(
       id,
       "Shadowing",
       [
-        `@route("/${id}") @get ${id}(): \`${name}\`;`,
-        `@route("/${id}/many") @get ${id}Many(): \`${name}\`[];`,
-        `@route("/${id}/send") @post ${id}Send(@body body: \`${name}\`): \`${name}\`;`,
+        `@route("/${id}") @get ${id}(): ${used};`,
+        `@route("/${id}/many") @get ${id}Many(): ${used}[];`,
+        `@route("/${id}/send") @post ${id}Send(@body body: ${used}): ${used};`,
       ],
-      [`model \`${name}\` { v: string; items: Item[]; }`],
+      [`model ${declared} { v: string; items: Item[];${fields} }`],
     );
   }
 

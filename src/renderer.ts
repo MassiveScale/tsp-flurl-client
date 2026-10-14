@@ -14,6 +14,7 @@ import { fileURLToPath } from "node:url";
 import Handlebars from "handlebars";
 import { encodeExpression, type WireEncoding } from "./encoding.js";
 import { csDeclarationName, escapeCsString } from "./utils.js";
+import { fx, qualifyTemplate, type FrameworkUse } from "./framework.js";
 
 /** Absolute path to the bundled default templates directory. */
 const TEMPLATES_DIR = resolve(
@@ -428,6 +429,10 @@ function createHandlebarsEnv(): typeof Handlebars {
 
   env.registerHelper("eq", (a: unknown, b: unknown) => a === b);
 
+  env.registerHelper("fx", (name: unknown, use: unknown) =>
+    fx(String(name), typeof use === "string" ? (use as FrameworkUse) : "type"),
+  );
+
   env.registerHelper("declaredName", (name: unknown) =>
     typeof name === "string" ? csDeclarationName(name) : name,
   );
@@ -467,7 +472,12 @@ function loadTemplate(
   // autocrlf on Windows, or a user's own override) must not leak into the generated
   // C#, which is always written with LF.
   const source = readFileSync(path, "utf-8").replace(/\r\n/g, "\n");
-  return compileTemplate(env, source);
+  // Every framework type the C# names goes through the fx helper, so a generated
+  // type of the same name cannot hide it. The project file is XML, not C#.
+  return compileTemplate(
+    env,
+    name === "csproj" ? source : qualifyTemplate(source),
+  );
 }
 
 /**
@@ -579,7 +589,7 @@ function renderRequestBody(m: MethodView, responseType: string): string[] {
     `${pad}ClientRuntime.AddQueryParameters(flurlRequest, additionalQueryParameters);`,
   );
 
-  const verb = `HttpMethod.${m.httpMethod}`;
+  const verb = `${fx("HttpMethod")}.${m.httpMethod}`;
   let send: string;
   if (!m.body) {
     send = `await flurlRequest.SendAsync(${verb}, cancellationToken: cancellationToken)`;

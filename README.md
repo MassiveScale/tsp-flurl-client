@@ -105,6 +105,13 @@ Rename one with `@clientName` to resolve any of them.
 
 Enum members have no `@clientName`, and their wire value travels separately, so an odd member name is sanitized instead (`my-member` becomes `My_member`, `2fast` becomes `_2fast`). Two members that sanitize to the same name are reported.
 
+Some names are fine in C# but need care, and the emitter takes it, so none of these needs `@clientName`:
+
+- A model or enum may share its name with a .NET type the generated code uses (`Task`, `Type`, `Uri`, `CancellationToken`, `JsonElement`, ...). The generated code then writes that .NET type in full (`global::System.Threading.CancellationToken`), in that client only; everywhere else it keeps the short name. Only the emitter's own types (`ModelMap`, `ClientRuntime`, `MergePatch`, `IMergePatch`) and the aggregate client keep their names to themselves, and a model that takes one is reported.
+- A model or enum named with only lower-case letters (`thing`) is declared verbatim (`record @thing`), since C# warns about the plain name (`CS8981`).
+- A template parameter that is a C# keyword or all lower-case is written verbatim (`@class`, `@value`), one that is not an identifier has its other characters replaced (`my-T` is `my_T`), and one that would share a name with its record, one of its properties, or a member every record has is prefixed with `T` (`TEquals`). A caller never writes these names, only the type arguments.
+- A parameter named after a keyword, or `await` (which every generated method reserves, being `async`), is written verbatim (`@class`, `@await`).
+
 #### `@access(Access.public | Access.internal)`
 
 Controls the C# access modifier on the emitted type declaration. Defaults to `public`.

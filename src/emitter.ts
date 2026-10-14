@@ -10,6 +10,8 @@
 // Everything else here is coordination: renderer setup, file IO, dotnet-format,
 // output-name reservation, and version selection/filtering.
 
+import type { TemplateParameterDeclarationNode } from "@typespec/compiler/ast";
+import { setGeneratedTypeNames } from "./framework.js";
 import {
   CompilerHost,
   EmitContext,
@@ -74,8 +76,10 @@ import {
   isInVersion,
   declarationKey,
   MERGE_PATCH_HELPER_NAME,
+  MERGE_PATCH_INTERFACE_NAME,
   type UsedHelpers,
   setProjection,
+  csTemplateParameterName,
 } from "./utils.js";
 
 /** For each helper, the C# namespaces that need a copy of it. */
@@ -123,6 +127,9 @@ export async function $onEmit(
   // not the service, so two services can aim at the same path. Their reservations
   // are shared so the clash is reported instead of the later write winning.
   const endpointOutputOwners = new Map<string, OutputNameOwner>();
+  // The names of the types each C# namespace's helpers can see, so a framework
+  // type one of them hides is written in full there too.
+  const helperTypeNames = new Map<string, Set<string>>();
 
   for (const service of services) {
     if (!isService(program, service.namespace)) continue;
@@ -136,6 +143,7 @@ export async function $onEmit(
       renderer,
       helperNamespaces,
       endpointOutputOwners,
+      helperTypeNames,
     );
   }
 
@@ -145,6 +153,7 @@ export async function $onEmit(
     helperNamespaces,
     renderer,
     new Set(options["additional-usings"] ?? []),
+    helperTypeNames,
   );
 
   if (options["dotnet-format"] !== false) {
@@ -166,6 +175,7 @@ export async function $onEmit(
  * @param helperNamespaces - For each helper, the C# namespaces that reference it.
  * @param renderer - Handlebars renderer used to produce the file contents.
  * @param additionalUsings - Extra `using` directives from the `additional-usings` option.
+ * @param typeNames - For each C# namespace, the generated types its helpers can see.
  */
 async function emitHelpers(
   program: Program,
@@ -173,10 +183,12 @@ async function emitHelpers(
   helperNamespaces: HelperNamespaces,
   renderer: Renderer,
   additionalUsings: Set<string>,
+  typeNames: Map<string, Set<string>>,
 ): Promise<void> {
   for (const name of ALL_HELPERS) {
     const sorted = [...(helperNamespaces.get(name) ?? [])].sort();
     for (const [index, ns] of sorted.entries()) {
+      setGeneratedTypeNames(typeNames.get(ns) ?? []);
       const fileName = index === 0 ? `${name}.g.cs` : `${name}.${ns}.g.cs`;
       await writeFile(
         program,
@@ -544,6 +556,8 @@ function validateNames(
  * @param endpointOutputOwners - Shared record of which declaration claimed each
  *   endpoint and aggregate-client file, keyed by path relative to the output
  *   directory, so clashes between services are reported.
+ * @param helperTypeNames - Shared record of the generated type names each helper
+ *   namespace can see; this service adds its own under its root namespace.
  */
 async function emitService(
   program: Program,
@@ -554,6 +568,7 @@ async function emitService(
   renderer: Renderer,
   helperNamespaces: HelperNamespaces,
   endpointOutputOwners: Map<string, OutputNameOwner>,
+  helperTypeNames: Map<string, Set<string>>,
 ): Promise<void> {
   const nsFullName = getNamespaceFullName(serviceNs);
   const projectName = options["project-name"] ?? `${nsFullName}Client`;
@@ -591,6 +606,7 @@ async function emitService(
   // Use version subfolders only when explicitly emitting all versions.
   // An unversioned API has no versions to put in folders, so it is emitted as the
   // normal single unit even when `all-versions` is set.
+  const serviceTypeNames = new Set<string>();
   const useVersionedFolders =
     options["all-versions"] === true && versionsToEmit.length > 0;
 
@@ -630,6 +646,19 @@ async function emitService(
       original: serviceNs,
       projected: projected.namespace,
     });
+    // A generated type of the same name as a framework type the generated code uses
+    // (a model called `Type` or `CancellationToken`) would hide it, so those
+    // framework types are written in full (see `fx`). The names of every version
+    // emitted so far are kept, since the root namespace's types are visible to all.
+    for (const name of generatedTypeNames(
+      program,
+      projected.namespace,
+      [...byContainer.values()].map((c) => c.name),
+      clientName,
+    )) {
+      serviceTypeNames.add(name);
+    }
+    setGeneratedTypeNames(serviceTypeNames);
     const models = new Map<string, Model>();
     const enums = new Map<string, Enum>();
     const modelOutputOwners = new Map<string, OutputNameOwner>();
@@ -756,6 +785,39 @@ async function emitService(
         resolvePath(dir, "Endpoints", `${endpointClientName}.g.cs`),
         sources.clientSource,
       );
+    }
+
+    // The runtime helpers are needed by every service. MergePatch is only needed
+    // when type mapping actually rewrote a merge-patch body. Each is reserved like
+    // a model, and before any model is, so a model of the same name is the one
+    // reported: the generated code refers to the helper by that name. The files
+    // themselves are written by the caller once every service has had its turn.
+    // They live in the root namespace, which every version's namespace is nested
+    // in, so one copy serves all versions.
+    const neededHelpers: HelperName[] = [...ALWAYS_EMITTED_HELPERS];
+    if (usedHelpers.has(MERGE_PATCH_HELPER_NAME)) {
+      neededHelpers.push(MERGE_PATCH_HELPER_NAME);
+      // The helper's file also declares the interface endpoints take.
+      tryReserveModelOutputName(
+        program,
+        modelOutputOwners,
+        MERGE_PATCH_INTERFACE_NAME,
+        `the ${MERGE_PATCH_INTERFACE_NAME} interface of the ${MERGE_PATCH_HELPER_NAME} helper`,
+        NoTarget,
+      );
+    }
+    for (const helper of neededHelpers) {
+      if (
+        tryReserveModelOutputName(
+          program,
+          modelOutputOwners,
+          helper,
+          `the ${helper} helper`,
+          NoTarget,
+        )
+      ) {
+        helperNamespaces.get(helper)!.add(baseNs);
+      }
     }
 
     // Request records share the models folder, so a model with the same name must
@@ -937,31 +999,9 @@ async function emitService(
         buildEnum(e, modelNs, program, renderer, version),
       );
     }
-
-    // The runtime helpers are needed by every service. MergePatch is only needed
-    // when type mapping actually rewrote a merge-patch body. Each is reserved like
-    // a model so a user type of the same name reports a collision instead of being
-    // silently overwritten, and the files themselves are written by the caller
-    // once every service has had its turn. They live in the root namespace, which
-    // every version's namespace is nested in, so one copy serves all versions.
-    const neededHelpers: HelperName[] = [...ALWAYS_EMITTED_HELPERS];
-    if (usedHelpers.has(MERGE_PATCH_HELPER_NAME)) {
-      neededHelpers.push(MERGE_PATCH_HELPER_NAME);
-    }
-    for (const helper of neededHelpers) {
-      if (
-        tryReserveModelOutputName(
-          program,
-          modelOutputOwners,
-          helper,
-          `the ${helper} helper`,
-          NoTarget,
-        )
-      ) {
-        helperNamespaces.get(helper)!.add(baseNs);
-      }
-    }
   };
+
+  helperTypeNames.set(baseNs, serviceTypeNames);
 
   // Two version values can sanitize to the same namespace segment (`1.0` and
   // `1_0`), which would put both versions' types in one namespace.
@@ -1245,4 +1285,48 @@ function resolveTargetVersions(
 
   // Default: latest declared version (last in declaration order).
   return [versions[versions.length - 1]];
+}
+
+/**
+ * The names of the C# types a service's emit unit can declare: every model and
+ * enum in its namespace and the namespaces nested in it (by their client names),
+ * the type parameters of its generic models, its endpoint interfaces and clients,
+ * and its aggregate client. It may name more than are written, which only means a
+ * framework type is written in full where it did not need to be.
+ *
+ * @param program - The compiler program, for client names.
+ * @param namespace - The (projected) service namespace.
+ * @param containers - The names of its endpoint containers.
+ * @param clientName - The aggregate client's name.
+ * @returns The type names.
+ */
+function generatedTypeNames(
+  program: Program,
+  namespace: Namespace,
+  containers: string[],
+  clientName: string,
+): Set<string> {
+  const names = new Set<string>([clientName, `${clientName}Extensions`]);
+  for (const container of containers) {
+    names.add(`I${container}`);
+    names.add(`${container}Endpoint`);
+  }
+  const visit = (ns: Namespace): void => {
+    for (const model of ns.models.values()) {
+      names.add(getClientName(program, model) ?? model.name);
+      for (const parameter of (
+        model.node as {
+          templateParameters?: TemplateParameterDeclarationNode[];
+        }
+      ).templateParameters ?? []) {
+        names.add(csTemplateParameterName(parameter).replace(/^@/, ""));
+      }
+    }
+    for (const declaration of ns.enums.values()) {
+      names.add(getClientName(program, declaration) ?? declaration.name);
+    }
+    for (const nested of ns.namespaces.values()) visit(nested);
+  };
+  visit(namespace);
+  return names;
 }

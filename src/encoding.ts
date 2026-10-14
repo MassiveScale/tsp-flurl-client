@@ -246,7 +246,8 @@ export function encodeExpression(
 export function converterType(wire: WireEncoding, csType: string): string {
   if (!isDelimited(wire)) return `ClientRuntime.${wire}Converter`;
   const list = csType.endsWith("?") ? csType.slice(0, -1) : csType;
-  const item = list.slice("List<".length, -1);
+  // The list may be written in full (`global::...List<string>`) when a model hides it.
+  const item = list.slice(list.indexOf("<") + 1, -1);
   return `ClientRuntime.${wire}Converter<${item}>`;
 }
 
