@@ -2,7 +2,13 @@ import { ok, strictEqual } from "node:assert";
 import { describe, it } from "node:test";
 import { getAccess, getClientName } from "../src/decorators.js";
 import { tryParseSemver } from "../src/project.js";
-import { BaseTester, emit, emitWithDiagnostics, fileContent } from "./host.js";
+import {
+  BaseTester,
+  emit,
+  emitWithDiagnostics,
+  fileContent,
+  messagesFor,
+} from "./host.js";
 
 const PREAMBLE = `
   import "@typespec/http";
@@ -11,12 +17,6 @@ const PREAMBLE = `
   @service(#{ title: "Test API" })
   namespace TestApi;
 `;
-
-const messagesFor = (
-  diagnostics: readonly { code: string; message: string }[],
-  suffix: string,
-): string[] =>
-  diagnostics.filter((d) => d.code.endsWith(suffix)).map((d) => d.message);
 
 describe("request records with operation-specific visibility", () => {
   const widget = `

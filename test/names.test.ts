@@ -15,6 +15,7 @@ const PREAMBLE = `
   namespace TestApi;
 `;
 
+/** The messages of the `invalid-name` diagnostics. */
 const invalidNames = (diagnostics: readonly Diagnostic[]): string[] =>
   diagnostics
     .filter((d) => d.code === "@massivescale/tsp-flurl-client/invalid-name")
@@ -305,9 +306,13 @@ describe("version folder names", () => {
 describe("runDotnetFormat", () => {
   const run = (deps: Partial<FormatDeps>) => {
     const reported: string[] = [];
+    const codes: string[] = [];
     const calls: { command: string; args: string[] }[] = [];
     const program = {
-      reportDiagnostic: (d: { message: string }) => reported.push(d.message),
+      reportDiagnostic: (d: { code: string; message: string }) => {
+        reported.push(d.message);
+        codes.push(d.code);
+      },
     } as unknown as Program;
     runDotnetFormat(program, "/out", {
       exists: () => true,
@@ -318,7 +323,7 @@ describe("runDotnetFormat", () => {
       },
       ...deps,
     });
-    return { reported, calls };
+    return { reported, codes, calls };
   };
 
   it("does nothing when the output directory is not on the real filesystem", () => {
@@ -354,7 +359,7 @@ describe("runDotnetFormat", () => {
   });
 
   it("reports the start error when dotnet cannot be run", () => {
-    const { reported } = run({
+    const { reported, codes } = run({
       spawn: () => ({
         error: new Error("spawn dotnet ENOENT"),
         status: null,
@@ -364,6 +369,10 @@ describe("runDotnetFormat", () => {
 
     strictEqual(reported.length, 1);
     ok(reported[0].includes("spawn dotnet ENOENT"));
+    strictEqual(
+      codes[0],
+      "@massivescale/tsp-flurl-client/dotnet-format-failed",
+    );
   });
 
   it("reports stderr when dotnet exits with a failure", () => {

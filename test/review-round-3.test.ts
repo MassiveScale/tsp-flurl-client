@@ -5,7 +5,14 @@ import {
   type LinterRuleTester,
 } from "@typespec/compiler/testing";
 import { internalAccessLeakRule } from "../src/rules/internal-access-leak.js";
-import { BaseTester, emit, emitWithDiagnostics, fileContent } from "./host.js";
+import {
+  BaseTester,
+  emit,
+  emitWithDiagnostics,
+  fileContent,
+  messagesFor as codes,
+  has,
+} from "./host.js";
 
 const PREAMBLE = `
   import "@typespec/http";
@@ -16,15 +23,6 @@ const PREAMBLE = `
   @service(#{ title: "Test API" })
   namespace TestApi;
 `;
-
-const codes = (
-  diagnostics: readonly { code: string; message: string }[],
-  suffix: string,
-): string[] =>
-  diagnostics.filter((d) => d.code.endsWith(suffix)).map((d) => d.message);
-
-const has = (results: Record<string, string>, suffix: string): boolean =>
-  Object.keys(results).some((k) => k.endsWith(suffix));
 
 describe("declarations with the same simple name in different namespaces", () => {
   const interfaces = (second: string) => `

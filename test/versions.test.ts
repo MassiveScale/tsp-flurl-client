@@ -1,7 +1,8 @@
 import { ok, strictEqual } from "node:assert";
 import { describe, it } from "node:test";
-import { emit, emitWithDiagnostics, fileContent } from "./host.js";
+import { emit, emitWithDiagnostics, fileContent, has } from "./host.js";
 
+/** A versioned service wrapped around the given declarations. */
 const VERSIONED = (body: string) => `
   import "@typespec/http";
   import "@typespec/versioning";
@@ -16,9 +17,6 @@ const VERSIONED = (body: string) => `
 
   ${body}
 `;
-
-const has = (results: Record<string, string>, suffix: string): boolean =>
-  Object.keys(results).some((k) => k.endsWith(suffix));
 
 describe("per-version output when all versions are emitted", () => {
   const all = { "all-versions": true };

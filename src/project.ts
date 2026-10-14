@@ -69,6 +69,10 @@ const SEMVER_PRERELEASE_ID = `(?:${SEMVER_NUMBER}|\\d*[A-Za-z-][0-9A-Za-z-]*)`;
 /** A SemVer 2 build-metadata identifier: any non-empty run of alphanumerics and hyphens. */
 const SEMVER_BUILD_ID = "[0-9A-Za-z-]+";
 
+/**
+ * A SemVer 2 version: `major.minor[.patch]`, then an optional pre-release and
+ * build metadata, each captured so a version suffix can be checked and kept.
+ */
 const SEMVER_PATTERN = new RegExp(
   `^(${SEMVER_NUMBER})\\.(${SEMVER_NUMBER})(?:\\.(${SEMVER_NUMBER}))?` +
     `((?:-${SEMVER_PRERELEASE_ID}(?:\\.${SEMVER_PRERELEASE_ID})*)?` +

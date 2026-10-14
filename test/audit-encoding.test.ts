@@ -186,10 +186,12 @@ interface Position {
 /** A header (or cookie) value cannot contain a line break. */
 const noLineBreaks = (e: Encoding): boolean => e.wire === "NewlineDelimited";
 
+/** The start of the `[JsonConverter]` attribute a property with the encoding carries. */
 const converter = (e: Encoding): string =>
   e.kind === "delimited"
     ? `ClientRuntime.${e.wire}Converter<`
     : `ClientRuntime.${e.wire}Converter))]`;
+/** The runtime format a parameter or text body with the encoding is written in. */
 const encoded = (e: Encoding): string => `ClientRuntime.WireEncoding.${e.wire}`;
 
 const POSITIONS: Position[] = [

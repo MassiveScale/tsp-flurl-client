@@ -1,6 +1,6 @@
 import { ok, strictEqual } from "node:assert";
 import { describe, it } from "node:test";
-import { emit, emitWithDiagnostics, fileContent } from "./host.js";
+import { emit, emitWithDiagnostics, fileContent, messagesFor } from "./host.js";
 
 const PREAMBLE = `
   import "@typespec/http";
@@ -9,12 +9,6 @@ const PREAMBLE = `
   @service(#{ title: "Test API" })
   namespace TestApi;
 `;
-
-const messagesFor = (
-  diagnostics: readonly { code: string; message: string }[],
-  suffix: string,
-): string[] =>
-  diagnostics.filter((d) => d.code.endsWith(suffix)).map((d) => d.message);
 
 describe("success responses with different bodies", () => {
   it("returns a JsonElement, with no generic overload, when each success status has its own JSON body", async () => {

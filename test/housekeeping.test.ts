@@ -24,6 +24,10 @@ import { createRenderer } from "../src/renderer.js";
 /** A directory tree in memory: path to its entries, or `null` for a file. */
 type Tree = Record<string, string[] | null>;
 
+/**
+ * An in-memory file host over a tree, which records what is removed and can fail
+ * to read or stat chosen paths.
+ */
 const fakeHost = (
   tree: Tree,
   options: { unreadable?: string[]; unstatable?: string[] } = {},

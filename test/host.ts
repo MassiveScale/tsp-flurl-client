@@ -18,6 +18,12 @@ export const BaseTester = createTester(
   },
 );
 
+/**
+ * The compiler tester, set to run this emitter with the given options.
+ *
+ * @param options - Emitter options, as under the emitter's key in `tspconfig.yaml`.
+ * @returns The tester.
+ */
 function testerFor(options?: EmitterOptions) {
   return BaseTester.emit(
     "@massivescale/tsp-flurl-client",
@@ -77,4 +83,32 @@ export function fileContent(
     );
   }
   return outputs[path];
+}
+
+/**
+ * The messages of the diagnostics whose code ends with a suffix, such as
+ * `name-collision`, so a test can ignore the library prefix.
+ *
+ * @param diagnostics - The diagnostics a compile reported.
+ * @param suffix - The end of the code to keep.
+ * @returns The messages, in the order reported.
+ */
+export function messagesFor(
+  diagnostics: readonly { code: string; message: string }[],
+  suffix: string,
+): string[] {
+  return diagnostics
+    .filter((d) => d.code.endsWith(suffix))
+    .map((d) => d.message);
+}
+
+/**
+ * Whether the emitter wrote a file whose path ends with a suffix.
+ *
+ * @param outputs - The emitter outputs keyed by path.
+ * @param suffix - File name (or path tail), e.g. `/Widget.g.cs`.
+ * @returns `true` when such a file was written.
+ */
+export function has(outputs: Record<string, string>, suffix: string): boolean {
+  return Object.keys(outputs).some((k) => k.endsWith(suffix));
 }

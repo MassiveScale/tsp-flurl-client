@@ -1,7 +1,7 @@
 import { deepStrictEqual, ok, strictEqual } from "node:assert";
 import { describe, it } from "node:test";
 import { sortUsings } from "../src/utils.js";
-import { emit, emitWithDiagnostics, fileContent } from "./host.js";
+import { emit, emitWithDiagnostics, fileContent, messagesFor } from "./host.js";
 
 const PREAMBLE = `
   import "@typespec/http";
@@ -10,12 +10,6 @@ const PREAMBLE = `
   @service(#{ title: "Test API" })
   namespace TestApi;
 `;
-
-const messagesFor = (
-  diagnostics: readonly { code: string; message: string }[],
-  suffix: string,
-): string[] =>
-  diagnostics.filter((d) => d.code.endsWith(suffix)).map((d) => d.message);
 
 describe("members a derived record inherits", () => {
   const VEHICLES = `

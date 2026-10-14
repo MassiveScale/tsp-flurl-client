@@ -122,7 +122,9 @@ export function checkName(
  * both, so they are reported here instead of being emitted.
  */
 export class MemberScope {
+  /** The names claimed so far, each with what claimed it. */
   private readonly owners = new Map<string, string>();
+  /** The names the generated code already uses, each with what uses it. */
   private readonly reserved: ReadonlyMap<string, string>;
 
   /**

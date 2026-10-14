@@ -1,6 +1,11 @@
 import { ok, strictEqual } from "node:assert";
 import { describe, it } from "node:test";
-import { emit, emitWithDiagnostics, fileContent } from "./host.js";
+import {
+  emit,
+  emitWithDiagnostics,
+  fileContent,
+  messagesFor as codes,
+} from "./host.js";
 
 const PREAMBLE = `
   import "@typespec/http";
@@ -9,12 +14,6 @@ const PREAMBLE = `
   @service(#{ title: "Test API" })
   namespace TestApi;
 `;
-
-const codes = (
-  diagnostics: readonly { code: string; message: string }[],
-  suffix: string,
-): string[] =>
-  diagnostics.filter((d) => d.code.endsWith(suffix)).map((d) => d.message);
 
 describe("cookie parameters", () => {
   it("sends a cookie parameter as a cookie", async () => {

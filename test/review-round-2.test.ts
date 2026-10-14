@@ -27,6 +27,7 @@ const SIMPLE = `${PREAMBLE}
   @route("/items") interface Items { @get list(): string[]; }
 `;
 
+/** A versioned service (v1 and v2) wrapped around the given declarations. */
 const VERSIONED = (body: string) => `
   import "@typespec/http";
   import "@typespec/versioning";

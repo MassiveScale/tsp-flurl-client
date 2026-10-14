@@ -44,6 +44,7 @@ const INTERNAL =
 /** A public operation or model, and whether a public C# signature then names an internal type. */
 type Case = [name: string, spec: string, exposed: boolean];
 
+/** A public interface holding one operation, so only the operation can leak. */
 const op = (signature: string): string =>
   `@route("/ops") interface Ops { ${signature} }`;
 

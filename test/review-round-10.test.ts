@@ -1,6 +1,6 @@
 import { ok } from "node:assert";
 import { describe, it } from "node:test";
-import { emit, fileContent } from "./host.js";
+import { emit, fileContent, has } from "./host.js";
 
 const PREAMBLE = `
   import "@typespec/http";
@@ -9,9 +9,6 @@ const PREAMBLE = `
   @service(#{ title: "Test API" })
   namespace TestApi;
 `;
-
-const has = (results: Record<string, string>, suffix: string): boolean =>
-  Object.keys(results).some((k) => k.endsWith(suffix));
 
 describe("bulk request bodies", () => {
   const WIDGET = `${PREAMBLE}

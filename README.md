@@ -476,7 +476,7 @@ A request or success response that cannot be sent or read correctly is reported 
 - Success responses that carry the same value in different `@encode` formats (a 200 duration in seconds and a 201 in milliseconds), since one method reads one way.
 - Two operations that send the same model with different visible properties, when every request record name the emitter tries is already a different record. Reported as `name-collision`; rename one operation with `@clientName`.
 - A `@discriminator` model that is also a variant of another discriminated model (a nested discriminator). `System.Text.Json` can resolve only one discriminator per hierarchy: reading through the base type would return the wrong subtype, and writing a subtype would fail or omit a discriminator. Reported as `unsupported-nested-discriminator`. A grouping model with no discriminator of its own (`model Dog extends Animal {}`) is fine.
-- `@encode` values the client cannot honour (see the encodings table; reported as an error).
+- `@encode` values the client cannot honour (see the encodings table). Reported as `unsupported-encoding`, and an operation that sends or reads one is left out.
 - Streaming responses such as server-sent events are read in full before the call returns.
 
 ### Merge-patch request bodies
