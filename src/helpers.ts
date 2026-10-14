@@ -35,6 +35,7 @@ const HELPER_USINGS: Record<HelperName, string[]> = {
     "System",
     "System.Collections.Generic",
     "System.Diagnostics.CodeAnalysis",
+    "System.Linq",
     "System.Linq.Expressions",
     "System.Reflection",
     "System.Text.Json",

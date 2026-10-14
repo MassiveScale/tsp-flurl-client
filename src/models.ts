@@ -9,7 +9,6 @@ import {
   Enum,
   Type,
   Program,
-  getDoc,
   getNamespaceFullName,
   getDiscriminator,
   getDiscriminatedUnionFromInheritance,
@@ -18,6 +17,7 @@ import {
   type Discriminator,
 } from "@typespec/compiler";
 import { isVisible, type Visibility } from "@typespec/http";
+import { getMergePatchSource } from "@typespec/http/experimental/merge-patch";
 import type { Version } from "@typespec/versioning";
 import {
   Renderer,
@@ -34,6 +34,7 @@ import { toCsIdentifier } from "./identifiers.js";
 import { checkEncoding, converterType } from "./encoding.js";
 import { createDiagnostic, reportOnce } from "./lib.js";
 import {
+  docText,
   mapPropertyType,
   escapeXml,
   sortUsings,
@@ -101,7 +102,7 @@ function buildPropertyViews(
     ),
   ]);
   for (const [, prop] of props) {
-    const propDoc = getDoc(program, prop);
+    const propDoc = docText(program, prop);
     const csType = mapPropertyType(prop, program, models, enums, usedHelpers);
     const nullable = prop.optional && !csType.endsWith("?") ? "?" : "";
     const declaredName = getClientName(program, prop) ?? prop.name;
@@ -117,7 +118,7 @@ function buildPropertyViews(
       ? undefined
       : defaultForProperty(prop, csType);
     result.push({
-      doc: propDoc ? escapeXml(propDoc) : undefined,
+      doc: propDoc,
       docName: escapeXml(prop.name),
       type: `${csType}${nullable}`,
       name: propName,
@@ -276,7 +277,7 @@ export function buildRecord(
   const typeParams = collectTypeParams(model);
   const genericSuffix =
     typeParams.length > 0 ? `<${typeParams.join(", ")}>` : "";
-  const doc = getDoc(program, model);
+  const doc = docText(program, model);
   const nameOf = (m: Model): string =>
     request ? request.nameOf(m) : (getClientName(program, m) ?? m.name!);
   const recordName = nameOf(model);
@@ -384,7 +385,7 @@ export function buildRecord(
   }
 
   const recordView: RecordView = {
-    doc: doc ? escapeXml(doc) : undefined,
+    doc,
     recordName,
     genericSuffix,
     access: getAccess(program, model) ?? "public",
@@ -454,7 +455,7 @@ export function buildFilteredRecord(
   access: string = "public",
 ): string {
   const recordView: RecordView = {
-    doc: doc ? escapeXml(doc) : undefined,
+    doc,
     recordName: name,
     genericSuffix: "",
     access,
@@ -609,21 +610,21 @@ export function hierarchyOf(
 }
 
 /**
- * Finds a `@discriminator` model nested under another discriminated model anywhere
- * a payload can reach: through properties, list and dictionary items, union
- * variants, template arguments, and the subtypes of a discriminated model, which a
- * response can contain without naming them. System.Text.Json resolves only one
- * discriminator per hierarchy, so such a payload would be read as the wrong subtype.
+ * Every model a payload can reach, which is everything its JSON can contain:
+ * through properties, base models (whose properties are inherited), list and
+ * dictionary items, union variants, template arguments, the source model of a
+ * synthesized merge patch, and the subtypes of a discriminated model, which a
+ * response can contain without naming them. The operation checks use this one
+ * walk, so they agree on what a payload contains.
  *
  * @param program - The compiler program.
  * @param type - The payload type.
- * @returns The nested model and the discriminated model it is nested under, or
- *   `undefined` when there is none.
+ * @returns The reachable models, each once.
  */
-export function findNestedDiscriminator(
+export function* reachableModels(
   program: Program,
   type: Type,
-): { model: Model; parent: Model } | undefined {
+): Generator<Model> {
   const seen = new Set<Type>();
   const queue: Type[] = [type];
   while (queue.length > 0) {
@@ -636,21 +637,44 @@ export function findNestedDiscriminator(
     }
     if (current.kind !== "Model") continue;
 
-    const parent = current.baseModel
-      ? findDiscriminatedRoot(program, current.baseModel)
-      : undefined;
-    if (parent && getDiscriminator(program, current)) {
-      return { model: current, parent: parent.root };
-    }
+    yield current;
     if (current.indexer) queue.push(current.indexer.value);
+    if (current.baseModel) queue.push(current.baseModel);
     for (const prop of current.properties.values()) queue.push(prop.type);
     for (const arg of current.templateMapper?.args ?? []) {
       if ((arg as { entityKind?: string }).entityKind === "Type") {
         queue.push(arg as Type);
       }
     }
+    const mergePatchSource = getMergePatchSource(program, current);
+    if (mergePatchSource) queue.push(mergePatchSource);
     if (findDiscriminatedRoot(program, current)) {
       queue.push(...current.derivedModels);
+    }
+  }
+}
+
+/**
+ * Finds a `@discriminator` model nested under another discriminated model anywhere
+ * a payload can reach (see {@link reachableModels}). System.Text.Json resolves only
+ * one discriminator per hierarchy, so such a payload would be read as the wrong
+ * subtype.
+ *
+ * @param program - The compiler program.
+ * @param type - The payload type.
+ * @returns The nested model and the discriminated model it is nested under, or
+ *   `undefined` when there is none.
+ */
+export function findNestedDiscriminator(
+  program: Program,
+  type: Type,
+): { model: Model; parent: Model } | undefined {
+  for (const model of reachableModels(program, type)) {
+    const parent = model.baseModel
+      ? findDiscriminatedRoot(program, model.baseModel)
+      : undefined;
+    if (parent && getDiscriminator(program, model)) {
+      return { model, parent: parent.root };
     }
   }
   return undefined;
@@ -823,14 +847,14 @@ export function buildEnum(
   renderer: Renderer,
   version?: Version,
 ): string {
-  const doc = getDoc(program, e);
+  const doc = docText(program, e);
   const enumName = getClientName(program, e) ?? e.name;
 
   const members: EnumMemberView[] = [];
   const memberNames = new Set<string>();
   for (const [, member] of e.members) {
     if (!isInVersion(program, member, version)) continue;
-    const memberDoc = getDoc(program, member);
+    const memberDoc = docText(program, member);
     // An enum member has no @clientName, and its wire value travels separately in
     // [EnumMember], so an odd name is sanitized rather than rejected.
     const csMemberName = toCsIdentifier(toCsPropName(member.name));
@@ -853,7 +877,7 @@ export function buildEnum(
           ? String(member.value)
           : member.name;
     members.push({
-      doc: memberDoc ? escapeXml(memberDoc) : undefined,
+      doc: memberDoc,
       docValue: escapeXml(text),
       name: csMemberName,
       memberValue: escapeCsString(text),
@@ -866,7 +890,7 @@ export function buildEnum(
   const hasStringMembers = members.some((m) => m.numberLiteral === undefined);
 
   const enumView: EnumView = {
-    doc: doc ? escapeXml(doc) : undefined,
+    doc,
     enumName,
     access: getAccess(program, e) ?? "public",
     members,

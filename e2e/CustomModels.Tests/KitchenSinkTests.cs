@@ -557,6 +557,35 @@ public sealed class KitchenSinkTests
         handler.Last.Body.Should().Be("1704164645");
     }
 
+    [TestMethod]
+    public async Task A_merge_patch_writes_each_value_in_its_propertys_format()
+    {
+        var (client, handler) = Create();
+
+        await client.Misc.PatchTimedAsync(new MergePatch<Timed>()
+            .Set(t => t.At, At)
+            .Set(t => t.Tags, ["a", "b"])
+            .Set("wait", TimeSpan.FromSeconds(90))
+            .Set("extra", 5));
+
+        using var sent = JsonDocument.Parse(handler.Last.Body!);
+        sent.RootElement.GetProperty("at").GetInt64().Should().Be(1704164645, "the expression overload uses the property's converter");
+        sent.RootElement.GetProperty("tags").GetString().Should().Be("a|b");
+        sent.RootElement.GetProperty("wait").GetRawText().Should().Be("90", "the wire-name overload finds the property too");
+        sent.RootElement.GetProperty("extra").GetInt32().Should().Be(5, "an extension property is written as it is");
+    }
+
+    [TestMethod]
+    public async Task A_merge_patch_writes_a_string_encoded_number_as_a_string()
+    {
+        var (client, handler) = Create();
+
+        await client.Misc.PatchEncodedAsync(new MergePatch<Encoded>().Set(e => e.Big, 9007199254740993L));
+
+        using var sent = JsonDocument.Parse(handler.Last.Body!);
+        sent.RootElement.GetProperty("big").GetString().Should().Be("9007199254740993");
+    }
+
     private static int CountOf(string text, string value) =>
         (text.Length - text.Replace(value, string.Empty).Length) / value.Length;
 

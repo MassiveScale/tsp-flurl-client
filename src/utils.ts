@@ -5,6 +5,7 @@
 // freely without cycles.
 
 import {
+  getDoc,
   Model,
   ModelProperty,
   Scalar,
@@ -357,6 +358,11 @@ function mapUnion(
   } else if (present.every(isStringLike)) {
     mapped = "string";
   } else {
+    // The value is held as a JsonElement, but each variant's model and enum is still
+    // generated, so a caller can read it with `Deserialize<Item>()`.
+    for (const variant of present) {
+      mapType(variant, program, models, enums, usedHelpers);
+    }
     mapped = "JsonElement";
   }
   return nullable && !mapped.endsWith("?") ? `${mapped}?` : mapped;
@@ -643,6 +649,21 @@ export function sortUsings(usings: Iterable<string>): string[] {
     if (isSystem(a) !== isSystem(b)) return isSystem(a) ? -1 : 1;
     return a < b ? -1 : a > b ? 1 : 0;
   });
+}
+
+/**
+ * Reads a type's TypeSpec documentation as text ready for a generated XML doc
+ * comment. Every doc the emitter writes is read here, so none can reach a
+ * template unescaped: `A & B` or `<value>` in a doc would otherwise produce
+ * malformed XML documentation, which fails a build with warnings as errors.
+ *
+ * @param program - The compiler program.
+ * @param type - The documented declaration.
+ * @returns The XML-escaped doc, or `undefined` when there is none.
+ */
+export function docText(program: Program, type: Type): string | undefined {
+  const doc = getDoc(program, type);
+  return doc ? escapeXml(doc) : undefined;
 }
 
 /**

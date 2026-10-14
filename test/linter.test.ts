@@ -196,6 +196,66 @@ describe("internal-access-leak", () => {
       });
   });
 
+  it("flags an internal success type when the return union also names an @error model", async () => {
+    await tester
+      .expect(
+        `
+        import "@typespec/http";
+        import "@massivescale/tsp-flurl-client";
+        using Http;
+        using MassiveScale.TspFlurlClient;
+
+        namespace TestApi;
+
+        @access(Access.internal)
+        model Secret {
+          value: string;
+        }
+
+        @error
+        model Problem {
+          code: int32;
+        }
+
+        interface Secrets {
+          @get read(): Secret | Problem;
+        }
+      `,
+      )
+      .toEmitDiagnostics({
+        code: "@massivescale/tsp-flurl-client/internal-access-leak",
+        message: /"Secret"/,
+      });
+  });
+
+  it("does not flag success bodies of different shapes, which are returned as JsonElement", async () => {
+    await tester
+      .expect(
+        `
+        import "@typespec/http";
+        import "@massivescale/tsp-flurl-client";
+        using Http;
+        using MassiveScale.TspFlurlClient;
+
+        namespace TestApi;
+
+        @access(Access.internal)
+        model Secret {
+          value: string;
+        }
+
+        model Open {
+          id: string;
+        }
+
+        interface Secrets {
+          @get read(): { @statusCode _: 200; @body b: Secret } | { @statusCode _: 201; @body b: Open };
+        }
+      `,
+      )
+      .toEmitDiagnostics([]);
+  });
+
   it("flags a public operation whose merge-patch body patches an internal model", async () => {
     await tester
       .expect(

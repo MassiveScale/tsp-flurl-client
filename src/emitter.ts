@@ -19,7 +19,6 @@ import {
   Interface,
   Namespace,
   Program,
-  getDoc,
   getNamespaceFullName,
   resolvePath,
   isService,
@@ -63,6 +62,7 @@ import {
 import { buildExtensions, type EndpointName } from "./client.js";
 import { buildCsproj, deriveNugetVersion } from "./project.js";
 import {
+  docText,
   sanitizeVersionForNs,
   isInVersion,
   declarationKey,
@@ -727,7 +727,7 @@ async function emitService(
         endpointClientName,
         endpointNs,
         vOps,
-        getDoc(program, container),
+        docText(program, container),
         access,
         program,
         models,

@@ -122,6 +122,20 @@ function isTextItem(type: Type): boolean {
 }
 
 /**
+ * The type a nullable union stands for: `T` for `T | null`, otherwise the type itself.
+ *
+ * @param type - A property or parameter type.
+ * @returns The non-null type.
+ */
+function withoutNull(type: Type): Type {
+  if (type.kind !== "Union") return type;
+  const present = [...type.variants.values()]
+    .map((v) => v.type)
+    .filter((t) => !(t.kind === "Intrinsic" && t.name === "null"));
+  return present.length === 1 ? present[0] : type;
+}
+
+/**
  * Classifies the `@encode` of a model property or parameter.
  *
  * - The default wire formats (`rfc3339` for a date-time, `ISO8601` for a
@@ -145,8 +159,11 @@ export function classifyEncoding(
   if (!encode?.encoding) return { support: "default" };
 
   const { encoding } = encode;
+  // `at: utcDateTime | null` (or an optional property of a synthesized merge patch,
+  // which is made nullable) is encoded as its non-null type.
+  const type = withoutNull(prop.type);
   const scalar =
-    prop.type.kind === "Scalar" ? builtinScalarName(prop.type as Scalar) : "";
+    type.kind === "Scalar" ? builtinScalarName(type as Scalar) : "";
   const wire = (format: WireEncoding): EncodingClass => ({
     support: "wire",
     encoding,
@@ -187,10 +204,10 @@ export function classifyEncoding(
   const arrayFormat = ARRAY_ENCODINGS[encoding.replace(/^ArrayEncoding\./, "")];
   if (
     arrayFormat &&
-    prop.type.kind === "Model" &&
-    prop.type.indexer &&
-    prop.type.name === "Array" &&
-    isTextItem(prop.type.indexer.value)
+    type.kind === "Model" &&
+    type.indexer &&
+    type.name === "Array" &&
+    isTextItem(type.indexer.value)
   ) {
     return wire(arrayFormat);
   }

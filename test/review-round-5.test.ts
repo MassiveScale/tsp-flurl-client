@@ -379,7 +379,7 @@ describe("merge-patch values", () => {
 
     ok(
       fileContent(results, "MergePatch.g.cs").includes(
-        "JsonSerializer.SerializeToElement(value, value.GetType(), options ?? DefaultSerializerOptions)",
+        "JsonSerializer.SerializeToElement(value, value.GetType(), OptionsFor(info, options ?? DefaultSerializerOptions))",
       ),
     );
   });

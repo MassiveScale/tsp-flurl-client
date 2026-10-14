@@ -250,6 +250,8 @@ interface Misc {
   @route("tagged") @get tagged(): Tagged<Derived, string>;
   @route("wire") @post wireNames(@body body: WireNames): WireNames;
   @route("timed") @post timed(@body body: Timed): Timed;
+  @route("timed") @patch patchTimed(@body body: MergePatchUpdate<Timed>): void;
+  @route("encoded") @patch patchEncoded(@body body: MergePatchUpdate<Encoded>): void;
   @route("encoded-params/{at}") @get encodedParams(
     @path @encode(DateTimeKnownEncoding.unixTimestamp, int64) at: utcDateTime,
     @query @encode(DateTimeKnownEncoding.rfc7231) since: utcDateTime,

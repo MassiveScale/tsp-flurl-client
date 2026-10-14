@@ -86,8 +86,11 @@ public class MergePatch<T> : IMergePatch<T>
     public MergePatch<T> Set<TValue>(
         Expression<Func<T, TValue>> property,
         TValue value,
-        JsonSerializerOptions? options = null) =>
-        Set(ResolveWireName(property), value, options);
+        JsonSerializerOptions? options = null)
+    {
+        var info = ResolveProperty(property);
+        return SetValue(WireName(info), info, value, options);
+    }
 
     /// <summary>
     /// Sets a property to <paramref name="value"/> by its JSON wire name.
@@ -103,13 +106,57 @@ public class MergePatch<T> : IMergePatch<T>
     {
         if (propertyName is null) throw new ArgumentNullException(nameof(propertyName));
 
+        return SetValue(propertyName, FindProperty(propertyName), value, options);
+    }
+
+    /// <summary>
+    /// Writes a value under its wire name, in the format of the property it patches.
+    /// </summary>
+    private MergePatch<T> SetValue<TValue>(
+        string wireName,
+        PropertyInfo? info,
+        TValue value,
+        JsonSerializerOptions? options)
+    {
         // Serialized by its runtime type, as a request body is, so a derived model set through a
         // base-typed property keeps its extra properties.
-        Properties[propertyName] = value is null
+        Properties[wireName] = value is null
             ? NullElement
-            : JsonSerializer.SerializeToElement(value, value.GetType(), options ?? DefaultSerializerOptions);
+            : JsonSerializer.SerializeToElement(value, value.GetType(), OptionsFor(info, options ?? DefaultSerializerOptions));
         return this;
     }
+
+    /// <summary>
+    /// The options a property's value is written with: the given ones, plus the property's own
+    /// <see cref="JsonConverterAttribute"/> (an <c>@encode</c> such as <c>unixTimestamp</c>) and
+    /// <see cref="JsonNumberHandlingAttribute"/> (a number encoded as a string), which apply only
+    /// when a whole model is serialized and so would otherwise be lost for a value written alone.
+    /// </summary>
+    private static JsonSerializerOptions OptionsFor(PropertyInfo? info, JsonSerializerOptions options)
+    {
+        var converter = info?.GetCustomAttribute<JsonConverterAttribute>()?.ConverterType;
+        var numberHandling = info?.GetCustomAttribute<JsonNumberHandlingAttribute>()?.Handling;
+        if (converter is null && numberHandling is null) return options;
+
+        var copy = new JsonSerializerOptions(options);
+        if (converter is not null) copy.Converters.Insert(0, (JsonConverter)Activator.CreateInstance(converter)!);
+        if (numberHandling is { } handling) copy.NumberHandling = handling;
+        return copy;
+    }
+
+    /// <summary>
+    /// Finds the property of <typeparamref name="T"/> with a JSON wire name, or <see langword="null"/>
+    /// for a name that is not one of its declared properties (an extension property).
+    /// </summary>
+    private static PropertyInfo? FindProperty(string wireName) =>
+        typeof(T).GetProperties(BindingFlags.Public | BindingFlags.Instance)
+            .FirstOrDefault(p => WireName(p) == wireName);
+
+    /// <summary>
+    /// The JSON wire name of a property: its <see cref="JsonPropertyNameAttribute"/>, or its name.
+    /// </summary>
+    private static string WireName(PropertyInfo info) =>
+        info.GetCustomAttribute<JsonPropertyNameAttribute>()?.Name ?? info.Name;
 
     /// <summary>
     /// Sends an explicit JSON <c>null</c> for a property, instructing the server to clear it.
@@ -191,7 +238,14 @@ public class MergePatch<T> : IMergePatch<T>
     /// <exception cref="ArgumentException">
     /// The expression does not select a property declared directly on <typeparamref name="T"/>.
     /// </exception>
-    private static string ResolveWireName<TValue>(Expression<Func<T, TValue>> property)
+    private static string ResolveWireName<TValue>(Expression<Func<T, TValue>> property) =>
+        WireName(ResolveProperty(property));
+
+    /// <summary>
+    /// Resolves the property an expression such as <c>w =&gt; w.Name</c> selects.
+    /// </summary>
+    /// <exception cref="ArgumentException">The expression does not select a property declared directly on <typeparamref name="T"/>.</exception>
+    private static PropertyInfo ResolveProperty<TValue>(Expression<Func<T, TValue>> property)
     {
         if (property is null) throw new ArgumentNullException(nameof(property));
 
@@ -213,6 +267,6 @@ public class MergePatch<T> : IMergePatch<T>
                 nameof(property));
         }
 
-        return info.GetCustomAttribute<JsonPropertyNameAttribute>()?.Name ?? info.Name;
+        return info;
     }
 }

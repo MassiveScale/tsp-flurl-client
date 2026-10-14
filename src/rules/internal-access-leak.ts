@@ -18,9 +18,11 @@ import {
   isArrayModelType,
   isRecordModelType,
 } from "@typespec/compiler";
+import { getHttpOperation } from "@typespec/http";
 import { getMergePatchSource } from "@typespec/http/experimental/merge-patch";
 import { getAccess } from "../decorators.js";
 import { flattenProperties, findDiscriminatedRoot } from "../models.js";
+import { bodyShape, successBodies } from "../endpoints.js";
 
 /**
  * Returns the declaration the emitter generates for a model. A template instance
@@ -87,6 +89,26 @@ function resolveNamedTypes(program: Program, type: Type): (Model | Enum)[] {
 }
 
 /**
+ * The types an operation's generated method returns, found the way the emitter
+ * finds them: the bodies of its success (2xx) responses, so an `@error` variant of
+ * a return union (`Secret | Problem`) is not part of the signature while `Secret`
+ * is. Success bodies of different shapes are returned as a `JsonElement`, which
+ * names no model.
+ *
+ * @param program - The compiler program.
+ * @param op - The operation.
+ * @returns The success body types the method's return type is built from.
+ */
+function returnedTypes(program: Program, op: Operation): Type[] {
+  const [http] = getHttpOperation(program, op);
+  const bodies = successBodies(http.responses);
+  if (new Set(bodies.map((body) => bodyShape(body, program))).size > 1) {
+    return [];
+  }
+  return bodies.map((body) => body.type);
+}
+
+/**
  * Lint rule `internal-access-leak`: warns when something public in the generated C#
  * would expose an `@access(Access.internal)` type, which C# rejects as
  * inconsistent accessibility. It checks operation parameters and return types
@@ -143,7 +165,9 @@ export const internalAccessLeakRule = createRule({
           for (const prop of op.parameters.properties.values()) {
             checkReferencedTypes(prop.type, op.name, "parameter", prop);
           }
-          checkReferencedTypes(op.returnType, op.name, "return", op);
+          for (const type of returnedTypes(context.program, op)) {
+            checkReferencedTypes(type, op.name, "return", op);
+          }
         }
       },
       // An operation declared directly in a namespace is emitted as a public method
@@ -154,13 +178,19 @@ export const internalAccessLeakRule = createRule({
         for (const prop of op.parameters.properties.values()) {
           checkReferencedTypes(prop.type, op.name, "parameter", prop, true);
         }
-        checkReferencedTypes(op.returnType, op.name, "return", op, true);
+        for (const type of returnedTypes(context.program, op)) {
+          checkReferencedTypes(type, op.name, "return", op, true);
+        }
       },
       model: (model: Model) => {
         // A template instance such as `Page<Secret>` is emitted as the generic
         // `Page<T>`, whose declaration never names `Secret`. The leak is where the
         // instance is used, which the operation and property checks report.
         if (model.templateMapper) return;
+        // An anonymous model (an operation's response or parameter wrapper) is not
+        // generated as a C# type, so it has no declaration to leak through; what it
+        // carries is checked where the operation uses it.
+        if (!model.name) return;
 
         const modelAccess = getAccess(context.program, model) ?? "public";
         if (modelAccess === "internal") return;

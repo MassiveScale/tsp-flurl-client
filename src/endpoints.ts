@@ -10,7 +10,6 @@ import {
   Enum,
   Type,
   Program,
-  getDoc,
   isArrayModelType,
   isRecordModelType,
 } from "@typespec/compiler";
@@ -50,6 +49,7 @@ import {
 } from "./encoding.js";
 import { createDiagnostic, reportOnce } from "./lib.js";
 import {
+  docText,
   mapType,
   mapPropertyType,
   builtinScalarName,
@@ -59,7 +59,6 @@ import {
   toCsParamName,
   escapeCsIdentifier,
   escapeCsString,
-  escapeXml,
   sortUsings,
   isInVersion,
   MERGE_PATCH_HELPER_NAME,
@@ -70,6 +69,7 @@ import {
   findDiscriminatedRoot,
   findNestedDiscriminator,
   flattenProperties,
+  reachableModels,
   isCsValueType,
   hierarchyOf,
 } from "./models.js";
@@ -583,7 +583,7 @@ function buildMethodView(
   const baseMethodName =
     getClientName(program, op.operation) ?? op.operation.name;
   const methodName = toCsMethodName(baseMethodName);
-  const doc = getDoc(program, op.operation);
+  const doc = docText(program, op.operation);
   const response = resolveResponse(
     op.responses,
     program,
@@ -732,7 +732,7 @@ function buildMethodView(
             model,
             requestType: {
               name: "",
-              doc: getDoc(program, model),
+              doc: docText(program, model),
               access: getAccess(program, model) ?? "public",
               props: filterPropsForRequest(model, visibility, version, program),
               hierarchy: discriminated
@@ -797,7 +797,7 @@ function buildMethodView(
   ];
 
   return {
-    doc: doc ? escapeXml(doc) : undefined,
+    doc,
     methodName,
     returnType: response ? `Task<${response.view.type}>` : "Task",
     paramsText: allParams.map((p) => p.decl).join(", "),
@@ -1097,14 +1097,14 @@ function withoutNullable(csType: string): string {
  * @param program - The compiler program.
  * @returns The C# type without a trailing `?`.
  */
-function bodyShape(body: SingleBody, program: Program): string {
+export function bodyShape(body: SingleBody, program: Program): string {
   return withoutNullable(
     resolveBodyType(body, program, new Map(), new Map(), new Set()),
   );
 }
 
 /** A body that is a single payload, which is every body that reaches the mapping. */
-type SingleBody = HttpPayloadBody & { bodyKind: "single" };
+export type SingleBody = HttpPayloadBody & { bodyKind: "single" };
 
 /**
  * Lists the bodies of an operation's success (2xx) responses, leaving out
@@ -1113,7 +1113,9 @@ type SingleBody = HttpPayloadBody & { bodyKind: "single" };
  * @param responses - The operation's HTTP responses.
  * @returns The single-payload bodies, in declaration order.
  */
-function successBodies(responses: HttpOperationResponse[]): SingleBody[] {
+export function successBodies(
+  responses: HttpOperationResponse[],
+): SingleBody[] {
   const bodies: SingleBody[] = [];
   for (const resp of responses) {
     if (!isSuccessStatus(resp.statusCodes)) continue;
@@ -1345,6 +1347,21 @@ function findUnsupportedPayload(
     new Set(bodies.map((b) => bodyShape(b, program))).size === 1
   ) {
     return "Success responses that carry the same value in different @encode formats";
+  }
+
+  // A property anywhere in a payload whose `@encode` cannot be honoured would be
+  // written or read in the wrong format, so the operation is left out here rather
+  // than generated around a model that serializes it wrongly.
+  for (const payload of [...(body ? [body] : []), ...bodies]) {
+    for (const model of reachableModels(program, payload.type)) {
+      for (const prop of model.properties.values()) {
+        const { support, encoding } = classifyEncoding(program, prop);
+        if (support === "unsupported") {
+          reportUnsupportedEncoding(program, prop, "property", encoding ?? "");
+          return `A body containing "${model.name}.${prop.name}", whose @encode "${encoding}" the client cannot produce or read`;
+        }
+      }
+    }
   }
 
   // A hierarchy System.Text.Json cannot read correctly is left out here, before the
