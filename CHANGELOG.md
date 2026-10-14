@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-beta.2] - 2026-10-14
+
+The first published version. `1.0.0-beta.1` was reserved on npm by an earlier staged upload and was never published.
+
 ### Added
 
 - Initial release of the emitter. It generates a C# client built on Flurl.Http and mirrors `@massivescale/tsp-refit-client`: the same options, `@clientName` / `@access` decorators, API versioning (`target-version`, `all-versions`, `version-in-namespace`, `route-prefix`), `@discriminator` polymorphism, `@encode("string")` booleans, visibility-filtered request records, merge-patch bodies, Handlebars template overrides, NuGet metadata, and the `internal-access-leak` lint rule.
