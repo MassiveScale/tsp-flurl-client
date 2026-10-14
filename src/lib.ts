@@ -268,6 +268,12 @@ export const $lib = createTypeSpecLibrary({
         default: paramMessage`The model "${"name"}" declares its own @discriminator but is also a variant of "${"parent"}", so a value would need two discriminators resolved. System.Text.Json can resolve only one per hierarchy: reading through the base type would return the wrong subtype, and writing a subtype would fail or omit a discriminator. Use a single discriminator for the whole hierarchy, or model the second level as an ordinary property.`,
       },
     },
+    "unsupported-generic-discriminator": {
+      severity: "error",
+      messages: {
+        default: paramMessage`The template model "${"name"}" carries @discriminator. System.Text.Json cannot list the subtypes of a generic base (a subtype derives from one closed instance such as "${"name"}<string>", not from the generic type), so its subtypes would never be read or written. Declare the discriminated base as a non-template model.`,
+      },
+    },
     "unsupported-encoding": {
       severity: "warning",
       messages: {

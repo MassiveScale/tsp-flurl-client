@@ -436,6 +436,23 @@ public sealed class KitchenSinkTests
         typeof(Car).GetProperty("Wheels").Should().NotBeNull();
     }
 
+    [TestMethod]
+    public async Task Encoded_json_names_are_used_both_ways_and_a_null_only_property_is_sent()
+    {
+        var (client, handler) = Create();
+        handler.RespondJson("""{"display_name":"Ann","count":2,"nothing":null}""");
+
+        var read = await client.Misc.WireNamesAsync(new WireNames { DisplayName = "Bob", Count = 1 });
+
+        read.DisplayName.Should().Be("Ann");
+        read.Count.Should().Be(2);
+        using var sent = JsonDocument.Parse(handler.Last.Body!);
+        sent.RootElement.GetProperty("display_name").GetString().Should().Be("Bob");
+        sent.RootElement.TryGetProperty("displayName", out _).Should().BeFalse();
+        sent.RootElement.GetProperty("count").GetInt32().Should().Be(1);
+        sent.RootElement.GetProperty("nothing").ValueKind.Should().Be(JsonValueKind.Null);
+    }
+
     private static int CountOf(string text, string value) =>
         (text.Length - text.Replace(value, string.Empty).Length) / value.Length;
 

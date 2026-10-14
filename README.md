@@ -380,7 +380,7 @@ List<MyDog> dogs = await api.Pets.ListAsync<MyDog>();
 
 ## How requests are sent
 
-- JSON uses `System.Text.Json` with web defaults (camelCase, case-insensitive reads, numbers accepted as strings). Models carry explicit `[JsonPropertyName]` attributes, so declared properties always use their TypeSpec wire names. An optional property that is `null` is left out; a required property that allows null (`note: string | null`) is always written, as `"note": null` when it is null.
+- JSON uses `System.Text.Json` with web defaults (camelCase, case-insensitive reads, numbers accepted as strings). Models carry explicit `[JsonPropertyName]` attributes, so declared properties always use their wire names: the TypeSpec name, or the name given with `@encodedName("application/json", ...)` (an encoded name for another media type is ignored). A discriminator uses its property's JSON encoded name too. An optional property that is `null` is left out; a required property that allows null (`note: string | null`, or `nothing: null`) is always written, as `"note": null` when it is null.
 - Path values are fully percent-encoded, so a value containing `/` or `?` cannot change the shape of the URL.
 - Enum values in query strings, headers, and paths use their wire names; booleans are `true`/`false`; dates are ISO 8601.
 - Enums are read and written as their declared values through a converter generated for each enum (`ColorJsonConverter`), because `JsonStringEnumConverter` ignores `[EnumMember]` and would write the C# member name (`Blue`) where the API declared `blue`. A member declared with a number (`enum Status { ready: 1 }`) travels as a JSON number, and an enum can mix both. A value the enum does not declare, or a token of the wrong kind, is rejected with a `JsonException` instead of being guessed.
@@ -461,6 +461,7 @@ A request or success response that cannot be sent or read correctly is reported 
 
 - Multipart request or response bodies (`@multipartBody`).
 - File bodies (`Http.File`).
+- A template model carrying `@discriminator` (`@discriminator("kind") model Shape<T>`). System.Text.Json cannot list the subtypes of a generic base, and TypeSpec does not run the decorator on the template declaration the emitter generates. Reported as `unsupported-generic-discriminator`; declare the discriminated base as a non-template model.
 - A model, list, or dictionary declared only with a non-JSON media type (`application/xml`, `application/x-www-form-urlencoded`, `application/x-ndjson`, ...). The client can only write and read it as JSON. A scalar with a non-JSON media type is sent as text, as above.
 - A response that may arrive in a media type the client cannot read as its type, such as a model declared as `application/json` or `application/xml`.
 - Success responses with different bodies that are not all JSON (a 200 model and a 201 plain-text string).

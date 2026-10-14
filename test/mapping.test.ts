@@ -121,10 +121,11 @@ describe("unions", () => {
     ok(thing.includes("public List<Owner>? B"));
   });
 
-  it("maps a union of only null to object", async () => {
+  it("maps a property whose only value is null to object?, written even when null", async () => {
     const thing = await modelWith(`a: null;`);
 
-    ok(thing.includes("public object A"));
+    ok(thing.includes("public object? A"));
+    ok(thing.includes("[JsonIgnore(Condition = JsonIgnoreCondition.Never)]"));
   });
 
   it("adds the using that JsonElement needs", async () => {

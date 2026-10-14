@@ -114,6 +114,13 @@ model Nested {
   pageOfText: Page<string>;
 }
 
+/** Wire names that differ from the TypeSpec names, and a property that is always null. */
+model WireNames {
+  @encodedName("application/json", "display_name") displayName: string;
+  @encodedName("application/xml", "Ignored") count: int32;
+  nothing: null;
+}
+
 model Encoded {
   @encode("string") big: int64;
   @encode("string") ratio: float64;
@@ -228,6 +235,7 @@ interface Misc {
   @route("optional") @get optional(): Derived | void;
   @route("box") @get box(): Box<Derived>;
   @route("tagged") @get tagged(): Tagged<Derived, string>;
+  @route("wire") @post wireNames(@body body: WireNames): WireNames;
   @route("upsert") @post upsert(): { @statusCode _: 200; @body body: Derived } | { @statusCode _: 201; @body body: Spread };
   @route("label") @get label(): { @header contentType: "application/json" | "text/plain"; @body body: string };
   @route("latin") @post latin(@header contentType: "text/plain; charset=iso-8859-1", @body body: string): void;

@@ -181,7 +181,8 @@ export function mapType(
 
     case "Intrinsic":
       if (isVoidType(type)) return "void";
-      if (isNullType(type)) return "object";
+      // A property whose only value is null is still a property that is sent.
+      if (isNullType(type)) return "object?";
       if (isNeverType(type)) return "object";
       return "object";
 

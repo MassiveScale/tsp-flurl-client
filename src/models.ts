@@ -13,6 +13,8 @@ import {
   getNamespaceFullName,
   getDiscriminator,
   getDiscriminatedUnionFromInheritance,
+  isTemplateDeclaration,
+  resolveEncodedName,
   type Discriminator,
 } from "@typespec/compiler";
 import { isVisible, type Visibility } from "@typespec/http";
@@ -119,7 +121,7 @@ function buildPropertyViews(
       docName: escapeXml(prop.name),
       type: `${csType}${nullable}`,
       name: propName,
-      jsonPropertyName: escapeCsString(prop.name),
+      jsonPropertyName: escapeCsString(jsonName(program, prop)),
       defaultValue: defaultVal,
       numberAsString: encoding === "number-as-string",
       writeNull: !prop.optional && csType.endsWith("?"),
@@ -161,6 +163,51 @@ function inheritedNames(
     names.set(toCsPropName(getClientName(program, prop) ?? prop.name), name);
   }
   return names;
+}
+
+/**
+ * Whether a model is a template declaration carrying `@discriminator`, which the
+ * declaration itself never runs (see `buildRecord`).
+ *
+ * @param model - The model.
+ * @returns `true` for `@discriminator("kind") model Shape<T> { ... }`.
+ */
+function isGenericDiscriminated(model: Model): boolean {
+  return (
+    isTemplateDeclaration(model) &&
+    model.decorators.some((d) => d.definition?.name === "@discriminator")
+  );
+}
+
+/**
+ * The name a property has in JSON: its `@encodedName("application/json", ...)` when
+ * it has one, otherwise its TypeSpec name.
+ *
+ * @param program - The compiler program.
+ * @param prop - The property.
+ * @returns The JSON property name.
+ */
+function jsonName(program: Program, prop: ModelProperty): string {
+  return resolveEncodedName(program, prop, "application/json");
+}
+
+/**
+ * The JSON name of a hierarchy's discriminator, which `[JsonPolymorphic]` reads and
+ * writes: the encoded name of the discriminator property when the root declares
+ * one with `@encodedName`, otherwise the name `@discriminator` was given.
+ *
+ * @param program - The compiler program.
+ * @param root - The model carrying `@discriminator`.
+ * @param propertyName - The discriminator's property name.
+ * @returns The JSON name of the discriminator.
+ */
+function discriminatorWireName(
+  program: Program,
+  root: Model,
+  propertyName: string,
+): string {
+  const prop = root.properties.get(propertyName);
+  return prop ? jsonName(program, prop) : propertyName;
 }
 
 /**
@@ -245,6 +292,25 @@ export function buildRecord(
     : flattenProperties(model);
 
   const selfDiscriminator = getDiscriminator(program, model);
+  // TypeSpec runs `@discriminator` on each instance of a template but never on the
+  // declaration the emitter generates, so a generic discriminated base would lose its
+  // polymorphism without a sign; a subtype of one of its instances could not even
+  // name its base. Both are reported instead.
+  const genericRoot = isGenericDiscriminated(model)
+    ? model
+    : parentDiscriminated?.root.templateMapper
+      ? parentDiscriminated.root
+      : undefined;
+  if (genericRoot && !request) {
+    reportOnce(
+      program,
+      createDiagnostic({
+        code: "unsupported-generic-discriminator",
+        target: genericRoot,
+        format: { name: genericRoot.name },
+      }),
+    );
+  }
   // A model that is both a variant of a discriminated parent and the root of a
   // discriminator of its own would need two discriminators resolved, which
   // System.Text.Json cannot do. It is reported rather than generated into models
@@ -286,7 +352,9 @@ export function buildRecord(
       selfDiscriminator,
     );
     discriminator = {
-      propertyName: escapeCsString(selfDiscriminator.propertyName),
+      propertyName: escapeCsString(
+        discriminatorWireName(program, model, selfDiscriminator.propertyName),
+      ),
       derivedTypes: [...union.variants.entries()]
         .filter(([, derivedModel]) =>
           isInVersion(program, derivedModel, version),
