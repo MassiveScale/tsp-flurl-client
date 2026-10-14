@@ -87,11 +87,15 @@ describe("client", () => {
     ok(content.includes("IPets pets"), "Expected pets constructor param");
     ok(content.includes("IStores stores"), "Expected stores constructor param");
     ok(
-      content.includes("Pets = pets;"),
+      content.includes(
+        "Pets = pets ?? throw new ArgumentNullException(nameof(pets));",
+      ),
       "Expected Pets assignment in constructor",
     );
     ok(
-      content.includes("Stores = stores;"),
+      content.includes(
+        "Stores = stores ?? throw new ArgumentNullException(nameof(stores));",
+      ),
       "Expected Stores assignment in constructor",
     );
     ok(

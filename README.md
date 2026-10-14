@@ -470,6 +470,7 @@ A request or success response that cannot be sent or read correctly is reported 
 - A model, list, or dictionary declared only with a non-JSON media type (`application/xml`, `application/x-www-form-urlencoded`, `application/x-ndjson`, ...). The client can only write and read it as JSON. A scalar with a non-JSON media type is sent as text, as above.
 - A response that may arrive in a media type the client cannot read as its type, such as a model declared as `application/json` or `application/xml`.
 - Success responses with different bodies that are not all JSON (a 200 model and a 201 plain-text string).
+- Success responses that carry the same value in different `@encode` formats (a 200 duration in seconds and a 201 in milliseconds), since one method reads one way.
 - Two operations that send the same model with different visible properties, when every request record name the emitter tries is already a different record. Reported as `name-collision`; rename one operation with `@clientName`.
 - A `@discriminator` model that is also a variant of another discriminated model (a nested discriminator). `System.Text.Json` can resolve only one discriminator per hierarchy: reading through the base type would return the wrong subtype, and writing a subtype would fail or omit a discriminator. Reported as `unsupported-nested-discriminator`. A grouping model with no discriminator of its own (`model Dog extends Animal {}`) is fine.
 - `@encode` values the client cannot honour (see the encodings table; reported as an error).

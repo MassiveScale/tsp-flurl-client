@@ -187,16 +187,16 @@ describe("decorator state", () => {
     strictEqual(getClientName(program, model("Thing")), undefined);
   });
 
-  it("keeps the generated name of a synthesized merge-patch model even when renamed", () => {
+  it("keeps the @clientName of a user model whose name only looks like a merge patch", () => {
     const { program, context } = harness();
     for (const name of [
-      "WidgetMergePatchUpdate",
-      "WidgetMergePatchUpdateReplaceOnly",
-      "WidgetMergePatchCreateOrUpdate",
+      "AuditMergePatchUpdate",
+      "AuditMergePatchUpdateReplaceOnly",
+      "AuditMergePatchCreateOrUpdate",
     ]) {
       const target = model(name);
       $clientName(context, target, "Renamed");
-      strictEqual(getClientName(program, target), undefined, name);
+      strictEqual(getClientName(program, target), "Renamed", name);
     }
   });
 });

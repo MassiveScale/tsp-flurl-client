@@ -81,7 +81,7 @@ public class {{clientClassName}}
 {{/each}}    {{constructorAccess}} {{clientClassName}}(IFlurlClient flurlClient{{#each interfaces}}, {{name}} {{paramName}}{{/each}})
     {
         FlurlClient = flurlClient ?? throw new ArgumentNullException(nameof(flurlClient));
-{{#each interfaces}}        {{propertyName}} = {{paramName}};
+{{#each interfaces}}        {{propertyName}} = {{paramName}} ?? throw new ArgumentNullException(nameof({{paramName}}));
 {{/each}}    }
 
     /// <summary>

@@ -128,7 +128,11 @@ describe("dependency injection registration", () => {
 
     const content = fileContent(results, "TestApiClientExtensions.g.cs");
     ok(content.includes("IParams @params"));
-    ok(content.includes("Params = @params;"));
+    ok(
+      content.includes(
+        "Params = @params ?? throw new ArgumentNullException(nameof(@params));",
+      ),
+    );
   });
 });
 

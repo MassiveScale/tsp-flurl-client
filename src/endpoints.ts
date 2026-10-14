@@ -22,6 +22,7 @@ import {
   isVisible,
   resolveRequestVisibility,
 } from "@typespec/http";
+import { getMergePatchSource } from "@typespec/http/experimental/merge-patch";
 import type { Version } from "@typespec/versioning";
 import {
   Renderer,
@@ -310,27 +311,18 @@ function claimRequestTypes(
 }
 
 /**
- * Stable name suffixes produced by TypeSpec HTTP's `applyMergePatchTransform`.
- * Models with these suffixes are already purpose-built request payloads and must
- * not be visibility-filtered again.
- */
-const MERGE_PATCH_SUFFIXES = [
-  "MergePatchUpdate",
-  "MergePatchUpdateReplaceOnly",
-  "MergePatchCreateOrUpdate",
-];
-
-/**
- * Whether a model is a synthesized merge-patch payload (see
- * {@link MERGE_PATCH_SUFFIXES}), which should be passed through unfiltered.
+ * Whether a model is a merge-patch payload synthesized by `@typespec/http`
+ * (`MergePatchUpdate<Widget>`), which is already purpose-built for the request and
+ * is passed through without visibility filtering. It is recognized by the
+ * compiler's merge-patch metadata, not by its name, so a user model called
+ * `AuditMergePatchUpdate` is filtered like any other.
  *
+ * @param program - The compiler program.
  * @param model - The candidate body model.
- * @returns `true` if the model's name matches a merge-patch suffix.
+ * @returns `true` for a synthesized merge-patch model.
  */
-function isSynthesizedMergePatchModel(model: Model): boolean {
-  return model.name
-    ? MERGE_PATCH_SUFFIXES.some((s) => model.name!.endsWith(s))
-    : false;
+function isSynthesizedMergePatchModel(program: Program, model: Model): boolean {
+  return getMergePatchSource(program, model) !== undefined;
 }
 
 /**
@@ -722,7 +714,7 @@ function buildMethodView(
       (op.verb === "post" || op.verb === "patch" || op.verb === "put")
     ) {
       const bodyModel = element;
-      if (bodyModel.name && !isSynthesizedMergePatchModel(bodyModel)) {
+      if (bodyModel.name && !isSynthesizedMergePatchModel(program, bodyModel)) {
         const visibility = resolveRequestVisibility(
           program,
           op.operation,
@@ -1337,6 +1329,22 @@ function findUnsupportedPayload(
       reportUnsupportedEncoding(program, each.property, "body", encoding ?? "");
       return `A body whose @encode "${encoding}" the client cannot produce or read`;
     }
+  }
+
+  // One method returns one C# type, read one way. Success responses that carry the
+  // same value in different formats (a 200 duration in seconds and a 201 in
+  // milliseconds) cannot both be read correctly by it.
+  const formats = new Set(
+    bodies.map((b, i) => {
+      const { wire } = bodyEncoding(program, b, kinds[i]);
+      return wire ?? "";
+    }),
+  );
+  if (
+    formats.size > 1 &&
+    new Set(bodies.map((b) => bodyShape(b, program))).size === 1
+  ) {
+    return "Success responses that carry the same value in different @encode formats";
   }
 
   // A hierarchy System.Text.Json cannot read correctly is left out here, before the

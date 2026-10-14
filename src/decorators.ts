@@ -1,3 +1,4 @@
+import { getMergePatchSource } from "@typespec/http/experimental/merge-patch";
 import {
   getNamespaceFullName,
   isTemplateDeclaration,
@@ -136,9 +137,10 @@ export function $access(
 /**
  * Reads the `@clientName` override of a type.
  *
- * A synthesized merge-patch model (a name ending in `MergePatchUpdate`,
- * `MergePatchUpdateReplaceOnly`, or `MergePatchCreateOrUpdate`) keeps its generated
- * name even when renamed, so it cannot collide with a user model.
+ * A merge-patch model synthesized by `@typespec/http` (`MergePatchUpdate<Widget>`)
+ * keeps its generated name even when renamed, so it cannot collide with a user
+ * model. It is recognized by the compiler's merge-patch metadata, not by its name,
+ * so a user model called `AuditMergePatchUpdate` keeps its `@clientName`.
  *
  * @param program - The compiler program holding the decorator state.
  * @param type - The type to look up.
@@ -152,15 +154,7 @@ export function getClientName(
     program.stateMap(clientNameKey).get(type) ?? templateClientName(type);
   if (typeof value !== "string") return undefined;
 
-  // TypeSpec HTTP synthesized merge-patch models should keep their generated
-  // distinct names to avoid collisions with user models.
-  if (
-    type.kind === "Model" &&
-    type.name &&
-    (type.name.endsWith("MergePatchUpdate") ||
-      type.name.endsWith("MergePatchUpdateReplaceOnly") ||
-      type.name.endsWith("MergePatchCreateOrUpdate"))
-  ) {
+  if (type.kind === "Model" && getMergePatchSource(program, type)) {
     return undefined;
   }
 
