@@ -184,6 +184,7 @@ internal static class ClientRuntime
             _ when target == typeof(TimeOnly) => TimeOnly.Parse(text, CultureInfo.InvariantCulture),
             _ when target == typeof(TimeSpan) => XmlConvert.ToTimeSpan(text),
             _ when target == typeof(Guid) => Guid.Parse(text),
+            _ when target == typeof(byte[]) => Convert.FromBase64String(text),
             _ when target == typeof(Uri) => new Uri(text, UriKind.RelativeOrAbsolute),
             _ when target == typeof(JsonElement) => TextToJsonElement(text),
             _ when target.IsEnum => ParseEnum(target, text),

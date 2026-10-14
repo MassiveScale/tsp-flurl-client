@@ -285,6 +285,71 @@ interface Text {
   @route("id") @put setId(@body @format("uuid") id: string): void;
 }
 
+/** One operation per @encode, carrying the value in every position, to check each wire format end to end. */
+@route("/encodings")
+interface Encodings {
+  @route("unix/{p}") @put unix(
+    @path @encode(DateTimeKnownEncoding.unixTimestamp, int64) p: utcDateTime,
+    @query @encode(DateTimeKnownEncoding.unixTimestamp, int64) q: utcDateTime,
+    @header("X-V") @encode(DateTimeKnownEncoding.unixTimestamp, int64) h: utcDateTime,
+    @cookie @encode(DateTimeKnownEncoding.unixTimestamp, int64) c: utcDateTime,
+    @body @encode(DateTimeKnownEncoding.unixTimestamp, int64) body: utcDateTime,
+  ): { @body @encode(DateTimeKnownEncoding.unixTimestamp, int64) value: utcDateTime };
+  @route("rfc7231/{p}") @put rfc7231(
+    @path @encode(DateTimeKnownEncoding.rfc7231) p: utcDateTime,
+    @query @encode(DateTimeKnownEncoding.rfc7231) q: utcDateTime,
+    @header("X-V") @encode(DateTimeKnownEncoding.rfc7231) h: utcDateTime,
+    @cookie @encode(DateTimeKnownEncoding.rfc7231) c: utcDateTime,
+    @body @encode(DateTimeKnownEncoding.rfc7231) body: utcDateTime,
+  ): { @body @encode(DateTimeKnownEncoding.rfc7231) value: utcDateTime };
+  @route("wholeSeconds/{p}") @put wholeSeconds(
+    @path @encode(DurationKnownEncoding.seconds, int32) p: duration,
+    @query @encode(DurationKnownEncoding.seconds, int32) q: duration,
+    @header("X-V") @encode(DurationKnownEncoding.seconds, int32) h: duration,
+    @cookie @encode(DurationKnownEncoding.seconds, int32) c: duration,
+    @body @encode(DurationKnownEncoding.seconds, int32) body: duration,
+  ): { @body @encode(DurationKnownEncoding.seconds, int32) value: duration };
+  @route("seconds/{p}") @put seconds(
+    @path @encode(DurationKnownEncoding.seconds, float64) p: duration,
+    @query @encode(DurationKnownEncoding.seconds, float64) q: duration,
+    @header("X-V") @encode(DurationKnownEncoding.seconds, float64) h: duration,
+    @cookie @encode(DurationKnownEncoding.seconds, float64) c: duration,
+    @body @encode(DurationKnownEncoding.seconds, float64) body: duration,
+  ): { @body @encode(DurationKnownEncoding.seconds, float64) value: duration };
+  @route("wholeMilliseconds/{p}") @put wholeMilliseconds(
+    @path @encode(DurationKnownEncoding.milliseconds, int64) p: duration,
+    @query @encode(DurationKnownEncoding.milliseconds, int64) q: duration,
+    @header("X-V") @encode(DurationKnownEncoding.milliseconds, int64) h: duration,
+    @cookie @encode(DurationKnownEncoding.milliseconds, int64) c: duration,
+    @body @encode(DurationKnownEncoding.milliseconds, int64) body: duration,
+  ): { @body @encode(DurationKnownEncoding.milliseconds, int64) value: duration };
+  @route("milliseconds/{p}") @put milliseconds(
+    @path @encode(DurationKnownEncoding.milliseconds, float32) p: duration,
+    @query @encode(DurationKnownEncoding.milliseconds, float32) q: duration,
+    @header("X-V") @encode(DurationKnownEncoding.milliseconds, float32) h: duration,
+    @cookie @encode(DurationKnownEncoding.milliseconds, float32) c: duration,
+    @body @encode(DurationKnownEncoding.milliseconds, float32) body: duration,
+  ): { @body @encode(DurationKnownEncoding.milliseconds, float32) value: duration };
+  @route("base64url/{p}") @put base64url(
+    @path @encode(BytesKnownEncoding.base64url) p: bytes,
+    @query @encode(BytesKnownEncoding.base64url) q: bytes,
+    @header("X-V") @encode(BytesKnownEncoding.base64url) h: bytes,
+    @cookie @encode(BytesKnownEncoding.base64url) c: bytes,
+    @body @encode(BytesKnownEncoding.base64url) body: bytes,
+  ): { @body @encode(BytesKnownEncoding.base64url) value: bytes };
+  @route("base64/{p}") @put base64(
+    @path @encode(BytesKnownEncoding.base64) p: bytes,
+    @query @encode(BytesKnownEncoding.base64) q: bytes,
+    @header("X-V") @encode(BytesKnownEncoding.base64) h: bytes,
+    @cookie @encode(BytesKnownEncoding.base64) c: bytes,
+    @body @encode(BytesKnownEncoding.base64) body: bytes,
+  ): { @body @encode(BytesKnownEncoding.base64) value: bytes };
+  @route("pipe") @get pipe(@query @encode(ArrayEncoding.pipeDelimited) q: string[], @header("X-V") @encode(ArrayEncoding.pipeDelimited) h: string[], @cookie @encode(ArrayEncoding.pipeDelimited) c: string[]): void;
+  @route("space") @get space(@query @encode(ArrayEncoding.spaceDelimited) q: string[], @header("X-V") @encode(ArrayEncoding.spaceDelimited) h: string[], @cookie @encode(ArrayEncoding.spaceDelimited) c: string[]): void;
+  @route("comma") @get comma(@query @encode(ArrayEncoding.commaDelimited) q: string[], @header("X-V") @encode(ArrayEncoding.commaDelimited) h: string[], @cookie @encode(ArrayEncoding.commaDelimited) c: string[]): void;
+  @route("newline-query") @get newlineQuery(@query @encode(ArrayEncoding.newlineDelimited) q: string[]): void;
+}
+
 @clientName("Pings")
 @route("/ping")
 interface Health {

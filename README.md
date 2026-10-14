@@ -442,7 +442,7 @@ List<Pet> pets = await api.Pets.ListAsync();
 | `base64url` on bytes                                                                                          | URL-safe base64 without padding (`-_8`).                                                               |
 | `ArrayEncoding.pipeDelimited` / `spaceDelimited` / `commaDelimited` / `newlineDelimited` on a list of scalars | One string (`a\|b`), in a JSON property or a parameter.                                                |
 
-Not supported, and reported as an error: a custom encoding name, `@encode("string")` on a date or duration, a delimited list of models, a delimited list as a whole plain-text body, and a special encoding on a JSON body that is a single scalar (a standalone body has no property to carry the converter).
+Not supported, and reported as an error: a custom encoding name, `@encode("string")` on a date or duration, a delimited list of models, a delimited list as a whole plain-text body, a newline-delimited list in a header or cookie (a header value cannot contain a line break), and a special encoding on a JSON body that is a single scalar (a standalone body has no property to carry the converter).
 
 ```typespec
 model Widget {

@@ -5,6 +5,7 @@
 // types referenced by write operations (rendered as records by ./models.ts).
 
 import {
+  getEncode,
   Model,
   ModelProperty,
   Enum,
@@ -654,6 +655,20 @@ function buildMethodView(
     const encoding = checkEncoding(program, param.param, "parameter");
     // A value that cannot travel in the format the API expects is not sent at all.
     if (encoding.support === "unsupported") return undefined;
+    // A header (and a cookie, which travels in one) cannot contain a line break, so
+    // a newline-delimited list of more than one item can never be sent there.
+    if (
+      encoding.wire === "NewlineDelimited" &&
+      (param.type === "header" || param.type === "cookie")
+    ) {
+      reportUnsupportedEncoding(
+        program,
+        param.param,
+        "parameter",
+        encoding.encoding ?? "",
+      );
+      return undefined;
+    }
     const csParam = escapeCsIdentifier(toCsParamName(paramName));
     // A format the runtime implements is applied before the value is written.
     const value = encoding.wire
@@ -762,6 +777,7 @@ function buildMethodView(
       contentTypes,
       bodyInfo.type,
       "request",
+      isEncodedAsText(program, bodyInfo),
     ) as PayloadKind;
     // `@body body?: Widget` may be left out, in which case no body is sent at all.
     const optionalBody = bodyInfo.property?.optional === true;
@@ -889,6 +905,23 @@ function isBytes(type: Type): boolean {
 }
 
 /**
+ * Whether a bytes body is encoded as text: `@body @encode(BytesKnownEncoding.base64url)
+ * data: bytes` is base64url text, which TypeSpec sends as `text/plain`, not raw
+ * bytes. Bytes with no `@encode` are raw.
+ *
+ * @param program - The compiler program.
+ * @param body - The request or response body.
+ * @returns `true` for bytes encoded as base64 or base64url text.
+ */
+function isEncodedAsText(program: Program, body: HttpPayloadBody): boolean {
+  if (body.bodyKind !== "single" || !body.property || !isBytes(body.type)) {
+    return false;
+  }
+  const encoding = getEncode(program, body.property)?.encoding;
+  return encoding === "base64" || encoding === "base64url";
+}
+
+/**
  * Decides how a payload travels, from its TypeSpec type and the media types it
  * declares.
  *
@@ -903,17 +936,20 @@ function isBytes(type: Type): boolean {
  * @param contentTypes - The media types the payload declares; empty means unspecified.
  * @param type - The payload's TypeSpec type.
  * @param direction - Whether the client sends or receives the payload.
+ * @param encodedAsText - Whether bytes are encoded as base64 or base64url text (see
+ *   {@link isEncodedAsText}), so they travel as text rather than raw.
  * @returns How the payload travels, or `unsupported`.
  */
 function classifyPayload(
   contentTypes: string[],
   type: Type,
   direction: "request" | "response",
+  encodedAsText = false,
 ): PayloadKind | "unsupported" {
   const json = contentTypes.length === 0 || contentTypes.some(isJsonMediaType);
   const other = contentTypes.some((c) => !isJsonMediaType(c));
   if (json && (!other || direction === "request")) return "json";
-  if (isBytes(type)) return json ? "unsupported" : "bytes";
+  if (isBytes(type) && !encodedAsText) return json ? "unsupported" : "bytes";
   if (!isTextual(type)) return "unsupported";
   return json ? "negotiated" : "text";
 }
@@ -1021,6 +1057,7 @@ function resolveResponse(
     bodies.flatMap((b) => b.contentTypes),
     body.type,
     "response",
+    isEncodedAsText(program, body),
   ) as PayloadKind;
 
   const resultType = anyNullable ? `${withoutNullable(mapped[0])}?` : mapped[0];
@@ -1277,7 +1314,12 @@ function findUnsupportedPayload(
   }
   if (
     body &&
-    classifyPayload(body.contentTypes, body.type, "request") === "unsupported"
+    classifyPayload(
+      body.contentTypes,
+      body.type,
+      "request",
+      isEncodedAsText(program, body),
+    ) === "unsupported"
   ) {
     return `A request body sent as ${body.contentTypes.join(", ")} that is not bytes or text`;
   }
@@ -1294,7 +1336,12 @@ function findUnsupportedPayload(
 
   const bodies = successBodies(op.responses);
   const kinds = bodies.map((b) =>
-    classifyPayload(b.contentTypes, b.type, "response"),
+    classifyPayload(
+      b.contentTypes,
+      b.type,
+      "response",
+      isEncodedAsText(program, b),
+    ),
   );
   const unreadable = bodies.find((_, i) => kinds[i] === "unsupported");
   if (unreadable) {
@@ -1315,10 +1362,15 @@ function findUnsupportedPayload(
   const encodedBodies: [SingleBody, PayloadKind | "unsupported"][] = [
     ...(body && body.bodyKind === "single"
       ? [
-          [body, classifyPayload(body.contentTypes, body.type, "request")] as [
-            SingleBody,
-            PayloadKind | "unsupported",
-          ],
+          [
+            body,
+            classifyPayload(
+              body.contentTypes,
+              body.type,
+              "request",
+              isEncodedAsText(program, body),
+            ),
+          ] as [SingleBody, PayloadKind | "unsupported"],
         ]
       : []),
     ...bodies.map(

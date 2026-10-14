@@ -154,3 +154,6 @@ tsp-output/
 # .NET build output
 bin/
 obj/
+
+# Visual Studio per-machine state
+.vs/
