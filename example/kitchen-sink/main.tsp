@@ -230,11 +230,21 @@ interface DerivedItems {
   @route("bulk") @post createMany(@body body: Derived[]): Derived[] | ApiError;
 }
 
+/** Declares a subtype and a grouping model of a discriminated hierarchy as properties, which must still carry the discriminator. */
+model Kennel {
+  resident: Labrador;
+  group: Dog;
+  pets: Dog[];
+}
+
 @route("/animals")
 interface Animals {
   @get list(): Animal[];
   @get read(@path id: string): Animal;
   @post create(@body body: Animal): Animal;
+  /** A body declared as a subtype rather than as the discriminated base. */
+  @route("labradors") @post createLabrador(@body body: Labrador): Labrador;
+  @route("kennels") @post createKennel(@body body: Kennel): Kennel;
 }
 
 @route("/files")

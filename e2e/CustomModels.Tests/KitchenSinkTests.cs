@@ -1,5 +1,6 @@
 using System.Reflection;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using AwesomeAssertions;
 using Flurl.Http;
 using MassiveScale.KitchenSink.Client;
@@ -49,6 +50,121 @@ public sealed class KitchenSinkTests
         using var sent = JsonDocument.Parse(handler.Last.Body!);
         sent.RootElement.GetProperty("kind").GetString().Should().Be("labrador");
         sent.RootElement.GetProperty("guide").GetBoolean().Should().BeTrue();
+    }
+
+    [TestMethod]
+    public async Task A_body_declared_as_a_subtype_is_written_with_its_discriminator_once()
+    {
+        var (client, handler) = Create();
+        handler.RespondJson("""{"kind":"labrador","name":"rex"}""");
+
+        await client.Animals.CreateLabradorAsync(new Labrador { Name = "rex", Guide = true });
+
+        using var sent = JsonDocument.Parse(handler.Last.Body!);
+        sent.RootElement.GetProperty("kind").GetString().Should().Be("labrador");
+        sent.RootElement.GetProperty("guide").GetBoolean().Should().BeTrue();
+        Regex.Count(handler.Last.Body!, "\"kind\"").Should().Be(1);
+    }
+
+    [TestMethod]
+    public async Task A_request_record_declared_as_a_subtype_is_written_with_its_discriminator()
+    {
+        var (client, handler) = Create();
+        handler.RespondJson("""{"type":"car","id":"1","vin":"v","wheels":4,"seats":2}""");
+
+        var car = await client.Vehicles.CreateCarAsync(new CarCreateRequest { Wheels = 4, Seats = 2 });
+
+        using var sent = JsonDocument.Parse(handler.Last.Body!);
+        sent.RootElement.GetProperty("type").GetString().Should().Be("car");
+        sent.RootElement.GetProperty("seats").GetInt32().Should().Be(2);
+        Regex.Count(handler.Last.Body!, "\"type\"").Should().Be(1);
+        car.Seats.Should().Be(2);
+    }
+
+    [TestMethod]
+    public async Task Properties_declared_as_a_subtype_or_a_grouping_model_are_written_with_their_discriminators()
+    {
+        var (client, handler) = Create();
+        handler.RespondJson("""{"resident":{"kind":"labrador","name":"rex"},"group":null,"pets":[]}""");
+
+        await client.Animals.CreateKennelAsync(new Kennel
+        {
+            Resident = new Labrador { Name = "rex", Guide = true },
+            Group = new Poodle { Name = "fifi" },
+            Pets = [new Labrador { Name = "a" }, new Poodle { Name = "b" }],
+        });
+
+        using var sent = JsonDocument.Parse(handler.Last.Body!);
+        var root = sent.RootElement;
+        root.GetProperty("resident").GetProperty("kind").GetString().Should().Be("labrador");
+        root.GetProperty("resident").GetProperty("guide").GetBoolean().Should().BeTrue();
+        root.GetProperty("group").GetProperty("kind").GetString().Should().Be("poodle");
+        root.GetProperty("pets")[0].GetProperty("kind").GetString().Should().Be("labrador");
+        root.GetProperty("pets")[1].GetProperty("kind").GetString().Should().Be("poodle");
+        Regex.Count(handler.Last.Body!, "\"kind\"").Should().Be(4, "each animal carries its discriminator exactly once");
+    }
+
+    [TestMethod]
+    public async Task Properties_declared_as_a_subtype_or_a_grouping_model_are_read_as_the_right_subtypes()
+    {
+        var (client, handler) = Create();
+        handler.RespondJson(
+            """
+            {"resident":{"kind":"labrador","name":"rex"},
+             "group":{"kind":"poodle","name":"fifi"},
+             "pets":[{"kind":"labrador","name":"a","guide":true},{"kind":"poodle","name":"b"}]}
+            """);
+
+        var kennel = await client.Animals.CreateKennelAsync(new Kennel { Resident = new Labrador { Name = "rex" }, Group = new Poodle { Name = "fifi" } });
+
+        kennel.Resident.Name.Should().Be("rex");
+        kennel.Group.Should().BeOfType<Poodle>().Which.Name.Should().Be("fifi");
+        kennel.Pets[0].Should().BeOfType<Labrador>().Which.Guide.Should().BeTrue();
+        kennel.Pets[1].Should().BeOfType<Poodle>();
+    }
+
+    [TestMethod]
+    public async Task A_mapped_subtype_is_used_for_properties_declared_as_a_subtype_or_a_grouping_model()
+    {
+        var handler = new StubHandler();
+        var flurl = new FlurlClient(new HttpClient(handler) { BaseAddress = new Uri("https://api.test/") });
+        var client = KitchenSinkClient.Create(flurl, new ModelMap().Map<Labrador, CollaredLabrador>());
+        handler.RespondJson(
+            """
+            {"resident":{"kind":"labrador","name":"rex","collar":"red"},
+             "group":{"kind":"labrador","name":"max"},
+             "pets":[{"kind":"labrador","name":"a"},{"kind":"poodle","name":"b"}]}
+            """);
+
+        var kennel = await client.Animals.CreateKennelAsync(new Kennel
+        {
+            Resident = new CollaredLabrador { Name = "rex", Collar = "blue" },
+            Group = new Poodle { Name = "fifi" },
+        });
+
+        using var sent = JsonDocument.Parse(handler.Last.Body!);
+        sent.RootElement.GetProperty("resident").GetProperty("kind").GetString().Should().Be("labrador");
+        sent.RootElement.GetProperty("resident").GetProperty("collar").GetString().Should().Be("blue");
+        Regex.Count(handler.Last.Body!, "\"kind\"").Should().Be(2);
+
+        kennel.Resident.Should().BeOfType<CollaredLabrador>().Which.Collar.Should().Be("red");
+        kennel.Group.Should().BeOfType<CollaredLabrador>();
+        kennel.Pets[0].Should().BeOfType<CollaredLabrador>();
+        kennel.Pets[1].Should().BeOfType<Poodle>();
+
+        handler.RespondJson("""{"kind":"labrador","name":"rex","collar":"red"}""");
+        (await client.Animals.CreateLabradorAsync(new Labrador { Name = "rex" }))
+            .Should().BeOfType<CollaredLabrador>("a response declared as the subtype is mapped when it carries the discriminator");
+        handler.RespondJson("""{"name":"rex","collar":"red"}""");
+        (await client.Animals.CreateLabradorAsync(new Labrador { Name = "rex" }))
+            .Should().BeOfType<Labrador>("without a discriminator there is nothing to map by");
+    }
+
+    /// <summary>A custom subtype of a generated subtype, swapped in through the model map.</summary>
+    public record CollaredLabrador : Labrador
+    {
+        [System.Text.Json.Serialization.JsonPropertyName("collar")]
+        public string? Collar { get; init; }
     }
 
     [TestMethod]

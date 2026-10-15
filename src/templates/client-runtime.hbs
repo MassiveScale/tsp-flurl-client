@@ -19,6 +19,9 @@
               map rewrites the base type's derived-type list instead, and a
               custom subtype used on its own registers itself so its
               discriminator is still written.
+    Subtypes  A generated type below a discriminated base inherits the base's
+              polymorphism, so a property declared as a subtype or a grouping
+              model is written with its discriminator and read as the right type.
 
   Override via tspconfig.yaml:
     options:
@@ -345,9 +348,10 @@ internal static class ClientRuntime
     }
 
     /// <summary>
-    /// Adjusts the serializer contract of a type so custom models behave: it swaps mapped models into the
-    /// derived-type list of a discriminated base, and registers a custom subtype that is used on its own so
-    /// its discriminator is still written.
+    /// Adjusts the serializer contract of a type so custom models and discriminated subtypes behave: it swaps
+    /// mapped models into the derived-type list of a discriminated base, registers a custom subtype that is
+    /// used on its own so its discriminator is still written, and makes every generated type below a
+    /// discriminated base polymorphic too.
     /// </summary>
     private static void CustomizeContract(JsonTypeInfo typeInfo, ModelMap models)
     {
@@ -380,6 +384,39 @@ internal static class ClientRuntime
                 TypeDiscriminatorPropertyName = registration.DiscriminatorProperty,
                 DerivedTypes = { Register(typeInfo.Type, registration.Discriminator) },
             };
+            return;
+        }
+
+        InheritPolymorphism(typeInfo, models);
+    }
+
+    /// <summary>
+    /// Makes a generated type below a <c>@discriminator</c> base polymorphic too, with the subtypes the base
+    /// lists that derive from it (each replaced by its mapped custom model). System.Text.Json writes and
+    /// reads the discriminator only through a type that declares <see cref="JsonPolymorphicAttribute"/>, so
+    /// a property declared as a subtype (<c>Labrador</c>) or a grouping model (<c>Dog</c>) would otherwise
+    /// be written without it, and a grouping model could not be read at all.
+    /// </summary>
+    private static void InheritPolymorphism(JsonTypeInfo typeInfo, ModelMap models)
+    {
+        for (var root = typeInfo.Type.BaseType; root is not null; root = root.BaseType)
+        {
+            var polymorphic = root.GetCustomAttribute<JsonPolymorphicAttribute>(inherit: false);
+            if (polymorphic is null) continue;
+
+            var polymorphism = new JsonPolymorphismOptions
+            {
+                TypeDiscriminatorPropertyName = polymorphic.TypeDiscriminatorPropertyName ?? "$type",
+            };
+            foreach (var derived in root.GetCustomAttributes<JsonDerivedTypeAttribute>(inherit: false))
+            {
+                if (!typeInfo.Type.IsAssignableFrom(derived.DerivedType)) continue;
+                var type = models.TryGetCustomType(derived.DerivedType, out var custom) ? custom : derived.DerivedType;
+                polymorphism.DerivedTypes.Add(Register(type, derived.TypeDiscriminator));
+            }
+
+            if (polymorphism.DerivedTypes.Count > 0) typeInfo.PolymorphismOptions = polymorphism;
+            return;
         }
     }
 
