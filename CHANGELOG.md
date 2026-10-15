@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- Raised `handlebars` to `^4.7.10`, which fixes the JavaScript injection advisories (GHSA-xw65-4hp5-5hc7, GHSA-8r5x-fm3f-whwj, GHSA-p8wg-vrv2-v86f) in 4.7.9.
+
 ## [1.0.0-beta.2] - 2026-10-14
 
 The first published version. `1.0.0-beta.1` was reserved on npm by an earlier staged upload and was never published.
