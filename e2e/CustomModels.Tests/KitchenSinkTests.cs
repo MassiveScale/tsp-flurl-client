@@ -642,6 +642,24 @@ public sealed class KitchenSinkTests
     }
 
     [TestMethod]
+    public async Task A_date_time_header_is_an_rfc7231_date_unless_it_is_encoded_otherwise()
+    {
+        var (client, handler) = Create();
+        var seen = new DateTimeOffset(2024, 1, 2, 5, 4, 5, TimeSpan.FromHours(2));
+
+        await client.Misc.DatesAsync(ifModifiedSince: At, ifUnmodifiedSince: At, since: At, after: At, seen: seen);
+
+        // .NET reports a standard header under its canonical name (If-Modified-Since).
+        string Header(string name) =>
+            handler.Last.Headers.Single(h => h.Key.Equals(name, StringComparison.OrdinalIgnoreCase)).Value;
+        Header("if-modified-since").Should().Be("Tue, 02 Jan 2024 03:04:05 GMT");
+        Header("X-Seen").Should().Be("Tue, 02 Jan 2024 03:04:05 GMT", "an offset date-time is sent in UTC");
+        Header("if-unmodified-since").Should().Be("2024-01-02T03:04:05.0000000+00:00", "an explicit rfc3339 keeps ISO 8601");
+        Uri.UnescapeDataString(handler.Last.Headers["Cookie"]).Should().Contain("since=2024-01-02T03:04:05.0000000+00:00");
+        Uri.UnescapeDataString(handler.Last.Uri.Query).Should().Be("?after=2024-01-02T03:04:05.0000000+00:00");
+    }
+
+    [TestMethod]
     public async Task An_encoded_text_body_and_response_use_their_wire_format()
     {
         var (client, handler) = Create();

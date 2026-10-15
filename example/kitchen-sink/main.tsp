@@ -291,6 +291,14 @@ interface Misc {
   @route("latin") @post latin(@header contentType: "text/plain; charset=iso-8859-1", @body body: string): void;
   @route("cp1252") @post cp1252(@header contentType: "text/plain; charset=windows-1252", @body body: string): void;
   @route("maybebytes") @get maybeBytes(): { @header contentType: "application/octet-stream"; @body body: bytes } | void;
+  /** A date-time header is an RFC 7231 date unless it is given another @encode; a cookie or query is ISO 8601. */
+  @route("dates") @get dates(
+    @header ifModifiedSince: utcDateTime,
+    @header("X-Seen") seen?: offsetDateTime,
+    @header @encode(DateTimeKnownEncoding.rfc3339) ifUnmodifiedSince: utcDateTime,
+    @cookie since: utcDateTime,
+    @query after: utcDateTime,
+  ): void;
 }
 
 /** Scalar bodies, which TypeSpec sends as text/plain. */

@@ -64,6 +64,7 @@ import {
   type TypeWrapper,
   escapeCsString,
   sortUsings,
+  soleVariant,
   isInVersion,
   MERGE_PATCH_HELPER_NAME,
   MERGE_PATCH_INTERFACE_NAME,
@@ -650,6 +651,20 @@ export function buildEndpoint(
 }
 
 /**
+ * Whether a parameter type is a date-time, which TypeSpec sends in a header as an
+ * RFC 7231 date unless it is given another `@encode`.
+ *
+ * @param type - The parameter type.
+ * @returns `true` for `utcDateTime` or `offsetDateTime`, or one of them `| null`.
+ */
+function isDateTime(type: Type): boolean {
+  const inner = soleVariant(type)?.type ?? type;
+  if (inner.kind !== "Scalar") return false;
+  const name = builtinScalarName(inner);
+  return name === "utcDateTime" || name === "offsetDateTime";
+}
+
+/**
  * Builds the renderer view for a single endpoint method: HTTP verb, route,
  * parameter bindings, body and response handling, and the generic overload when
  * the response holds a customizable model. Parameters are ordered required first,
@@ -787,10 +802,17 @@ function buildMethodView(
       return undefined;
     }
     const csParam = escapeCsIdentifier(toCsParamName(paramName));
+    // A TypeSpec date-time travels in a header as an RFC 7231 date by default.
+    const wire =
+      encoding.wire ??
+      (param.type === "header" &&
+      encoding.support === "default" &&
+      encoding.encoding === undefined &&
+      isDateTime(param.param.type)
+        ? "Rfc7231"
+        : undefined);
     // A format the runtime implements is applied before the value is written.
-    const value = encoding.wire
-      ? encodeExpression(csParam, encoding.wire)
-      : undefined;
+    const value = wire ? encodeExpression(csParam, wire) : undefined;
     const isOptional = param.param.optional;
     const nullableSuffix = isOptional && !csType.endsWith("?") ? "?" : "";
     const decl = `${csType}${nullableSuffix} ${csParam}${isOptional ? " = null" : ""}`;

@@ -100,6 +100,46 @@ describe("parameter binding", () => {
     );
   });
 
+  it("sends a date-time header as an RFC 7231 date when it has no @encode", async () => {
+    const results = await emit(`${PREAMBLE}
+      @route("/items")
+      interface Items {
+        @get list(
+          @header ifModifiedSince: utcDateTime,
+          @header("X-Seen") seen?: offsetDateTime | null,
+          @header @encode(DateTimeKnownEncoding.rfc3339) ifUnmodifiedSince?: utcDateTime,
+          @cookie since?: utcDateTime,
+          @query after?: utcDateTime,
+        ): string[];
+      }
+    `);
+
+    const client = fileContent(results, "ItemsEndpoint.g.cs");
+    ok(
+      client.includes(
+        'flurlRequest.WithHeader("if-modified-since", ClientRuntime.ToWireString(ClientRuntime.Encode(ifModifiedSince, ClientRuntime.WireEncoding.Rfc7231)));',
+      ),
+      client,
+    );
+    ok(
+      client.includes(
+        'if (seen is not null) flurlRequest.WithHeader("X-Seen", ClientRuntime.ToWireString(ClientRuntime.Encode(seen, ClientRuntime.WireEncoding.Rfc7231)));',
+      ),
+      "A nullable date-time header is an RFC 7231 date too",
+    );
+    ok(
+      client.includes(
+        'flurlRequest.WithHeader("if-unmodified-since", ClientRuntime.ToWireString(ifUnmodifiedSince));',
+      ),
+      "An explicit rfc3339 keeps the header in ISO 8601",
+    );
+    doesNotMatch(
+      client,
+      /Encode\((since|after),/,
+      "Only a header defaults to RFC 7231; a cookie or query keeps ISO 8601",
+    );
+  });
+
   it("encodes every path parameter", async () => {
     const results = await emit(`${PREAMBLE}
       @route("/stores/{storeId}/items/{itemId}")
