@@ -46,6 +46,19 @@ describe("buildRouteExpression", () => {
       "a/{ClientRuntime.EscapePathSegment(path)}/{ClientRuntime.EscapePathSegment(id)}",
     ));
 
+  it("keeps the slashes of a parameter that allows reserved characters", () =>
+    strictEqual(
+      buildRouteExpression(
+        "/files/{+path}/{id}",
+        new Map([
+          ["path", "path"],
+          ["id", "id"],
+        ]),
+        new Set(["path"]),
+      ),
+      "files/{ClientRuntime.EscapeReservedPath(path)}/{ClientRuntime.EscapePathSegment(id)}",
+    ));
+
   it("leaves an unbound placeholder as escaped literal text", () =>
     strictEqual(
       buildRouteExpression("/items/{missing}", new Map()),
@@ -153,6 +166,37 @@ describe("parameter binding", () => {
       client.includes(
         'AppendPathSegment($"api/stores/{ClientRuntime.EscapePathSegment(storeId)}/items/{ClientRuntime.EscapePathSegment(itemId)}")',
       ),
+    );
+  });
+
+  it("keeps the slashes of an allowReserved path parameter and encodes each segment", async () => {
+    const results = await emit(`${PREAMBLE}
+      @route("/files")
+      interface Files {
+        @get read(@path(#{ allowReserved: true }) path: string, @path id: int32): string;
+        @route("count") @get count(@path(#{ allowReserved: true }) @encode(DurationKnownEncoding.seconds, int32) wait: duration): string;
+        @route("raw/{+rest}") @get raw(@path rest: string): string;
+      }
+    `);
+
+    const client = fileContent(results, "FilesEndpoint.g.cs");
+    ok(
+      client.includes(
+        'AppendPathSegment($"api/files/{ClientRuntime.EscapeReservedPath(path)}/{ClientRuntime.EscapePathSegment(id)}")',
+      ),
+      client,
+    );
+    ok(
+      client.includes(
+        "{ClientRuntime.EscapeReservedPath(ClientRuntime.Encode(wait, ClientRuntime.WireEncoding.WholeSeconds))}",
+      ),
+      "An encoded allowReserved value is encoded before its segments are escaped",
+    );
+    ok(
+      client.includes(
+        'AppendPathSegment($"api/files/raw/{ClientRuntime.EscapeReservedPath(rest)}")',
+      ),
+      "The URI template's + operator asks for reserved characters too",
     );
   });
 

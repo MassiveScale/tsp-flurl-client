@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - A `utcDateTime` or `offsetDateTime` header with no `@encode` is sent as an RFC 7231 date (`Tue, 02 Jan 2024 03:04:05 GMT`), as TypeSpec specifies, instead of ISO 8601. An explicit `@encode(DateTimeKnownEncoding.rfc3339)` keeps ISO 8601, and cookies, query and path values are unchanged.
+- A path parameter declared with `@path(#{ allowReserved: true })` keeps its `/` unencoded, as TypeSpec specifies, instead of sending it as `%2F`. Each segment between the slashes is still percent-encoded.
 
 ### Security
 

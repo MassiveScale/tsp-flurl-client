@@ -134,6 +134,16 @@ internal static class ClientRuntime
         Uri.EscapeDataString(ToWireString(value));
 
     /// <summary>
+    /// Converts a value to path text for a parameter declared with <c>allowReserved</c>: each
+    /// segment is percent-encoded, but the <c>/</c> between segments is kept, so
+    /// <c>docs/a b.txt</c> is sent as <c>docs/a%20b.txt</c>.
+    /// </summary>
+    /// <param name="value">The path parameter value.</param>
+    /// <returns>The encoded path text.</returns>
+    internal static string EscapeReservedPath(object? value) =>
+        string.Join("/", ToWireString(value).Split('/').Select(Uri.EscapeDataString));
+
+    /// <summary>
     /// Adds caller-supplied query parameters that are not part of the API contract.
     /// </summary>
     /// <param name="request">The request to add them to.</param>

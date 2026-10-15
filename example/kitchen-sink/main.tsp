@@ -299,6 +299,8 @@ interface Misc {
     @cookie since: utcDateTime,
     @query after: utcDateTime,
   ): void;
+  /** A path parameter that allows reserved characters (`{+path}`) keeps its `/`; each segment is still encoded. */
+  @route("reserved/{+path}/items/{id}") @get reserved(@path path: string, @path id: string): string;
 }
 
 /** Scalar bodies, which TypeSpec sends as text/plain. */

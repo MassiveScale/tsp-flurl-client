@@ -642,6 +642,18 @@ public sealed class KitchenSinkTests
     }
 
     [TestMethod]
+    public async Task An_allow_reserved_path_parameter_keeps_its_slashes_and_encodes_each_segment()
+    {
+        var (client, handler) = Create();
+        handler.RespondText("ok");
+
+        await client.Misc.ReservedAsync("docs/a b/c?d#e", "x/y");
+
+        handler.Last.Uri.AbsolutePath.Should().Be("/api/misc/reserved/docs/a%20b/c%3Fd%23e/items/x%2Fy");
+        handler.Last.Uri.Query.Should().BeEmpty("a ? in the value must not start a query string");
+    }
+
+    [TestMethod]
     public async Task A_date_time_header_is_an_rfc7231_date_unless_it_is_encoded_otherwise()
     {
         var (client, handler) = Create();
