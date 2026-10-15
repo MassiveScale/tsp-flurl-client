@@ -409,4 +409,35 @@ describe("derived models and records", () => {
       2,
     );
   });
+
+  it("makes a subtype polymorphic, so a property declared as one keeps its discriminator", async () => {
+    const results = await emit(`${PREAMBLE}
+      @discriminator("kind")
+      model Pet { kind: string; name: string; }
+      model Dog extends Pet { kind: "dog"; }
+      model Kennel { resident: Dog; }
+
+      @route("/kennels")
+      interface Kennels {
+        @post create(@body body: Kennel): Kennel;
+      }
+    `);
+
+    const runtime = fileContent(results, "ClientRuntime.g.cs");
+    ok(
+      runtime.includes("InheritPolymorphism(typeInfo, models);"),
+      "CustomizeContract must hand a generated subtype to InheritPolymorphism",
+    );
+    ok(
+      runtime.includes(
+        "private static void InheritPolymorphism(JsonTypeInfo typeInfo, ModelMap models)",
+      ),
+    );
+    ok(
+      runtime.includes(
+        "models.TryGetCustomType(derived.DerivedType, out var custom) ? custom : derived.DerivedType",
+      ),
+      "A mapped custom model replaces the subtype it maps, as it does under the base",
+    );
+  });
 });

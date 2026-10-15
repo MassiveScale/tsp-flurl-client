@@ -88,6 +88,21 @@ describe("the published package", () => {
     strictEqual(manifest.publishConfig?.access, "public");
   });
 
+  it("requires a handlebars release without the 4.7.9 injection advisories", () => {
+    const range: string = manifest.dependencies.handlebars;
+    const floor = /^\^(\d+)\.(\d+)\.(\d+)$/.exec(range);
+    ok(floor, `Expected a caret range, got ${range}`);
+    const [major, minor, patch] = floor.slice(1).map(Number);
+    ok(
+      major > 4 || (major === 4 && (minor > 7 || (minor === 7 && patch >= 10))),
+      `handlebars ${range} still allows 4.7.9 (GHSA-xw65-4hp5-5hc7, GHSA-8r5x-fm3f-whwj, GHSA-p8wg-vrv2-v86f)`,
+    );
+    const lock = JSON.parse(
+      readFileSync(resolve(root, "package-lock.json"), "utf-8"),
+    );
+    strictEqual(lock.packages[""].dependencies.handlebars, range);
+  });
+
   it("declares where the code lives", () => {
     ok(manifest.repository.url.includes("MassiveScale/tsp-flurl-client"));
     ok(manifest.license);

@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- A `utcDateTime` or `offsetDateTime` header with no `@encode` is sent as an RFC 7231 date (`Tue, 02 Jan 2024 03:04:05 GMT`), as TypeSpec specifies, instead of ISO 8601. An explicit `@encode(DateTimeKnownEncoding.rfc3339)` keeps ISO 8601, and cookies, query and path values are unchanged.
+- A path parameter declared with `@path(#{ allowReserved: true })` keeps its `/` unencoded, as TypeSpec specifies, instead of sending it as `%2F`. Each segment between the slashes is still percent-encoded.
+- A property declared as a subtype or grouping model of a `@discriminator` hierarchy (`resident: Labrador`, `group: Dog`) is written with its discriminator, and a grouping-model property is read as the right subtype instead of throwing `NotSupportedException`. System.Text.Json applies the discriminator only through the type that declares `[JsonPolymorphic]`, so every generated type below one now inherits its polymorphism, with mapped custom models swapped in as they are under the base.
+
+### Security
+
+- Raised `handlebars` to `^4.7.10`, which fixes the JavaScript injection advisories (GHSA-xw65-4hp5-5hc7, GHSA-8r5x-fm3f-whwj, GHSA-p8wg-vrv2-v86f) in 4.7.9.
+
 ## [1.0.0-beta.2] - 2026-10-14
 
 The first published version. `1.0.0-beta.1` was reserved on npm by an earlier staged upload and was never published.

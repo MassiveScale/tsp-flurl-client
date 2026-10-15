@@ -1,5 +1,6 @@
 using System.Reflection;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using AwesomeAssertions;
 using Flurl.Http;
 using MassiveScale.KitchenSink.Client;
@@ -49,6 +50,121 @@ public sealed class KitchenSinkTests
         using var sent = JsonDocument.Parse(handler.Last.Body!);
         sent.RootElement.GetProperty("kind").GetString().Should().Be("labrador");
         sent.RootElement.GetProperty("guide").GetBoolean().Should().BeTrue();
+    }
+
+    [TestMethod]
+    public async Task A_body_declared_as_a_subtype_is_written_with_its_discriminator_once()
+    {
+        var (client, handler) = Create();
+        handler.RespondJson("""{"kind":"labrador","name":"rex"}""");
+
+        await client.Animals.CreateLabradorAsync(new Labrador { Name = "rex", Guide = true });
+
+        using var sent = JsonDocument.Parse(handler.Last.Body!);
+        sent.RootElement.GetProperty("kind").GetString().Should().Be("labrador");
+        sent.RootElement.GetProperty("guide").GetBoolean().Should().BeTrue();
+        Regex.Count(handler.Last.Body!, "\"kind\"").Should().Be(1);
+    }
+
+    [TestMethod]
+    public async Task A_request_record_declared_as_a_subtype_is_written_with_its_discriminator()
+    {
+        var (client, handler) = Create();
+        handler.RespondJson("""{"type":"car","id":"1","vin":"v","wheels":4,"seats":2}""");
+
+        var car = await client.Vehicles.CreateCarAsync(new CarCreateRequest { Wheels = 4, Seats = 2 });
+
+        using var sent = JsonDocument.Parse(handler.Last.Body!);
+        sent.RootElement.GetProperty("type").GetString().Should().Be("car");
+        sent.RootElement.GetProperty("seats").GetInt32().Should().Be(2);
+        Regex.Count(handler.Last.Body!, "\"type\"").Should().Be(1);
+        car.Seats.Should().Be(2);
+    }
+
+    [TestMethod]
+    public async Task Properties_declared_as_a_subtype_or_a_grouping_model_are_written_with_their_discriminators()
+    {
+        var (client, handler) = Create();
+        handler.RespondJson("""{"resident":{"kind":"labrador","name":"rex"},"group":null,"pets":[]}""");
+
+        await client.Animals.CreateKennelAsync(new Kennel
+        {
+            Resident = new Labrador { Name = "rex", Guide = true },
+            Group = new Poodle { Name = "fifi" },
+            Pets = [new Labrador { Name = "a" }, new Poodle { Name = "b" }],
+        });
+
+        using var sent = JsonDocument.Parse(handler.Last.Body!);
+        var root = sent.RootElement;
+        root.GetProperty("resident").GetProperty("kind").GetString().Should().Be("labrador");
+        root.GetProperty("resident").GetProperty("guide").GetBoolean().Should().BeTrue();
+        root.GetProperty("group").GetProperty("kind").GetString().Should().Be("poodle");
+        root.GetProperty("pets")[0].GetProperty("kind").GetString().Should().Be("labrador");
+        root.GetProperty("pets")[1].GetProperty("kind").GetString().Should().Be("poodle");
+        Regex.Count(handler.Last.Body!, "\"kind\"").Should().Be(4, "each animal carries its discriminator exactly once");
+    }
+
+    [TestMethod]
+    public async Task Properties_declared_as_a_subtype_or_a_grouping_model_are_read_as_the_right_subtypes()
+    {
+        var (client, handler) = Create();
+        handler.RespondJson(
+            """
+            {"resident":{"kind":"labrador","name":"rex"},
+             "group":{"kind":"poodle","name":"fifi"},
+             "pets":[{"kind":"labrador","name":"a","guide":true},{"kind":"poodle","name":"b"}]}
+            """);
+
+        var kennel = await client.Animals.CreateKennelAsync(new Kennel { Resident = new Labrador { Name = "rex" }, Group = new Poodle { Name = "fifi" } });
+
+        kennel.Resident.Name.Should().Be("rex");
+        kennel.Group.Should().BeOfType<Poodle>().Which.Name.Should().Be("fifi");
+        kennel.Pets[0].Should().BeOfType<Labrador>().Which.Guide.Should().BeTrue();
+        kennel.Pets[1].Should().BeOfType<Poodle>();
+    }
+
+    [TestMethod]
+    public async Task A_mapped_subtype_is_used_for_properties_declared_as_a_subtype_or_a_grouping_model()
+    {
+        var handler = new StubHandler();
+        var flurl = new FlurlClient(new HttpClient(handler) { BaseAddress = new Uri("https://api.test/") });
+        var client = KitchenSinkClient.Create(flurl, new ModelMap().Map<Labrador, CollaredLabrador>());
+        handler.RespondJson(
+            """
+            {"resident":{"kind":"labrador","name":"rex","collar":"red"},
+             "group":{"kind":"labrador","name":"max"},
+             "pets":[{"kind":"labrador","name":"a"},{"kind":"poodle","name":"b"}]}
+            """);
+
+        var kennel = await client.Animals.CreateKennelAsync(new Kennel
+        {
+            Resident = new CollaredLabrador { Name = "rex", Collar = "blue" },
+            Group = new Poodle { Name = "fifi" },
+        });
+
+        using var sent = JsonDocument.Parse(handler.Last.Body!);
+        sent.RootElement.GetProperty("resident").GetProperty("kind").GetString().Should().Be("labrador");
+        sent.RootElement.GetProperty("resident").GetProperty("collar").GetString().Should().Be("blue");
+        Regex.Count(handler.Last.Body!, "\"kind\"").Should().Be(2);
+
+        kennel.Resident.Should().BeOfType<CollaredLabrador>().Which.Collar.Should().Be("red");
+        kennel.Group.Should().BeOfType<CollaredLabrador>();
+        kennel.Pets[0].Should().BeOfType<CollaredLabrador>();
+        kennel.Pets[1].Should().BeOfType<Poodle>();
+
+        handler.RespondJson("""{"kind":"labrador","name":"rex","collar":"red"}""");
+        (await client.Animals.CreateLabradorAsync(new Labrador { Name = "rex" }))
+            .Should().BeOfType<CollaredLabrador>("a response declared as the subtype is mapped when it carries the discriminator");
+        handler.RespondJson("""{"name":"rex","collar":"red"}""");
+        (await client.Animals.CreateLabradorAsync(new Labrador { Name = "rex" }))
+            .Should().BeOfType<Labrador>("without a discriminator there is nothing to map by");
+    }
+
+    /// <summary>A custom subtype of a generated subtype, swapped in through the model map.</summary>
+    public record CollaredLabrador : Labrador
+    {
+        [System.Text.Json.Serialization.JsonPropertyName("collar")]
+        public string? Collar { get; init; }
     }
 
     [TestMethod]
@@ -639,6 +755,36 @@ public sealed class KitchenSinkTests
         query.Should().Contain("tags=a|b");
         query.Should().Contain("token=-_8");
         handler.Last.Headers["X-Wait"].Should().Be("90");
+    }
+
+    [TestMethod]
+    public async Task An_allow_reserved_path_parameter_keeps_its_slashes_and_encodes_each_segment()
+    {
+        var (client, handler) = Create();
+        handler.RespondText("ok");
+
+        await client.Misc.ReservedAsync("docs/a b/c?d#e", "x/y");
+
+        handler.Last.Uri.AbsolutePath.Should().Be("/api/misc/reserved/docs/a%20b/c%3Fd%23e/items/x%2Fy");
+        handler.Last.Uri.Query.Should().BeEmpty("a ? in the value must not start a query string");
+    }
+
+    [TestMethod]
+    public async Task A_date_time_header_is_an_rfc7231_date_unless_it_is_encoded_otherwise()
+    {
+        var (client, handler) = Create();
+        var seen = new DateTimeOffset(2024, 1, 2, 5, 4, 5, TimeSpan.FromHours(2));
+
+        await client.Misc.DatesAsync(ifModifiedSince: At, ifUnmodifiedSince: At, since: At, after: At, seen: seen);
+
+        // .NET reports a standard header under its canonical name (If-Modified-Since).
+        string Header(string name) =>
+            handler.Last.Headers.Single(h => h.Key.Equals(name, StringComparison.OrdinalIgnoreCase)).Value;
+        Header("if-modified-since").Should().Be("Tue, 02 Jan 2024 03:04:05 GMT");
+        Header("X-Seen").Should().Be("Tue, 02 Jan 2024 03:04:05 GMT", "an offset date-time is sent in UTC");
+        Header("if-unmodified-since").Should().Be("2024-01-02T03:04:05.0000000+00:00", "an explicit rfc3339 keeps ISO 8601");
+        Uri.UnescapeDataString(handler.Last.Headers["Cookie"]).Should().Contain("since=2024-01-02T03:04:05.0000000+00:00");
+        Uri.UnescapeDataString(handler.Last.Uri.Query).Should().Be("?after=2024-01-02T03:04:05.0000000+00:00");
     }
 
     [TestMethod]

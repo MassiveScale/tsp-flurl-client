@@ -64,6 +64,7 @@ import {
   type TypeWrapper,
   escapeCsString,
   sortUsings,
+  soleVariant,
   isInVersion,
   MERGE_PATCH_HELPER_NAME,
   MERGE_PATCH_INTERFACE_NAME,
@@ -501,15 +502,19 @@ function escapeInterpolatedLiteral(text: string): string {
 /**
  * Turns a route template such as `/widgets/{id}/analyze` into the body of a C#
  * interpolated string, where each path parameter becomes a hole that
- * percent-encodes the value, so `/` or `?` in a value cannot alter the URL.
+ * percent-encodes the value, so `/` or `?` in a value cannot alter the URL. A
+ * path parameter that allows reserved characters keeps its `/`, with each segment
+ * between them still percent-encoded.
  *
  * @param path - The route template, with `{name}` placeholders (RFC 6570 operators are tolerated).
  * @param pathParams - Map of wire parameter name to the C# parameter supplying it.
+ * @param reserved - The wire names of the path parameters declared with `allowReserved`.
  * @returns The interpolated string content, without a leading slash.
  */
 export function buildRouteExpression(
   path: string,
   pathParams: Map<string, string>,
+  reserved: ReadonlySet<string> = new Set(),
 ): string {
   const trimmed = path.replace(/^\/+/, "");
   const placeholder = /\{[+#./;?&]?([^}*]+)\*?\}/g;
@@ -518,8 +523,11 @@ export function buildRouteExpression(
   for (const match of trimmed.matchAll(placeholder)) {
     result += escapeInterpolatedLiteral(trimmed.slice(cursor, match.index));
     const variable = pathParams.get(match[1]);
+    const escape = reserved.has(match[1])
+      ? "EscapeReservedPath"
+      : "EscapePathSegment";
     result += variable
-      ? `{ClientRuntime.EscapePathSegment(${variable})}`
+      ? `{ClientRuntime.${escape}(${variable})}`
       : escapeInterpolatedLiteral(match[0]);
     cursor = match.index + match[0].length;
   }
@@ -650,6 +658,20 @@ export function buildEndpoint(
 }
 
 /**
+ * Whether a parameter type is a date-time, which TypeSpec sends in a header as an
+ * RFC 7231 date unless it is given another `@encode`.
+ *
+ * @param type - The parameter type.
+ * @returns `true` for `utcDateTime` or `offsetDateTime`, or one of them `| null`.
+ */
+function isDateTime(type: Type): boolean {
+  const inner = soleVariant(type)?.type ?? type;
+  if (inner.kind !== "Scalar") return false;
+  const name = builtinScalarName(inner);
+  return name === "utcDateTime" || name === "offsetDateTime";
+}
+
+/**
  * Builds the renderer view for a single endpoint method: HTTP verb, route,
  * parameter bindings, body and response handling, and the generic overload when
  * the response holds a customizable model. Parameters are ordered required first,
@@ -717,6 +739,7 @@ function buildMethodView(
   const headerParams: HeaderParamView[] = [];
   const cookieParams: CookieParamView[] = [];
   const pathParams = new Map<string, string>();
+  const reservedPaths = new Set<string>();
 
   // Parameter names must be unique, and must not collide with the parameters every
   // method adds or the locals and fields its generated body uses.
@@ -787,10 +810,17 @@ function buildMethodView(
       return undefined;
     }
     const csParam = escapeCsIdentifier(toCsParamName(paramName));
+    // A TypeSpec date-time travels in a header as an RFC 7231 date by default.
+    const wire =
+      encoding.wire ??
+      (param.type === "header" &&
+      encoding.support === "default" &&
+      encoding.encoding === undefined &&
+      isDateTime(param.param.type)
+        ? "Rfc7231"
+        : undefined);
     // A format the runtime implements is applied before the value is written.
-    const value = encoding.wire
-      ? encodeExpression(csParam, encoding.wire)
-      : undefined;
+    const value = wire ? encodeExpression(csParam, wire) : undefined;
     const isOptional = param.param.optional;
     const nullableSuffix = isOptional && !csType.endsWith("?") ? "?" : "";
     const decl = `${csType}${nullableSuffix} ${csParam}${isOptional ? " = null" : ""}`;
@@ -817,6 +847,7 @@ function buildMethodView(
       cookieParams.push({ name: param.name, variable: csParam, value, guard });
     } else if (param.type === "path") {
       pathParams.set(param.name, value ?? csParam);
+      if (param.allowReserved) reservedPaths.add(param.name);
     }
 
     (isOptional ? optionalParams : requiredParams).push({
@@ -978,7 +1009,7 @@ function buildMethodView(
     },
     argsText: allParams.map((p) => p.name).join(", "),
     httpMethod: capitalize(op.verb),
-    route: buildRouteExpression(rawPath, pathParams),
+    route: buildRouteExpression(rawPath, pathParams, reservedPaths),
     queryParams,
     headerParams,
     cookieParams,
