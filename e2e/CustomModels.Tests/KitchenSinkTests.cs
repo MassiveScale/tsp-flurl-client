@@ -21,6 +21,25 @@ public sealed class KitchenSinkTests
     }
 
     [TestMethod]
+    public async Task A_discriminated_page_that_narrows_its_items_is_followed_and_yields_its_inherited_items()
+    {
+        var (client, handler) = Create();
+        handler
+            .RespondJson("""{"kind":"signed","items":[{"title":"a","signedBy":"x"}],"next":"/catalogs?cursor=2"}""")
+            .RespondJson("""{"kind":"signed","items":[{"title":"b","signedBy":"y"}]}""");
+
+        var books = new List<Book>();
+        await foreach (var book in client.Catalogs.SignedAllAsync())
+        {
+            books.Add(book);
+        }
+
+        books.Select(b => b.Title).Should().Equal("a", "b");
+        handler.Requests.Should().HaveCount(2);
+        handler.Requests[1].Uri.Should().Be(new Uri("https://api.test/catalogs?cursor=2"));
+    }
+
+    [TestMethod]
     public async Task A_discriminated_hierarchy_with_a_grouping_model_is_read_as_the_right_subtypes()
     {
         var (client, handler) = Create();

@@ -943,6 +943,81 @@ describe("paging", () => {
     });
   });
 
+  describe("pages that narrow their items", () => {
+    it("types the items from the base record a discriminated page inherits", async () => {
+      const results = await emit(`
+        import "@typespec/http";
+        using Http;
+
+        @service(#{ title: "Test API" })
+        namespace TestApi;
+
+        model Book { title: string; }
+        model SignedBook extends Book { signedBy: string; }
+
+        @discriminator("kind")
+        model Catalog {
+          kind: string;
+          @pageItems items: Book[];
+          @nextLink next?: url;
+        }
+
+        model SignedCatalog extends Catalog {
+          kind: "signed";
+          items: SignedBook[];
+        }
+
+        @route("/catalogs")
+        interface Catalogs {
+          @list @get signed(): SignedCatalog;
+          @route("any") @list @get any(): Catalog;
+        }
+      `);
+      ok(
+        !fileContent(results, "SignedCatalog.g.cs").includes(" Items "),
+        "Expected the derived record to keep the inherited List<Book> Items",
+      );
+      ok(
+        fileContent(results, "CatalogsEndpoint.g.cs").includes(
+          "IAsyncEnumerable<Book> SignedAllAsync(",
+        ),
+        "Expected the wrapper to yield what the inherited Items property holds",
+      );
+    });
+
+    it("types the items from the narrowed declaration when the record is flattened", async () => {
+      const results = await emit(`
+        import "@typespec/http";
+        using Http;
+
+        @service(#{ title: "Test API" })
+        namespace TestApi;
+
+        model Book { title: string; }
+        model SignedBook extends Book { signedBy: string; }
+
+        model Catalog { @pageItems items: Book[]; @nextLink next?: url; }
+        model SignedCatalog extends Catalog { items: SignedBook[]; }
+
+        @route("/catalogs")
+        interface Catalogs {
+          @list @get signed(): SignedCatalog;
+        }
+      `);
+      ok(
+        fileContent(results, "SignedCatalog.g.cs").includes(
+          "List<SignedBook> Items",
+        ),
+      );
+      ok(
+        fileContent(results, "CatalogsEndpoint.g.cs").includes(
+          "IAsyncEnumerable<SignedBook> SignedAllAsync(",
+        ),
+        "Expected the wrapper to yield the narrowed item type the record holds",
+      );
+    });
+  });
+
   describe("unsupported shapes", () => {
     it("warns and falls back to the raw method for a nested paging property", async () => {
       const [results, diagnostics] = await emitWithDiagnostics(`

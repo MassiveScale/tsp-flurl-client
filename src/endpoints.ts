@@ -73,6 +73,7 @@ import {
   escapeCsString,
   sortUsings,
   isInVersion,
+  soleVariant,
   MERGE_PATCH_HELPER_NAME,
   MERGE_PATCH_INTERFACE_NAME,
   type UsedHelpers,
@@ -1024,6 +1025,7 @@ function buildMethodView(
     response?.view.type.endsWith("?") ?? false,
     headerParams,
     cookieParams,
+    pageBodyModel(op.responses),
   );
 
   return {
@@ -1126,6 +1128,66 @@ function numericDefaultLiteral(property: ModelProperty): string | undefined {
 }
 
 /**
+ * The model every success response of a paged operation carries as its body.
+ * `Page | null` and `Page | void` count as `Page`.
+ *
+ * @param responses - The operation's HTTP responses.
+ * @returns The model, or `undefined` when the successes carry different bodies or the
+ *   body is not a model.
+ */
+function pageBodyModel(responses: HttpOperationResponse[]): Model | undefined {
+  const types = new Set(
+    successBodies(responses).map((b) => soleVariant(b.type)?.type ?? b.type),
+  );
+  if (types.size !== 1) return undefined;
+  const [type] = types;
+  return type.kind === "Model" && !isArrayModelType(type) && !type.indexer
+    ? type
+    : undefined;
+}
+
+/**
+ * The declaration of a page property whose C# type the page's record has. A record is
+ * flattened from its model and that model's bases, so a page redeclaring
+ * `items: NarrowItem[]` has `List<NarrowItem> Items`. A model in a `@discriminator`
+ * hierarchy instead derives from its base's record, which already declares the
+ * property, and leaves the redeclaration out (see `buildPropertyViews`), so the base
+ * record's declaration is the one it has. The compiler reports a paging role where it
+ * is decorated, which can be a base whose property the page narrows, so this is
+ * resolved by name rather than taken from the reported property.
+ *
+ * @param program - The compiler program.
+ * @param pageModel - The page model, or `undefined` when there is none.
+ * @param property - The paging property, wherever in the page's bases it is declared.
+ * @returns The declaration the record's property is typed from.
+ */
+function recordProperty(
+  program: Program,
+  pageModel: Model | undefined,
+  property: ModelProperty,
+): ModelProperty {
+  if (!pageModel) return property;
+  // The page's record, then each record it derives from.
+  const records = [pageModel];
+  for (
+    let base = pageModel.baseModel;
+    base && findDiscriminatedRoot(program, base);
+    base = base.baseModel
+  ) {
+    records.push(base);
+  }
+  // The topmost record is flattened; the ones deriving from it add only their own.
+  const top = records[records.length - 1];
+  const fromTop = flattenProperties(top).get(property.name);
+  if (fromTop) return fromTop;
+  for (let i = records.length - 2; i >= 0; i--) {
+    const own = records[i].properties.get(property.name);
+    if (own) return own;
+  }
+  return property;
+}
+
+/**
  * Builds the {@link PagingMethodView} for an operation, when its `@list` paging
  * metadata resolves to a supported forward-iteration strategy.
  *
@@ -1163,6 +1225,7 @@ function numericDefaultLiteral(property: ModelProperty): string | undefined {
  *   `nextLink` continuation request (which goes through `_client` directly,
  *   not the raw method, so none of its own bindings would otherwise apply).
  * @param cookieParams - The raw method's cookie bindings, replayed the same way.
+ * @param pageModel - The model the success responses carry as their body (see {@link pageBodyModel}).
  * @returns The paging wrapper view, or `undefined` when the operation isn't
  *   `@list`, carries no usable paging metadata, or resolves to an unsupported shape
  *   (in which case a diagnostic has already been reported).
@@ -1181,6 +1244,7 @@ function buildPagingMethodView(
   pageNullable: boolean,
   headerParams: HeaderParamView[],
   cookieParams: CookieParamView[],
+  pageModel: Model | undefined,
 ): PagingMethodView | undefined {
   if (!isList(program, operation)) return undefined;
 
@@ -1198,7 +1262,13 @@ function buildPagingMethodView(
     return undefined;
   }
 
-  const pageItemsProp = pagingOp.output.pageItems.property;
+  // Typed from the property the record exposes, which a discriminated page that
+  // narrows its items does not redeclare.
+  const pageItemsProp = recordProperty(
+    program,
+    pageModel,
+    pagingOp.output.pageItems.property,
+  );
   if (pageItemsProp.optional) {
     reportUnsupportedPaging(
       program,
@@ -1302,11 +1372,12 @@ function buildPagingMethodView(
       );
       return undefined;
     }
+    const nextLinkProp = recordProperty(program, pageModel, nextLink.property);
     const nextLinkPropertyName = toCsPropName(
-      getClientName(program, nextLink.property) ?? nextLink.property.name,
+      getClientName(program, nextLinkProp) ?? nextLinkProp.name,
     );
     const nextLinkCsType = withoutNullable(
-      mapPropertyType(nextLink.property, program, models, enums, usedHelpers),
+      mapPropertyType(nextLinkProp, program, models, enums, usedHelpers),
     );
     return {
       ...base,
@@ -1351,11 +1422,13 @@ function buildPagingMethodView(
     // The loop stops on an empty token and feeds the response's token straight
     // back into the input parameter, which only works when both are strings: a
     // `@format("uuid")` token maps to `Guid`, which has no "empty" to stop on.
-    const tokenTypes = [inputToken!.property, continuationToken.property].map(
-      (p) =>
-        withoutNullable(
-          mapPropertyType(p, program, models, enums, usedHelpers),
-        ),
+    const tokenProp = recordProperty(
+      program,
+      pageModel,
+      continuationToken.property,
+    );
+    const tokenTypes = [inputToken!.property, tokenProp].map((p) =>
+      withoutNullable(mapPropertyType(p, program, models, enums, usedHelpers)),
     );
     if (tokenTypes.some((t) => t !== "string")) {
       reportUnsupportedPaging(
@@ -1366,8 +1439,7 @@ function buildPagingMethodView(
       return undefined;
     }
     const continuationTokenPropertyName = toCsPropName(
-      getClientName(program, continuationToken.property) ??
-        continuationToken.property.name,
+      getClientName(program, tokenProp) ?? tokenProp.name,
     );
     const tokenVarName = uniqueLocalName("token", taken);
     return {
