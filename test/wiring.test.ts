@@ -71,8 +71,14 @@ describe("dependency injection registration", () => {
     );
     ok(
       content.includes(
-        "services.AddHttpClient(HttpClientName, configureHttpClient);",
+        ".ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });",
       ),
+      "Expected the handler to leave redirects to Flurl, as Flurl's own client factory does",
+    );
+    ok(
+      content.indexOf("ConfigurePrimaryHttpMessageHandler") <
+        content.indexOf("configureBuilder?.Invoke(builder);"),
+      "Expected a caller's own primary handler, set through configureBuilder, to win",
     );
     ok(
       content.includes(

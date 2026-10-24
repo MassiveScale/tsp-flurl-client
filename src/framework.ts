@@ -45,6 +45,7 @@ export const FRAMEWORK_TYPES: Readonly<Record<string, string>> = {
   Guid: "System",
   Half: "System",
   HttpClient: "System.Net.Http",
+  HttpClientHandler: "System.Net.Http",
   HttpContent: "System.Net.Http",
   HttpMethod: "System.Net.Http",
   IEnumerable: "System.Collections",
