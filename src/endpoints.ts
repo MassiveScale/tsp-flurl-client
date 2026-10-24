@@ -1422,6 +1422,16 @@ function buildPagingMethodView(
     const nextLinkCsType = withoutNullable(
       mapPropertyType(nextLinkProp, program, models, enums, usedHelpers),
     );
+    // The link is resolved with `new Uri(baseUri, link)`, which takes a string or a
+    // Uri; a link formatted as anything else (`@format("uuid")`) cannot be followed.
+    if (nextLinkCsType !== "string" && nextLinkCsType !== fx("Uri")) {
+      reportUnsupportedPaging(
+        program,
+        operation,
+        `a next link that is neither a string nor a URL (it maps to ${nextLinkCsType})`,
+      );
+      return undefined;
+    }
     return {
       ...base,
       strategy: "nextLink",

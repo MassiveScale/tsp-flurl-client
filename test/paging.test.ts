@@ -943,6 +943,34 @@ describe("paging", () => {
     });
   });
 
+  describe("next link types", () => {
+    it("rejects a next link that maps to neither a string nor a Uri", async () => {
+      const [results, diagnostics] = await emitWithDiagnostics(`
+        import "@typespec/http";
+        using Http;
+
+        @service(#{ title: "Test API" })
+        namespace TestApi;
+
+        model Store { name: string; }
+        model StorePage { @pageItems items: Store[]; @nextLink @format("uuid") next?: string; }
+
+        @route("/stores")
+        interface Stores {
+          @list @get list(): StorePage;
+        }
+      `);
+      ok(
+        messagesFor(diagnostics, "unsupported-paging-style").some((m) =>
+          m.includes("neither a string nor a URL (it maps to Guid)"),
+        ),
+      );
+      const client = fileContent(results, "StoresEndpoint.g.cs");
+      ok(client.includes("ListAsync("), "Expected the raw method kept");
+      ok(!client.includes("ListAllAsync"), "Expected no wrapper");
+    });
+  });
+
   describe("pages that narrow their items", () => {
     it("types the items from the base record a discriminated page inherits", async () => {
       const results = await emit(`
