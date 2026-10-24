@@ -985,6 +985,69 @@ describe("paging", () => {
       );
     });
 
+    it("reports items the discriminated page's record does not hold as a list", async () => {
+      const [results, diagnostics] = await emitWithDiagnostics(`
+        import "@typespec/http";
+        using Http;
+
+        @service(#{ title: "Test API" })
+        namespace TestApi;
+
+        model Store { name: string; }
+
+        @discriminator("kind")
+        model Page {
+          kind: string;
+          items: unknown;
+        }
+
+        model StorePage extends Page {
+          kind: "store";
+          @pageItems items: Store[];
+          @nextLink next?: url;
+        }
+
+        @route("/stores")
+        interface Stores {
+          @list @get list(): StorePage;
+          @route("any") @get any(): Page;
+        }
+      `);
+      ok(
+        messagesFor(diagnostics, "unsupported-paging-style").some((m) =>
+          m.includes("does not hold as a list"),
+        ),
+        "Expected the shape reported instead of aborting emission",
+      );
+      ok(!fileContent(results, "StoresEndpoint.g.cs").includes("ListAllAsync"));
+    });
+
+    it("names the next link by the declaration a flattened page redeclares", async () => {
+      const results = await emit(`
+        import "@typespec/http";
+        import "@massivescale/tsp-flurl-client";
+        using Http;
+        using MassiveScale.TspFlurlClient;
+
+        @service(#{ title: "Test API" })
+        namespace TestApi;
+
+        model Store { name: string; }
+        model Page { @pageItems items: Store[]; @nextLink next?: url; }
+        model StorePage extends Page { @clientName("Continue") next?: url; }
+
+        @route("/stores")
+        interface Stores {
+          @list @get list(): StorePage;
+        }
+      `);
+      const client = fileContent(results, "StoresEndpoint.g.cs");
+      ok(
+        client.includes("page.Continue") && !client.includes("page.Next"),
+        "Expected the member the record actually has",
+      );
+    });
+
     it("types the items from the narrowed declaration when the record is flattened", async () => {
       const results = await emit(`
         import "@typespec/http";

@@ -74,7 +74,6 @@ import {
   sortUsings,
   soleVariant,
   isInVersion,
-  soleVariant,
   MERGE_PATCH_HELPER_NAME,
   MERGE_PATCH_INTERFACE_NAME,
   type UsedHelpers,
@@ -1308,7 +1307,20 @@ function buildPagingMethodView(
     );
     return undefined;
   }
-  const itemsArrayModel = pageItemsProp.type as Model;
+  // The decorated items can be narrowed from a base declaration that is no list at all
+  // (`items: unknown`), and the record holds the base's declaration.
+  if (
+    pageItemsProp.type.kind !== "Model" ||
+    !isArrayModelType(pageItemsProp.type)
+  ) {
+    reportUnsupportedPaging(
+      program,
+      operation,
+      "an items property the page's record does not hold as a list",
+    );
+    return undefined;
+  }
+  const itemsArrayModel = pageItemsProp.type;
   const itemType = mapType(
     itemsArrayModel.indexer!.value,
     program,
