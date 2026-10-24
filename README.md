@@ -485,6 +485,7 @@ A request or success response that cannot be sent or read correctly is reported 
 - A `@discriminator` model that is also a variant of another discriminated model (a nested discriminator). `System.Text.Json` can resolve only one discriminator per hierarchy: reading through the base type would return the wrong subtype, and writing a subtype would fail or omit a discriminator. Reported as `unsupported-nested-discriminator`. A grouping model with no discriminator of its own (`model Dog extends Animal {}`) is fine.
 - `@encode` values the client cannot honour (see the encodings table). Reported as `unsupported-encoding`, and an operation that sends or reads one is left out.
 - Streaming responses such as server-sent events are read in full before the call returns.
+- A `@list` operation whose paging shape cannot be auto-paginated: a paging property nested inside a sub-object, or none of `@nextLink`/`@continuationToken`/`@offset`/`@pageIndex` to follow. Reported as `unsupported-paging-style`; the raw single-page method is still generated.
 
 ### Merge-patch request bodies
 
@@ -529,6 +530,44 @@ The expression form only accepts a property read straight off the lambda paramet
 Because the parameter is the covariant `IMergePatch<Widget>`, a `MergePatch<MyWidget>` is accepted too, so you can patch your own extension properties.
 
 > **Note:** this is the client-side counterpart to the `MergePatch<T>` emitted by `@massivescale/tsp-aspnetcore-api`. That one is built for _reading_ a patch in a controller; this one is built for _writing_ one. If your solution references both generated projects, the two types live in different namespaces and do not conflict — but don't `using` both into the same file.
+
+### Pagination
+
+A `@list` operation whose response is shaped with TypeSpec's own pagination decorators gets an extra `IAsyncEnumerable<T>` method alongside the raw single-page one, so you don't have to write the page-following loop yourself:
+
+```typespec
+model PagedResult<T> {
+  @pageItems items: T[];
+  @nextLink next?: url;
+}
+
+@route("/stores")
+interface Stores {
+  @list @get list(@query skip?: int32, @query take?: int32): PagedResult<Store>;
+}
+```
+
+```csharp
+Task<PagedResult<Store>> ListAsync(int? skip, int? take, ...);   // one page
+IAsyncEnumerable<Store> ListAllAsync(int? skip, int? take, ...); // every page
+
+await foreach (var store in client.Stores.ListAllAsync(cancellationToken: ct))
+{
+    Console.WriteLine(store.Name);
+}
+```
+
+Three paging styles are supported, detected from whichever decorators the page model and operation parameters carry (priority `@nextLink` > `@continuationToken` > `@offset`/`@pageIndex`, when a page model somehow carries more than one):
+
+| Decorator                | How `ListAllAsync` follows it                                                                                                    |
+| ------------------------ | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `@nextLink` (a `url`)    | Follows the link directly through `_client`, since it's an opaque absolute URL the raw method's own route cannot express.          |
+| `@continuationToken`     | Re-calls the raw method with the previous response's token in place of the matching input parameter, until the token comes back empty. |
+| `@offset` / `@pageIndex` | Re-calls the raw method with the counter advanced, until a page comes back with no items (there is no total-count signal to stop on otherwise). |
+
+`@prevLink`, `@firstLink`, `@lastLink`, and `@pageSize` are read as ordinary model and operation properties — they're backward and random-access links, not something a forward-only `IAsyncEnumerable<T>` follows.
+
+A page model whose paging property is nested inside a sub-object, or a `@list` operation carrying none of the decorators above, is reported as `unsupported-paging-style`; the raw single-page method is still generated.
 
 ## Development
 

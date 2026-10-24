@@ -10,10 +10,14 @@ import {
   Model,
   ModelProperty,
   Enum,
+  Operation,
   Type,
   Program,
+  getPagingOperation,
   isArrayModelType,
+  isList,
   isRecordModelType,
+  type PagingProperty,
 } from "@typespec/compiler";
 import {
   HttpOperation,
@@ -38,6 +42,8 @@ import {
   CookieParamView,
   PayloadKind,
   FileView,
+  PagingMethodView,
+  PagingStrategy,
 } from "./renderer.js";
 import { getClientName, getAccess } from "./decorators.js";
 import { checkName, MemberScope } from "./names.js";
@@ -58,7 +64,9 @@ import {
   findModelSlot,
   capitalize,
   toCsMethodName,
+  toCsPagingMethodName,
   toCsParamName,
+  toCsPropName,
   escapeCsIdentifier,
   unwrapType,
   type TypeWrapper,
@@ -589,20 +597,38 @@ export function buildEndpoint(
       routePrefix,
     );
     if (!view) return [];
-    return methodScope.claim(
-      view.methodName,
-      `operation "${op.operation.name}"`,
-      op.operation,
-    )
-      ? [view]
-      : [];
+    if (
+      !methodScope.claim(
+        view.methodName,
+        `operation "${op.operation.name}"`,
+        op.operation,
+      )
+    ) {
+      return [];
+    }
+    if (
+      view.paging &&
+      !methodScope.claim(
+        view.paging.methodName,
+        `the auto-paginating wrapper for operation "${op.operation.name}"`,
+        op.operation,
+      )
+    ) {
+      view.paging = undefined;
+    }
+    return [view];
   });
+
+  const pagingMethods = methods
+    .map((m) => m.paging)
+    .filter((p): p is PagingMethodView => p !== undefined);
 
   const interfaceView: EndpointInterfaceView = {
     interfaceName: csName,
     doc,
     access,
     methods,
+    pagingMethods,
   };
   const interfaceFile: FileView = {
     namespace: csNs,
@@ -612,6 +638,9 @@ export function buildEndpoint(
         "System.Text.Json",
         "System.Threading",
         "System.Threading.Tasks",
+        ...(pagingMethods.length > 0
+          ? ["System.Runtime.CompilerServices"]
+          : []),
         ...additionalUsings,
       ]),
     ]),
@@ -623,6 +652,7 @@ export function buildEndpoint(
     className: csClientName,
     interfaceName: csName,
     methods,
+    pagingMethods,
   };
   const clientFile: FileView = {
     namespace: csNs,
@@ -636,6 +666,9 @@ export function buildEndpoint(
         "System.Text.Json",
         "System.Threading",
         "System.Threading.Tasks",
+        ...(pagingMethods.length > 0
+          ? ["System.Runtime.CompilerServices"]
+          : []),
         ...additionalUsings,
       ]),
     ]),
@@ -711,8 +744,10 @@ function buildMethodView(
   );
   registerErrorModels(op.responses, program, models, enums, usedHelpers);
 
-  const requiredParams: { decl: string; name: string }[] = [];
-  const optionalParams: { decl: string; name: string }[] = [];
+  const requiredParams: { decl: string; name: string; property?: ModelProperty }[] =
+    [];
+  const optionalParams: { decl: string; name: string; property?: ModelProperty }[] =
+    [];
   const queryParams: QueryParamView[] = [];
   const headerParams: HeaderParamView[] = [];
   const cookieParams: CookieParamView[] = [];
@@ -822,6 +857,7 @@ function buildMethodView(
     (isOptional ? optionalParams : requiredParams).push({
       decl,
       name: csParam,
+      property: param.param,
     });
   }
 
@@ -960,6 +996,18 @@ function buildMethodView(
     },
   ];
 
+  const paging = buildPagingMethodView(
+    op.operation,
+    program,
+    models,
+    enums,
+    usedHelpers,
+    allParams,
+    baseMethodName,
+    methodName,
+    doc,
+  );
+
   return {
     doc,
     methodName,
@@ -967,6 +1015,7 @@ function buildMethodView(
       ? `${fx("Task", "generic")}<${response.view.type}>`
       : fx("Task"),
     paramsText: allParams.map((p) => p.decl).join(", "),
+    paging,
     bodyGeneric: bodyGeneric && {
       constraint: bodyGeneric.constraint,
       paramsText: allParams
@@ -986,6 +1035,247 @@ function buildMethodView(
     response: response?.view,
     generic: response?.generic,
   };
+}
+
+/**
+ * Reports the `unsupported-paging-style` warning for an operation whose `@list`
+ * paging metadata doesn't resolve to a strategy this emitter can generate a
+ * wrapper for. The raw single-page method is still generated.
+ *
+ * @param program - The compiler program, used to report the diagnostic.
+ * @param operation - The `@list` operation.
+ * @param reason - Human-readable explanation, interpolated into the message.
+ */
+function reportUnsupportedPaging(
+  program: Program,
+  operation: Operation,
+  reason: string,
+): void {
+  reportOnce(
+    program,
+    createDiagnostic({
+      code: "unsupported-paging-style",
+      target: operation,
+      format: { operation: operation.name, reason },
+    }),
+  );
+}
+
+/** Whether a resolved paging role lives directly on the page model (or operation parameters) rather than a nested sub-object. */
+function isFlatPagingProperty(p: PagingProperty): boolean {
+  return p.path.length <= 1;
+}
+
+/**
+ * Builds the {@link PagingMethodView} for an operation, when its `@list` paging
+ * metadata resolves to a supported forward-iteration strategy.
+ *
+ * Detection follows the TypeSpec core pagination metadata exclusively — `@list` +
+ * `getPagingOperation` — never a bespoke decorator or an assumed field-naming
+ * convention, since this emitter is a public library with no tie to any one
+ * organization's API shape.
+ *
+ * Priority when a page model exposes more than one forward-iteration signal is
+ * `nextLink` > `continuationToken` > `offset`/`pageIndex`, since `nextLink` is the
+ * most self-contained (the URL already embeds everything the next request
+ * needs). `prevLink`/`firstLink`/`lastLink` are backward/random-access links, not
+ * forward-iteration drivers, and never influence this selection — they still
+ * render as ordinary model properties via the ordinary record codegen.
+ *
+ * @param operation - The TypeSpec operation (only consulted for `@list`/paging metadata).
+ * @param program - The compiler program.
+ * @param models - Accumulator for referenced named models (see {@link mapType}).
+ * @param enums - Accumulator for referenced named enums (see {@link mapType}).
+ * @param usedHelpers - Accumulator for required helper classes (see {@link mapType}).
+ * @param allParams - The raw method's full, ordered parameter list (required then optional).
+ * @param baseMethodName - The TypeSpec-derived base operation name (e.g. `"list"`).
+ * @param rawMethodName - The raw single-page method's C# name (e.g. `"ListAsync"`).
+ * @param doc - The operation's doc comment (already escaped), carried onto the wrapper.
+ * @returns The paging wrapper view, or `undefined` when the operation isn't
+ *   `@list`, carries no usable paging metadata, or resolves to an unsupported shape
+ *   (in which case a diagnostic has already been reported).
+ */
+function buildPagingMethodView(
+  operation: Operation,
+  program: Program,
+  models: Map<string, Model>,
+  enums: Map<string, Enum>,
+  usedHelpers: UsedHelpers,
+  allParams: { decl: string; name: string; property?: ModelProperty }[],
+  baseMethodName: string,
+  rawMethodName: string,
+  doc: string | undefined,
+): PagingMethodView | undefined {
+  if (!isList(program, operation)) return undefined;
+
+  const [pagingOp] = getPagingOperation(program, operation);
+  // `pagingOp` undefined means the operation is missing `@pageItems`; the
+  // compiler's own `validatePagingOperations` pass already reported that.
+  if (!pagingOp) return undefined;
+
+  if (!isFlatPagingProperty(pagingOp.output.pageItems)) {
+    reportUnsupportedPaging(
+      program,
+      operation,
+      "a nested paging property, not declared directly on the page response model",
+    );
+    return undefined;
+  }
+
+  const pageItemsProp = pagingOp.output.pageItems.property;
+  const itemsArrayModel = pageItemsProp.type as Model;
+  const itemType = mapType(
+    itemsArrayModel.indexer!.value,
+    program,
+    models,
+    enums,
+    usedHelpers,
+  );
+  const itemsPropertyName = toCsPropName(
+    getClientName(program, pageItemsProp) ?? pageItemsProp.name,
+  );
+  const pageModel = pageItemsProp.model;
+  const pageType = pageModel
+    ? mapType(pageModel, program, models, enums, usedHelpers)
+    : "object";
+
+  // `allParams` already ends with the raw method's own plain `CancellationToken`
+  // entry (see its construction above); the wrapper declares its own
+  // `[EnumeratorCancellation]`-attributed one instead; dropped here so it is
+  // forwarded (and declared) exactly once rather than twice.
+  const forwardParams = allParams.slice(0, -1);
+  const commonDecls = forwardParams.map((p) => p.decl);
+  const methodName = toCsPagingMethodName(baseMethodName);
+  // The trailing CancellationToken is deliberately left off here: the interface
+  // declaration and the client implementation need different forms of it (see
+  // renderPagingInterfaceMethod / renderPagingClientMethod) — an
+  // [EnumeratorCancellation] attribute has no effect on an interface member,
+  // since it isn't itself an iterator method, and the compiler warns (CS8424)
+  // if it's there anyway.
+  const paramsText = commonDecls.join(", ");
+
+  const base: Pick<
+    PagingMethodView,
+    | "doc"
+    | "methodName"
+    | "rawMethodName"
+    | "itemType"
+    | "pageType"
+    | "itemsPropertyName"
+    | "paramsText"
+  > = { doc, methodName, rawMethodName, itemType, pageType, itemsPropertyName, paramsText };
+
+  const nextLink = pagingOp.output.nextLink;
+  if (nextLink) {
+    if (!isFlatPagingProperty(nextLink)) {
+      reportUnsupportedPaging(
+        program,
+        operation,
+        "a nested paging property, not declared directly on the page response model",
+      );
+      return undefined;
+    }
+    const nextLinkPropertyName = toCsPropName(
+      getClientName(program, nextLink.property) ?? nextLink.property.name,
+    );
+    return {
+      ...base,
+      strategy: "nextLink",
+      argsText: [...forwardParams.map((p) => p.name), "cancellationToken"].join(
+        ", ",
+      ),
+      nextLinkPropertyName,
+    };
+  }
+
+  const continuationToken = pagingOp.output.continuationToken;
+  if (continuationToken) {
+    if (!isFlatPagingProperty(continuationToken)) {
+      reportUnsupportedPaging(
+        program,
+        operation,
+        "a nested paging property, not declared directly on the page response model",
+      );
+      return undefined;
+    }
+    const inputToken = pagingOp.input.continuationToken;
+    const inputParam = inputToken
+      ? forwardParams.find((p) => p.property === inputToken.property)
+      : undefined;
+    if (!inputParam) {
+      reportUnsupportedPaging(
+        program,
+        operation,
+        "a @continuationToken output with no matching input parameter to feed it back into",
+      );
+      return undefined;
+    }
+    const continuationTokenPropertyName = toCsPropName(
+      getClientName(program, continuationToken.property) ??
+        continuationToken.property.name,
+    );
+    return {
+      ...base,
+      strategy: "continuationToken",
+      argsText: [
+        ...forwardParams.map((p) => (p === inputParam ? "token" : p.name)),
+        "cancellationToken",
+      ].join(", "),
+      continuationTokenPropertyName,
+      continuationTokenSeedExpression: inputParam.name,
+    };
+  }
+
+  const offsetInput = pagingOp.input.offset;
+  const pageIndexInput = pagingOp.input.pageIndex;
+  const counterInput = offsetInput ?? pageIndexInput;
+  const counterStrategy: Extract<PagingStrategy, "offset" | "pageIndex"> | undefined =
+    offsetInput ? "offset" : pageIndexInput ? "pageIndex" : undefined;
+  if (counterInput && counterStrategy) {
+    if (!isFlatPagingProperty(counterInput)) {
+      reportUnsupportedPaging(
+        program,
+        operation,
+        "a nested paging property, not declared directly on the operation's parameters",
+      );
+      return undefined;
+    }
+    const inputParam = forwardParams.find(
+      (p) => p.property === counterInput.property,
+    );
+    if (!inputParam) {
+      reportUnsupportedPaging(
+        program,
+        operation,
+        `an @${counterStrategy} input parameter that could not be matched to a generated method parameter`,
+      );
+      return undefined;
+    }
+    const counterVarName =
+      counterStrategy === "offset" ? "currentOffset" : "currentPageIndex";
+    const counterSeedExpression = counterInput.property.optional
+      ? `${inputParam.name} ?? 0`
+      : inputParam.name;
+    return {
+      ...base,
+      strategy: counterStrategy,
+      argsText: [
+        ...forwardParams.map((p) =>
+          p === inputParam ? counterVarName : p.name,
+        ),
+        "cancellationToken",
+      ].join(", "),
+      counterVarName,
+      counterSeedExpression,
+    };
+  }
+
+  reportUnsupportedPaging(
+    program,
+    operation,
+    "no recognized forward-iteration signal — @prevLink/@firstLink/@lastLink and @pageSize alone don't drive iteration",
+  );
+  return undefined;
 }
 
 /**

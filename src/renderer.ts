@@ -293,6 +293,8 @@ export interface MethodView {
   generic?: GenericOverloadView;
   /** Present when the body holds a dictionary of models, which callers can substitute. */
   bodyGeneric?: BodyGenericView;
+  /** Present when this operation is `@list` and resolves to a supported paging strategy; drives the sibling `IAsyncEnumerable<T>` wrapper method. */
+  paging?: PagingMethodView;
 }
 
 /**
@@ -314,6 +316,62 @@ export interface BodyGenericView {
   itemsOnly: boolean;
 }
 
+/**
+ * Which forward-iteration signal an auto-paginating wrapper method follows.
+ * Priority when a page model exposes more than one is `nextLink` >
+ * `continuationToken` > `offset`/`pageIndex`.
+ */
+export type PagingStrategy =
+  | "nextLink"
+  | "continuationToken"
+  | "offset"
+  | "pageIndex";
+
+/**
+ * View model for a single generated `IAsyncEnumerable<T>` auto-paginating wrapper
+ * method, declared on the endpoint interface and implemented on the endpoint
+ * client beside the raw single-page method it wraps. Unlike {@link MethodView},
+ * this does not describe one HTTP request: it describes a loop that calls the raw
+ * method (and, for `nextLink`, follows a URL directly through `_client`) until no
+ * further pages remain.
+ */
+export interface PagingMethodView {
+  /** Optional XML doc text (pre-escaped), carried over from the TypeSpec operation. */
+  doc?: string;
+  /** Which forward-iteration signal this method follows. */
+  strategy: PagingStrategy;
+  /** Wrapper method name, e.g. `"ListAllAsync"`. */
+  methodName: string;
+  /** The raw single-page method this wrapper calls, e.g. `"ListAsync"`. */
+  rawMethodName: string;
+  /** C# type of a single page item, e.g. `"Store"`. */
+  itemType: string;
+  /** C# type of the page response model, e.g. `"PagedResult<Store>"`. Used only by the `nextLink` strategy, to type the page fetched directly through `_client`. */
+  pageType: string;
+  /** PascalCase name of the page model's items-array property, e.g. `"Items"`. */
+  itemsPropertyName: string;
+  /**
+   * Pre-joined parameter declaration list matching the raw method's own
+   * parameters, but without a trailing `CancellationToken` — the interface
+   * declaration and the client implementation each append their own form of it
+   * (see {@link renderPagingInterfaceMethod} / {@link renderPagingClientMethod}),
+   * since only the implementation is itself an iterator method.
+   */
+  paramsText: string;
+  /** Pre-joined argument list to call {@link rawMethodName} with; the paging input parameter (if any) is already substituted for its loop-local variable name. */
+  argsText: string;
+  /** `nextLink` strategy only: PascalCase name of the page model's next-link property, e.g. `"Next"`. */
+  nextLinkPropertyName?: string;
+  /** `continuationToken` strategy only: PascalCase name of the page model's continuation-token output property, e.g. `"ContinuationToken"`. */
+  continuationTokenPropertyName?: string;
+  /** `continuationToken` strategy only: expression seeding the local token variable, e.g. `"continuationToken"`. */
+  continuationTokenSeedExpression?: string;
+  /** `offset` / `pageIndex` strategy only: local loop variable name, e.g. `"currentOffset"`. */
+  counterVarName?: string;
+  /** `offset` / `pageIndex` strategy only: expression seeding the local counter variable, e.g. `"offset ?? 0"` or `"pageIndex"` (no `?? 0` needed when the parameter is required). */
+  counterSeedExpression?: string;
+}
+
 /** View model for an endpoint interface (`IWidgets`). */
 export interface EndpointInterfaceView {
   /** C# interface name, e.g. `"IWidgets"`. */
@@ -322,6 +380,8 @@ export interface EndpointInterfaceView {
   doc?: string;
   /** Ordered list of method view models. */
   methods: MethodView[];
+  /** Auto-paginating wrapper methods declared alongside the raw methods above. */
+  pagingMethods: PagingMethodView[];
   /** C# access modifier: `"public"` (default) or `"internal"`. */
   access: string;
 }
@@ -334,6 +394,8 @@ export interface EndpointClientView {
   interfaceName: string;
   /** Ordered list of method view models. */
   methods: MethodView[];
+  /** Auto-paginating wrapper methods implemented alongside the raw methods above. */
+  pagingMethods: PagingMethodView[];
 }
 
 /** View model passed to the `file` template — wraps any inner body with the file header. */
@@ -773,6 +835,146 @@ function renderClientMethod(m: MethodView): string {
 }
 
 /**
+ * Renders the interface declaration of a paging wrapper method.
+ *
+ * @param m - The paging method view.
+ * @returns The rendered member, indented for placement inside an interface.
+ */
+function renderPagingInterfaceMethod(m: PagingMethodView): string {
+  const params = `${m.paramsText}, ${fx("CancellationToken")} cancellationToken = default`;
+  return [
+    ...renderDocLines(
+      m.doc,
+      [],
+      `Retrieves every item across all pages of <see cref="${m.rawMethodName}"/>.`,
+    ),
+    `    ${fx("IAsyncEnumerable", "generic")}<${m.itemType}> ${m.methodName}(${params});`,
+  ].join("\n");
+}
+
+/**
+ * Renders the loop body statements for the `nextLink` strategy: reads the raw
+ * method's page, then follows the response's next-page link directly through
+ * `_client` (bypassing the raw method, since `nextLink` is an opaque absolute URL
+ * the raw method's own route cannot express) until none remains.
+ *
+ * @param m - The paging method view.
+ * @returns The statements, indented for placement inside the wrapper method body.
+ */
+function renderNextLinkPagingBody(m: PagingMethodView): string[] {
+  return [
+    `        var page = await ${m.rawMethodName}(${m.argsText}).ConfigureAwait(false);`,
+    `        foreach (var item in page.${m.itemsPropertyName})`,
+    `        {`,
+    `            cancellationToken.ThrowIfCancellationRequested();`,
+    `            yield return item;`,
+    `        }`,
+    ``,
+    `        var nextLink = page.${m.nextLinkPropertyName};`,
+    `        while (nextLink is not null)`,
+    `        {`,
+    `            var nextPage = await _client.Request(nextLink).GetJsonAsync<${m.pageType}>(cancellationToken: cancellationToken).ConfigureAwait(false);`,
+    `            if (nextPage is null) yield break;`,
+    `            foreach (var item in nextPage.${m.itemsPropertyName})`,
+    `            {`,
+    `                cancellationToken.ThrowIfCancellationRequested();`,
+    `                yield return item;`,
+    `            }`,
+    `            nextLink = nextPage.${m.nextLinkPropertyName};`,
+    `        }`,
+  ];
+}
+
+/**
+ * Renders the loop body statements for the `continuationToken` strategy: an
+ * ordinary request parameter, so the loop re-calls the raw method with the
+ * previous response's token substituted in, stopping once the response's token
+ * is empty.
+ *
+ * @param m - The paging method view.
+ * @returns The statements, indented for placement inside the wrapper method body.
+ */
+function renderContinuationTokenPagingBody(m: PagingMethodView): string[] {
+  return [
+    `        var token = ${m.continuationTokenSeedExpression};`,
+    `        do`,
+    `        {`,
+    `            var page = await ${m.rawMethodName}(${m.argsText}).ConfigureAwait(false);`,
+    `            foreach (var item in page.${m.itemsPropertyName})`,
+    `            {`,
+    `                cancellationToken.ThrowIfCancellationRequested();`,
+    `                yield return item;`,
+    `            }`,
+    `            token = page.${m.continuationTokenPropertyName};`,
+    `        } while (!string.IsNullOrEmpty(token));`,
+  ];
+}
+
+/**
+ * Renders the loop body statements for the `offset` / `pageIndex` strategy: also
+ * an ordinary request parameter, so the loop re-calls the raw method with the
+ * counter advanced (by received item count for `offset`, by one for `pageIndex`).
+ * There is no total-count signal in the paging metadata, so an empty page is the
+ * only reliable stop condition.
+ *
+ * @param m - The paging method view.
+ * @returns The statements, indented for placement inside the wrapper method body.
+ */
+function renderCounterPagingBody(m: PagingMethodView): string[] {
+  const advance =
+    m.strategy === "pageIndex"
+      ? `${m.counterVarName}++;`
+      : `${m.counterVarName} += count;`;
+  return [
+    `        var ${m.counterVarName} = ${m.counterSeedExpression};`,
+    `        while (true)`,
+    `        {`,
+    `            var page = await ${m.rawMethodName}(${m.argsText}).ConfigureAwait(false);`,
+    `            var count = 0;`,
+    `            foreach (var item in page.${m.itemsPropertyName})`,
+    `            {`,
+    `                cancellationToken.ThrowIfCancellationRequested();`,
+    `                count++;`,
+    `                yield return item;`,
+    `            }`,
+    `            if (count == 0) yield break;`,
+    `            ${advance}`,
+    `        }`,
+  ];
+}
+
+/**
+ * Renders the client implementation of a paging wrapper method: its signature
+ * (matching the interface declaration) and, dispatched on {@link PagingMethodView.strategy},
+ * the loop body appropriate to that strategy.
+ *
+ * @param m - The paging method view.
+ * @returns The rendered member, indented for placement inside the endpoint client class.
+ */
+function renderPagingClientMethod(m: PagingMethodView): string {
+  const params = `${m.paramsText}, [${fx("EnumeratorCancellation", "attribute")}] ${fx("CancellationToken")} cancellationToken = default`;
+  const lines = [
+    "    /// <inheritdoc />",
+    `    public async ${fx("IAsyncEnumerable", "generic")}<${m.itemType}> ${m.methodName}(${params})`,
+    "    {",
+  ];
+  switch (m.strategy) {
+    case "nextLink":
+      lines.push(...renderNextLinkPagingBody(m));
+      break;
+    case "continuationToken":
+      lines.push(...renderContinuationTokenPagingBody(m));
+      break;
+    case "offset":
+    case "pageIndex":
+      lines.push(...renderCounterPagingBody(m));
+      break;
+  }
+  lines.push("    }");
+  return lines.join("\n");
+}
+
+/**
  * Compiles all templates and returns a {@link Renderer} instance.
  *
  * Templates are compiled once; the returned renderer is cheap to call
@@ -834,7 +1036,10 @@ export function createRenderer(overrides: TemplateOverrides = {}): Renderer {
     },
 
     renderEndpointInterface(view) {
-      const methodBlocks = view.methods.map(renderInterfaceMethod);
+      const methodBlocks = [
+        ...view.methods.map(renderInterfaceMethod),
+        ...view.pagingMethods.map(renderPagingInterfaceMethod),
+      ];
       const methodsBlock =
         methodBlocks.length > 0 ? methodBlocks.join("\n\n") + "\n" : "";
       return interfaceTemplate({
@@ -846,7 +1051,10 @@ export function createRenderer(overrides: TemplateOverrides = {}): Renderer {
     },
 
     renderEndpointClient(view) {
-      const methodBlocks = view.methods.map(renderClientMethod);
+      const methodBlocks = [
+        ...view.methods.map(renderClientMethod),
+        ...view.pagingMethods.map(renderPagingClientMethod),
+      ];
       const methodsBlock =
         methodBlocks.length > 0 ? methodBlocks.join("\n\n") + "\n" : "";
       return clientTemplate({
