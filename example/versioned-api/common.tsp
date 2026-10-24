@@ -47,14 +47,34 @@ model ErrorResponse {
 }
 
 /**
- * Model template for paginated results from the API.
+ * Model template for paginated results from the API, followed by requesting
+ * the opaque `next` URL until it is absent.
  * This is not intended to be used directly, but rather to be extended
  * by specific models for paginated results using the pattern `model XList is PagedResult<X>`.
  */
 model PagedResult<T> {
     @doc("The collection of items in the current page of results.")
+    @pageItems
     items: T[];
 
     @doc("The total count of items in the collection, if known.")
     totalCount?: int32;
+
+    @doc("The URL to retrieve the next page of results, if any.")
+    @nextLink
+    next?: url;
+}
+
+/**
+ * Model template for paginated results from the API, continued by passing the
+ * returned `continuationToken` back into the next request.
+ */
+model TokenPagedResult<T> {
+    @doc("The collection of items in the current page of results.")
+    @pageItems
+    items: T[];
+
+    @doc("Opaque token to pass back in the next request to continue listing, if any.")
+    @continuationToken
+    continuationToken?: string;
 }

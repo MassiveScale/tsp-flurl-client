@@ -14,8 +14,13 @@ namespace MassiveScale.Sandbox.Api;
 @doc("Controller for Store entities.")
 interface Stores {
     @doc("Retrieves a list of all stores.")
+    @list
     @get
-    list(@query skip?: int32, @query take?: int32 = 25): PagedResult<Store>;
+    list(
+        @query skip?: int32,
+        @query take?: int32 = 25,
+        @header("X-Tenant-Id") tenantId?: string,
+    ): PagedResult<Store>;
 
     @doc("Retrieves a specific store by its unique identifier.")
     @get
@@ -46,12 +51,14 @@ interface Stores {
 @doc("Controller for Pet entities within a Store.")
 interface Pets {
     @doc("Retrieves a list of all pets in the specified store.")
+    @list
     @get
     list(
         @path storeId: string,
         @query skip?: int32,
         @query take?: int32 = 25,
-    ): Pet[];
+        @query @continuationToken continuationToken?: string,
+    ): TokenPagedResult<Pet>;
 
     @doc("Adds a new pet to the specified store.")
     @post

@@ -407,3 +407,30 @@ interface Admin {
   @post reindex(): void;
   @route("status") @get status(): Envelope<string>;
 }
+
+model Book {
+  title: string;
+}
+
+model SignedBook extends Book {
+  signedBy: string;
+}
+
+/** A discriminated page, whose derived page narrows the items it declares. */
+@discriminator("kind")
+model Catalog {
+  kind: string;
+  @pageItems items: Book[];
+  @nextLink next?: url;
+}
+
+model SignedCatalog extends Catalog {
+  kind: "signed";
+  items: SignedBook[];
+}
+
+@route("/catalogs")
+interface Catalogs {
+  @list @get signed(@header("X-Tenant") tenant?: string): SignedCatalog;
+  @route("any") @list @get any(): Catalog;
+}

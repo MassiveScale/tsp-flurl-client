@@ -487,6 +487,7 @@ A request or success response that cannot be sent or read correctly is reported 
 - A `@discriminator` model that is also a variant of another discriminated model (a nested discriminator). `System.Text.Json` can resolve only one discriminator per hierarchy: reading through the base type would return the wrong subtype, and writing a subtype would fail or omit a discriminator. Reported as `unsupported-nested-discriminator`. A grouping model with no discriminator of its own (`model Dog extends Animal {}`) is fine.
 - `@encode` values the client cannot honour (see the encodings table). Reported as `unsupported-encoding`, and an operation that sends or reads one is left out.
 - Streaming responses such as server-sent events are read in full before the call returns.
+- A `@list` operation whose paging shape cannot be auto-paginated: a paging property nested inside a sub-object, a non-string continuation token, a wrapper name another method already uses, or none of `@nextLink`/`@continuationToken`/`@offset`/`@pageIndex` to follow. Reported as `unsupported-paging-style`; the raw single-page method is still generated.
 
 ### Merge-patch request bodies
 
@@ -531,6 +532,46 @@ The expression form only accepts a property read straight off the lambda paramet
 Because the parameter is the covariant `IMergePatch<Widget>`, a `MergePatch<MyWidget>` is accepted too, so you can patch your own extension properties.
 
 > **Note:** this is the client-side counterpart to the `MergePatch<T>` emitted by `@massivescale/tsp-aspnetcore-api`. That one is built for _reading_ a patch in a controller; this one is built for _writing_ one. If your solution references both generated projects, the two types live in different namespaces and do not conflict — but don't `using` both into the same file.
+
+### Pagination
+
+A `@list` operation whose response is shaped with TypeSpec's own pagination decorators gets an extra `IAsyncEnumerable<T>` method alongside the raw single-page one, so you don't have to write the page-following loop yourself:
+
+```typespec
+model PagedResult<T> {
+  @pageItems items: T[];
+  @nextLink next?: url;
+}
+
+@route("/stores")
+interface Stores {
+  @list @get list(@query skip?: int32, @query take?: int32): PagedResult<Store>;
+}
+```
+
+```csharp
+Task<PagedResult<Store>> ListAsync(int? skip, int? take, ...);   // one page
+IAsyncEnumerable<Store> ListAllAsync(int? skip, int? take, ...); // every page
+
+await foreach (var store in client.Stores.ListAllAsync(cancellationToken: ct))
+{
+    Console.WriteLine(store.Name);
+}
+```
+
+Three paging styles are supported, detected from whichever decorators the page model and operation parameters carry (priority `@nextLink` > `@continuationToken` > `@offset`/`@pageIndex`, when a page model somehow carries more than one):
+
+| Decorator                         | How `ListAllAsync` follows it                                                                                                                               |
+| --------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `@nextLink` (a `url` or `string`) | Follows the link directly through `_client`, resolved against the URL of the page that returned it, replaying the operation's header and cookie parameters. |
+| `@continuationToken` (a `string`) | Re-calls the raw method with the previous response's token in place of the matching input parameter, until the token comes back empty.                      |
+| `@offset` / `@pageIndex`          | Re-calls the raw method with the counter advanced, until a page comes back with no items (there is no total-count signal to stop on otherwise).             |
+
+A relative next link resolves against the page that returned it, as RFC 3986 has it: `?skip=25` keeps that page's path, and `page2` replaces its last segment. To know the first page's URL, the wrapper sends the first request itself, built by the same private method the raw method uses. A next link is server-controlled, so once resolved it must stay on the origin (scheme, host, and port) of the client's base URL. A link to any other origin throws `InvalidOperationException` before anything is sent, so neither the operation's headers and cookies nor credentials configured on the client itself reach another host. A continuation request does not follow redirects automatically: a 301, 302, 303, 307, or 308 is followed by the wrapper itself, resolving `Location` against the URL that redirected, checking the target's origin the same way before sending anything there, and replaying the same header and cookie parameters, up to 50 redirects per page. The first page goes through the client's normal redirect handling, as the raw method does. Redirects are always Flurl's to follow: `Create` uses Flurl's own handler, and the `Add...Client` registration gives its `HttpClient` a handler that does not follow them either. A primary handler you set through `configureBuilder` replaces that one, and then decides redirects for you. A response declared with a bodyless success (`PagedResult<Store> | void`) ends the enumeration when it arrives.
+
+`@prevLink`, `@firstLink`, `@lastLink`, and `@pageSize` are read as ordinary model and operation properties — they're backward and random-access links, not something a forward-only `IAsyncEnumerable<T>` follows.
+
+A page model whose paging property is nested inside a sub-object, a non-string continuation token, a `@list` operation carrying none of the decorators above, or a wrapper whose name another method of the interface already uses, is reported as `unsupported-paging-style`; the raw single-page method is still generated.
 
 ## Development
 

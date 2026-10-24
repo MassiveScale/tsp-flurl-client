@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-10-24
+
+### Added
+
+- **Pagination.** An operation marked `@list` whose response declares `@pageItems` also gets an `IAsyncEnumerable<T>` method that reads every page, driven by TypeSpec's own paging decorators: `@nextLink`, `@continuationToken`, `@offset`, or `@pageIndex`. A next link is resolved against the page it came from and followed with the operation's header and cookie parameters, only on the origin of the client's base URL: a link or redirect to any other origin throws before it is sent. A paging shape the method cannot read is reported as `unsupported-paging-style`, and the single-page method is generated as before.
+
+### Changed
+
+- **Redirects under dependency injection.** The client registered by `Add{Client}` no longer has its `HttpClientHandler` follow redirects; Flurl follows them instead, as it already did for a client built with `Create`. Flurl does not send custom headers again on a redirect. A primary handler you set through `configureBuilder` still decides this for you.
+
 ### Fixed
 
 - A `utcDateTime` or `offsetDateTime` header with no `@encode` is sent as an RFC 7231 date (`Tue, 02 Jan 2024 03:04:05 GMT`), as TypeSpec specifies, instead of ISO 8601. An explicit `@encode(DateTimeKnownEncoding.rfc3339)` keeps ISO 8601, and cookies, query and path values are unchanged.

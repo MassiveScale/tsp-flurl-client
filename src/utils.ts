@@ -698,6 +698,18 @@ export function toCsMethodName(name: string): string {
 }
 
 /**
+ * Derives the C# method name for an auto-paginating wrapper: PascalCase plus the
+ * `AllAsync` suffix (e.g. `list` → `ListAllAsync`), distinguishing it from the raw
+ * single-page method's `Async` suffix.
+ *
+ * @param name - The TypeSpec operation name.
+ * @returns The C# paging wrapper method name.
+ */
+export function toCsPagingMethodName(name: string): string {
+  return capitalize(name) + "AllAsync";
+}
+
+/**
  * Derives the C# parameter name (camelCase) by lower-casing the first character.
  *
  * @param name - The source name.

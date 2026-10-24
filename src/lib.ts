@@ -318,6 +318,12 @@ export const $lib = createTypeSpecLibrary({
         case: paramMessage`Generated file names "${"firstName"}.g.cs" and "${"name"}.g.cs" differ only in case, which is the same file on Windows and macOS: ${"first"} and ${"second"}. Give one of them another name with @clientName.`,
       },
     },
+    "unsupported-paging-style": {
+      severity: "warning",
+      messages: {
+        default: paramMessage`Operation "${"operation"}" is marked @list, but its paging shape (${"reason"}) is not one this emitter can auto-paginate, so only the raw single-page method was generated. Supported shapes: a flat @nextLink url, a flat @continuationToken matched by an input parameter of the same role, or a flat @offset or @pageIndex input parameter — each declared directly on the page response model or operation parameters, not nested inside a sub-object.`,
+      },
+    },
   },
   emitter: {
     options: EmitterOptionsSchema,

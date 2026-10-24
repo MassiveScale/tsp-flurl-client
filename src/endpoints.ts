@@ -10,10 +10,14 @@ import {
   Model,
   ModelProperty,
   Enum,
+  Operation,
   Type,
   Program,
+  getPagingOperation,
   isArrayModelType,
+  isList,
   isRecordModelType,
+  type PagingProperty,
 } from "@typespec/compiler";
 import {
   HttpOperation,
@@ -38,6 +42,8 @@ import {
   CookieParamView,
   PayloadKind,
   FileView,
+  PagingMethodView,
+  PagingStrategy,
 } from "./renderer.js";
 import { getClientName, getAccess } from "./decorators.js";
 import { checkName, MemberScope } from "./names.js";
@@ -58,7 +64,9 @@ import {
   findModelSlot,
   capitalize,
   toCsMethodName,
+  toCsPagingMethodName,
   toCsParamName,
+  toCsPropName,
   escapeCsIdentifier,
   unwrapType,
   type TypeWrapper,
@@ -580,7 +588,7 @@ export function buildEndpoint(
   // `read` and `Read` both become `ReadAsync`, which C# would reject as a duplicate
   // member (or an ambiguous overload), so the second is reported and left out.
   const methodScope = new MemberScope(program, "method", `interface ${csName}`);
-  const methods = ops.flatMap((op) => {
+  const built = ops.flatMap((op) => {
     // An operation whose name is not a valid C# identifier is reported and left
     // out, rather than rendered as a method that cannot compile.
     const declaredName =
@@ -597,20 +605,46 @@ export function buildEndpoint(
       routePrefix,
     );
     if (!view) return [];
-    return methodScope.claim(
-      view.methodName,
-      `operation "${op.operation.name}"`,
-      op.operation,
-    )
-      ? [view]
-      : [];
+    if (
+      !methodScope.claim(
+        view.methodName,
+        `operation "${op.operation.name}"`,
+        op.operation,
+      )
+    ) {
+      return [];
+    }
+    return [{ op, view }];
   });
+  // Wrapper names are claimed only after every operation has its own, so adding
+  // pagination to `list` can never push out a separately declared `listAll`: the
+  // wrapper is the one left out.
+  const memberNames = new Set(built.map(({ view }) => view.methodName));
+  for (const { op, view } of built) {
+    if (!view.paging) continue;
+    if (memberNames.has(view.paging.methodName)) {
+      reportUnsupportedPaging(
+        program,
+        op.operation,
+        `a wrapper name, ${view.paging.methodName}, that another method of the interface already uses`,
+      );
+      view.paging = undefined;
+      continue;
+    }
+    memberNames.add(view.paging.methodName);
+  }
+  const methods = built.map(({ view }) => view);
+
+  const pagingMethods = methods
+    .map((m) => m.paging)
+    .filter((p): p is PagingMethodView => p !== undefined);
 
   const interfaceView: EndpointInterfaceView = {
     interfaceName: csName,
     doc,
     access,
     methods,
+    pagingMethods,
   };
   const interfaceFile: FileView = {
     namespace: csNs,
@@ -620,6 +654,9 @@ export function buildEndpoint(
         "System.Text.Json",
         "System.Threading",
         "System.Threading.Tasks",
+        ...(pagingMethods.length > 0
+          ? ["System.Runtime.CompilerServices"]
+          : []),
         ...additionalUsings,
       ]),
     ]),
@@ -631,6 +668,7 @@ export function buildEndpoint(
     className: csClientName,
     interfaceName: csName,
     methods,
+    pagingMethods,
   };
   const clientFile: FileView = {
     namespace: csNs,
@@ -644,6 +682,9 @@ export function buildEndpoint(
         "System.Text.Json",
         "System.Threading",
         "System.Threading.Tasks",
+        ...(pagingMethods.length > 0
+          ? ["System.Runtime.CompilerServices"]
+          : []),
         ...additionalUsings,
       ]),
     ]),
@@ -733,8 +774,16 @@ function buildMethodView(
   );
   registerErrorModels(op.responses, program, models, enums, usedHelpers);
 
-  const requiredParams: { decl: string; name: string }[] = [];
-  const optionalParams: { decl: string; name: string }[] = [];
+  const requiredParams: {
+    decl: string;
+    name: string;
+    property?: ModelProperty;
+  }[] = [];
+  const optionalParams: {
+    decl: string;
+    name: string;
+    property?: ModelProperty;
+  }[] = [];
   const queryParams: QueryParamView[] = [];
   const headerParams: HeaderParamView[] = [];
   const cookieParams: CookieParamView[] = [];
@@ -853,6 +902,7 @@ function buildMethodView(
     (isOptional ? optionalParams : requiredParams).push({
       decl,
       name: csParam,
+      property: param.param,
     });
   }
 
@@ -991,6 +1041,23 @@ function buildMethodView(
     },
   ];
 
+  const paging = buildPagingMethodView(
+    op.operation,
+    program,
+    models,
+    enums,
+    usedHelpers,
+    allParams,
+    baseMethodName,
+    methodName,
+    doc,
+    response ? withoutNullable(response.view.type) : undefined,
+    response?.view.type.endsWith("?") ?? false,
+    headerParams,
+    cookieParams,
+    pageBodyModel(op.responses),
+  );
+
   return {
     doc,
     methodName,
@@ -998,6 +1065,7 @@ function buildMethodView(
       ? `${fx("Task", "generic")}<${response.view.type}>`
       : fx("Task"),
     paramsText: allParams.map((p) => p.decl).join(", "),
+    paging,
     bodyGeneric: bodyGeneric && {
       constraint: bodyGeneric.constraint,
       paramsText: allParams
@@ -1017,6 +1085,520 @@ function buildMethodView(
     response: response?.view,
     generic: response?.generic,
   };
+}
+
+/**
+ * Reports the `unsupported-paging-style` warning for an operation whose `@list`
+ * paging metadata doesn't resolve to a strategy this emitter can generate a
+ * wrapper for. The raw single-page method is still generated.
+ *
+ * @param program - The compiler program, used to report the diagnostic.
+ * @param operation - The `@list` operation.
+ * @param reason - Human-readable explanation, interpolated into the message.
+ */
+function reportUnsupportedPaging(
+  program: Program,
+  operation: Operation,
+  reason: string,
+): void {
+  reportOnce(
+    program,
+    createDiagnostic({
+      code: "unsupported-paging-style",
+      target: operation,
+      format: { operation: operation.name, reason },
+    }),
+  );
+}
+
+/** Whether a resolved paging role lives directly on the page model (or operation parameters) rather than a nested sub-object. */
+function isFlatPagingProperty(p: PagingProperty): boolean {
+  return p.path.length <= 1;
+}
+
+/**
+ * Picks a local variable name that collides with neither an already-taken name
+ * (the operation's own forwarded parameters, or an earlier local allocated in
+ * the same method) nor, after this call, any later one — generated loop bodies
+ * reference these names verbatim, so a real collision (a parameter named
+ * `token`, `page`, or `count`, all plausible TypeSpec identifiers) would
+ * otherwise produce self-referential or outright non-compiling C#.
+ *
+ * @param base - The preferred name, e.g. `"page"`.
+ * @param taken - Names already in scope; mutated to also claim the result.
+ * @returns `base`, or `base` suffixed with the first free number starting at 2.
+ */
+function uniqueLocalName(base: string, taken: Set<string>): string {
+  let candidate = base;
+  for (let n = 2; taken.has(candidate); n++) {
+    candidate = `${base}${n}`;
+  }
+  taken.add(candidate);
+  return candidate;
+}
+
+/**
+ * The C# numeric literal of a parameter's declared TypeSpec default
+ * (`@query @pageIndex pageIndex?: int32 = 1` → `"1"`), when it has one.
+ *
+ * Only a paging wrapper's own synthesized counter-seed expression consults
+ * this — the raw method's own parameter still defaults to plain C# `null`
+ * either way, since that convention is unrelated to what starting number
+ * *this* generated loop should assume when the caller omits the parameter
+ * entirely.
+ *
+ * @param property - The operation parameter.
+ * @returns The literal text, or `undefined` when there is no numeric default.
+ */
+function numericDefaultLiteral(property: ModelProperty): string | undefined {
+  const value = property.defaultValue;
+  return value?.valueKind === "NumericValue"
+    ? value.value.toString()
+    : undefined;
+}
+
+/**
+ * The model every success response of a paged operation carries as its body.
+ * `Page | null` and `Page | void` count as `Page`.
+ *
+ * @param responses - The operation's HTTP responses.
+ * @returns The model, or `undefined` when the successes carry different bodies or the
+ *   body is not a model.
+ */
+function pageBodyModel(responses: HttpOperationResponse[]): Model | undefined {
+  const types = new Set(
+    successBodies(responses).map((b) => soleVariant(b.type)?.type ?? b.type),
+  );
+  if (types.size !== 1) return undefined;
+  const [type] = types;
+  return type.kind === "Model" && !isArrayModelType(type) && !type.indexer
+    ? type
+    : undefined;
+}
+
+/**
+ * The declaration of a page property whose C# type the page's record has. A record is
+ * flattened from its model and that model's bases, so a page redeclaring
+ * `items: NarrowItem[]` has `List<NarrowItem> Items`. A model in a `@discriminator`
+ * hierarchy instead derives from its base's record, which already declares the
+ * property, and leaves the redeclaration out (see `buildPropertyViews`), so the base
+ * record's declaration is the one it has. The compiler reports a paging role where it
+ * is decorated, which can be a base whose property the page narrows, so this is
+ * resolved by name rather than taken from the reported property.
+ *
+ * @param program - The compiler program.
+ * @param pageModel - The page model, or `undefined` when there is none.
+ * @param property - The paging property, wherever in the page's bases it is declared.
+ * @returns The declaration the record's property is typed from.
+ */
+function recordProperty(
+  program: Program,
+  pageModel: Model | undefined,
+  property: ModelProperty,
+): ModelProperty {
+  if (!pageModel) return property;
+  // The page's record, then each record it derives from.
+  const records = [pageModel];
+  for (
+    let base = pageModel.baseModel;
+    base && findDiscriminatedRoot(program, base);
+    base = base.baseModel
+  ) {
+    records.push(base);
+  }
+  // The topmost record is flattened; the ones deriving from it add only their own.
+  const top = records[records.length - 1];
+  const fromTop = flattenProperties(top).get(property.name);
+  if (fromTop) return fromTop;
+  for (let i = records.length - 2; i >= 0; i--) {
+    const own = records[i].properties.get(property.name);
+    if (own) return own;
+  }
+  return property;
+}
+
+/**
+ * Builds the {@link PagingMethodView} for an operation, when its `@list` paging
+ * metadata resolves to a supported forward-iteration strategy.
+ *
+ * Detection follows the TypeSpec core pagination metadata exclusively — `@list` +
+ * `getPagingOperation` — never a bespoke decorator or an assumed field-naming
+ * convention, since this emitter is a public library with no tie to any one
+ * organization's API shape.
+ *
+ * Priority when a page model exposes more than one forward-iteration signal is
+ * `nextLink` > `continuationToken` > `offset`/`pageIndex`, since `nextLink` is the
+ * most self-contained (the URL already embeds everything the next request
+ * needs). `prevLink`/`firstLink`/`lastLink` are backward/random-access links, not
+ * forward-iteration drivers, and never influence this selection — they still
+ * render as ordinary model properties via the ordinary record codegen.
+ *
+ * @param operation - The TypeSpec operation (only consulted for `@list`/paging metadata).
+ * @param program - The compiler program.
+ * @param models - Accumulator for referenced named models (see {@link mapType}).
+ * @param enums - Accumulator for referenced named enums (see {@link mapType}).
+ * @param usedHelpers - Accumulator for required helper classes (see {@link mapType}).
+ * @param allParams - The raw method's full, ordered parameter list (required then optional).
+ * @param baseMethodName - The TypeSpec-derived base operation name (e.g. `"list"`).
+ * @param rawMethodName - The raw single-page method's C# name (e.g. `"ListAsync"`).
+ * @param doc - The operation's doc comment (already escaped), carried onto the wrapper.
+ * @param rawResponseType - The raw method's own resolved (non-generic, non-nullable)
+ *   response body type (e.g. `"PagedResult<Store>"`), reused verbatim as the
+ *   `nextLink` strategy's continuation-page type, so it can never drift from
+ *   whatever the raw method itself actually returns — regardless of which model
+ *   in an inheritance chain happens to declare `@pageItems`/`@nextLink`.
+ *   `undefined` (an operation with no response body) can't reach here, since
+ *   `getPagingOperation` wouldn't have resolved a `pageItems` role in the first place.
+ * @param pageNullable - Whether the raw method can return `null` instead of a page,
+ *   as it does for a declared bodyless success (`PagedResult<Store> | void`).
+ * @param headerParams - The raw method's header bindings, replayed on every
+ *   `nextLink` continuation request (which goes through `_client` directly,
+ *   not the raw method, so none of its own bindings would otherwise apply).
+ * @param cookieParams - The raw method's cookie bindings, replayed the same way.
+ * @param pageModel - The model the success responses carry as their body (see {@link pageBodyModel}).
+ * @returns The paging wrapper view, or `undefined` when the operation isn't
+ *   `@list`, carries no usable paging metadata, or resolves to an unsupported shape
+ *   (in which case a diagnostic has already been reported).
+ */
+function buildPagingMethodView(
+  operation: Operation,
+  program: Program,
+  models: Map<string, Model>,
+  enums: Map<string, Enum>,
+  usedHelpers: UsedHelpers,
+  allParams: { decl: string; name: string; property?: ModelProperty }[],
+  baseMethodName: string,
+  rawMethodName: string,
+  doc: string | undefined,
+  rawResponseType: string | undefined,
+  pageNullable: boolean,
+  headerParams: HeaderParamView[],
+  cookieParams: CookieParamView[],
+  pageModel: Model | undefined,
+): PagingMethodView | undefined {
+  if (!isList(program, operation)) return undefined;
+
+  const [pagingOp] = getPagingOperation(program, operation);
+  // `pagingOp` undefined means the operation is missing `@pageItems`; the
+  // compiler's own `validatePagingOperations` pass already reported that.
+  if (!pagingOp) return undefined;
+
+  if (!isFlatPagingProperty(pagingOp.output.pageItems)) {
+    reportUnsupportedPaging(
+      program,
+      operation,
+      "a nested paging property, not declared directly on the page response model",
+    );
+    return undefined;
+  }
+
+  // Typed from the property the record exposes, which a discriminated page that
+  // narrows its items does not redeclare.
+  const pageItemsProp = recordProperty(
+    program,
+    pageModel,
+    pagingOp.output.pageItems.property,
+  );
+  if (pageItemsProp.optional) {
+    reportUnsupportedPaging(
+      program,
+      operation,
+      "an optional (nullable) @pageItems array, which the generated loop cannot safely enumerate when the server omits it",
+    );
+    return undefined;
+  }
+  // The decorated items can be narrowed from a base declaration that is no list at all
+  // (`items: unknown`), and the record holds the base's declaration.
+  if (
+    pageItemsProp.type.kind !== "Model" ||
+    !isArrayModelType(pageItemsProp.type)
+  ) {
+    reportUnsupportedPaging(
+      program,
+      operation,
+      "an items property the page's record does not hold as a list",
+    );
+    return undefined;
+  }
+  const itemsArrayModel = pageItemsProp.type;
+  const itemType = mapType(
+    itemsArrayModel.indexer!.value,
+    program,
+    models,
+    enums,
+    usedHelpers,
+  );
+  const itemsPropertyName = toCsPropName(
+    getClientName(program, pageItemsProp) ?? pageItemsProp.name,
+  );
+
+  // The page type is the raw method's own resolved response type, never
+  // re-derived from wherever `@pageItems` happens to be declared: those can be
+  // different models when paging properties are split across an inheritance
+  // hierarchy, and only the operation's actual response type is guaranteed to
+  // carry every paging property this function goes on to read off of it. An
+  // anonymous or otherwise unmappable response maps to plain "object", which
+  // has no `.Items`/`.Next`/etc. members to read — generating against it would
+  // produce C# that cannot compile, so it's rejected outright instead. This
+  // also, as a side effect, covers a paging property bound to a response
+  // header rather than the JSON body: `@typespec/http` synthesizes an
+  // anonymous implicit body for whatever's left over whenever any response
+  // property is pulled out as a header, so `rawResponseType` is already
+  // "object" by the time such a case would reach here — no separate check needed.
+  const pageType = rawResponseType ?? "object";
+  if (pageType === "object") {
+    reportUnsupportedPaging(
+      program,
+      operation,
+      `an anonymous or unmappable page response type (there is no named C# type to read .${itemsPropertyName} from)`,
+    );
+    return undefined;
+  }
+
+  // `allParams` already ends with the raw method's own plain `CancellationToken`
+  // entry (see its construction above); the wrapper declares its own
+  // `[EnumeratorCancellation]`-attributed one instead; dropped here so it is
+  // forwarded (and declared) exactly once rather than twice.
+  const forwardParams = allParams.slice(0, -1);
+  const commonDecls = forwardParams.map((p) => p.decl);
+  const methodName = toCsPagingMethodName(baseMethodName);
+  // The trailing CancellationToken is deliberately left off here: the interface
+  // declaration and the client implementation need different forms of it (see
+  // renderPagingInterfaceMethod / renderPagingClientMethod) — an
+  // [EnumeratorCancellation] attribute has no effect on an interface member,
+  // since it isn't itself an iterator method, and the compiler warns (CS8424)
+  // if it's there anyway.
+  const paramsText = commonDecls.join(", ");
+
+  // Every local identifier the generated loop body introduces must avoid
+  // colliding with a forwarded parameter name — a realistic TypeSpec operation
+  // can plausibly declare a parameter literally named "token", "page", or
+  // "count" — and with each other, hence the single shared `taken` set and
+  // sequential allocation below (each call also claims its own result).
+  const taken = new Set(forwardParams.map((p) => p.name));
+  taken.add("cancellationToken");
+  const pageVarName = uniqueLocalName("page", taken);
+  const itemVarName = uniqueLocalName("item", taken);
+
+  const base: Pick<
+    PagingMethodView,
+    | "doc"
+    | "methodName"
+    | "rawMethodName"
+    | "itemType"
+    | "pageType"
+    | "itemsPropertyName"
+    | "paramsText"
+    | "pageVarName"
+    | "itemVarName"
+    | "pageNullable"
+  > = {
+    doc,
+    methodName,
+    rawMethodName,
+    itemType,
+    pageType,
+    itemsPropertyName,
+    paramsText,
+    pageVarName,
+    itemVarName,
+    pageNullable,
+  };
+
+  const nextLink = pagingOp.output.nextLink;
+  if (nextLink) {
+    if (!isFlatPagingProperty(nextLink)) {
+      reportUnsupportedPaging(
+        program,
+        operation,
+        "a nested paging property, not declared directly on the page response model",
+      );
+      return undefined;
+    }
+    const nextLinkProp = recordProperty(program, pageModel, nextLink.property);
+    const nextLinkPropertyName = toCsPropName(
+      getClientName(program, nextLinkProp) ?? nextLinkProp.name,
+    );
+    const nextLinkCsType = withoutNullable(
+      mapPropertyType(nextLinkProp, program, models, enums, usedHelpers),
+    );
+    // The link is resolved with `new Uri(baseUri, link)`, which takes a string or a
+    // Uri; a link formatted as anything else (`@format("uuid")`) cannot be followed.
+    if (nextLinkCsType !== "string" && nextLinkCsType !== fx("Uri")) {
+      reportUnsupportedPaging(
+        program,
+        operation,
+        `a next link that is neither a string nor a URL (it maps to ${nextLinkCsType})`,
+      );
+      return undefined;
+    }
+    // The builder takes everything that shapes the request but the body, which is
+    // attached when it is sent.
+    const builderParams = forwardParams.filter((p) => p.name !== "body");
+    // The wrapper sends the first page with the raw method's own local names.
+    taken.add("flurlRequest");
+    taken.add("flurlResponse");
+    return {
+      ...base,
+      strategy: "nextLink",
+      requestBuilder: {
+        name: `${rawMethodName.replace(/Async$/, "")}Request`,
+        paramsText: builderParams.map((p) => p.decl).join(", "),
+        argsText: builderParams.map((p) => p.name).join(", "),
+      },
+      pageUriVarName: uniqueLocalName("pageUri", taken),
+      argsText: [...forwardParams.map((p) => p.name), "cancellationToken"].join(
+        ", ",
+      ),
+      nextLinkPropertyName,
+      nextLinkIsString: nextLinkCsType === "string",
+      nextLinkVarName: uniqueLocalName("nextLink", taken),
+      baseUriVarName: uniqueLocalName("baseUri", taken),
+      nextUriVarName: uniqueLocalName("nextUri", taken),
+      nextRequestVarName: uniqueLocalName("nextRequest", taken),
+      nextResponseVarName: uniqueLocalName("nextResponse", taken),
+      redirectsVarName: uniqueLocalName("redirects", taken),
+      nextPageVarName: uniqueLocalName("nextPage", taken),
+      headerParams,
+      cookieParams,
+    };
+  }
+
+  const continuationToken = pagingOp.output.continuationToken;
+  if (continuationToken) {
+    if (!isFlatPagingProperty(continuationToken)) {
+      reportUnsupportedPaging(
+        program,
+        operation,
+        "a nested paging property, not declared directly on the page response model",
+      );
+      return undefined;
+    }
+    const inputToken = pagingOp.input.continuationToken;
+    const inputParam = inputToken
+      ? forwardParams.find((p) => p.property === inputToken.property)
+      : undefined;
+    if (!inputParam) {
+      reportUnsupportedPaging(
+        program,
+        operation,
+        "a @continuationToken output with no matching input parameter to feed it back into",
+      );
+      return undefined;
+    }
+    // The loop stops on an empty token and feeds the response's token straight
+    // back into the input parameter, which only works when both are strings: a
+    // `@format("uuid")` token maps to `Guid`, which has no "empty" to stop on.
+    const tokenProp = recordProperty(
+      program,
+      pageModel,
+      continuationToken.property,
+    );
+    const tokenTypes = [inputToken!.property, tokenProp].map((p) =>
+      withoutNullable(mapPropertyType(p, program, models, enums, usedHelpers)),
+    );
+    if (tokenTypes.some((t) => t !== "string")) {
+      reportUnsupportedPaging(
+        program,
+        operation,
+        `a non-string continuation token (${[...new Set(tokenTypes)].join(" / ")}), which the generated loop cannot test for emptiness or feed back unchanged`,
+      );
+      return undefined;
+    }
+    const continuationTokenPropertyName = toCsPropName(
+      getClientName(program, tokenProp) ?? tokenProp.name,
+    );
+    const tokenVarName = uniqueLocalName("token", taken);
+    return {
+      ...base,
+      strategy: "continuationToken",
+      argsText: [
+        ...forwardParams.map((p) => (p === inputParam ? tokenVarName : p.name)),
+        "cancellationToken",
+      ].join(", "),
+      continuationTokenPropertyName,
+      continuationTokenSeedExpression: inputParam.name,
+      tokenVarName,
+    };
+  }
+
+  const offsetInput = pagingOp.input.offset;
+  const pageIndexInput = pagingOp.input.pageIndex;
+  const counterInput = offsetInput ?? pageIndexInput;
+  const counterStrategy:
+    Extract<PagingStrategy, "offset" | "pageIndex"> | undefined = offsetInput
+    ? "offset"
+    : pageIndexInput
+      ? "pageIndex"
+      : undefined;
+  if (counterInput && counterStrategy) {
+    if (!isFlatPagingProperty(counterInput)) {
+      reportUnsupportedPaging(
+        program,
+        operation,
+        "a nested paging property, not declared directly on the operation's parameters",
+      );
+      return undefined;
+    }
+    const inputParam = forwardParams.find(
+      (p) => p.property === counterInput.property,
+    );
+    if (!inputParam) {
+      reportUnsupportedPaging(
+        program,
+        operation,
+        `an @${counterStrategy} input parameter that could not be matched to a generated method parameter`,
+      );
+      return undefined;
+    }
+    const counterVarName = uniqueLocalName(
+      counterStrategy === "offset" ? "currentOffset" : "currentPageIndex",
+      taken,
+    );
+    const countVarName = uniqueLocalName("count", taken);
+    // When the caller omits the parameter, the raw method's own C# parameter
+    // still defaults to plain `null` (so the request simply leaves it off and
+    // the server applies its own default) — but *this* generated loop needs a
+    // concrete number to start counting from regardless, so it falls back to
+    // the parameter's declared TypeSpec default when it has one (honoring,
+    // say, a documented 1-based `pageIndex`), and to 0 only otherwise.
+    const counterSeedExpression = counterInput.property.optional
+      ? `${inputParam.name} ?? ${numericDefaultLiteral(counterInput.property) ?? "0"}`
+      : inputParam.name;
+    // The per-page item count is always a plain `int`, but the counter can be
+    // any integer scalar the author declared (`@offset offset: uint64`, for
+    // instance) — C# has no built-in `+=` between an unrelated integer type
+    // and a non-constant `int`, so `offset`'s advance step casts the count to
+    // match (`pageIndex`'s `++` needs no such cast; it works on any numeric type).
+    const counterCsType = mapPropertyType(
+      counterInput.property,
+      program,
+      models,
+      enums,
+      usedHelpers,
+    );
+    return {
+      ...base,
+      strategy: counterStrategy,
+      argsText: [
+        ...forwardParams.map((p) =>
+          p === inputParam ? counterVarName : p.name,
+        ),
+        "cancellationToken",
+      ].join(", "),
+      counterVarName,
+      counterSeedExpression,
+      countVarName,
+      counterCsType,
+    };
+  }
+
+  reportUnsupportedPaging(
+    program,
+    operation,
+    "no recognized forward-iteration signal — @prevLink/@firstLink/@lastLink and @pageSize alone don't drive iteration",
+  );
+  return undefined;
 }
 
 /**
