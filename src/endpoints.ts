@@ -1006,6 +1006,9 @@ function buildMethodView(
     baseMethodName,
     methodName,
     doc,
+    response ? withoutNullable(response.view.type) : undefined,
+    headerParams,
+    cookieParams,
   );
 
   return {
@@ -1067,6 +1070,45 @@ function isFlatPagingProperty(p: PagingProperty): boolean {
 }
 
 /**
+ * Picks a local variable name that collides with neither an already-taken name
+ * (the operation's own forwarded parameters, or an earlier local allocated in
+ * the same method) nor, after this call, any later one — generated loop bodies
+ * reference these names verbatim, so a real collision (a parameter named
+ * `token`, `page`, or `count`, all plausible TypeSpec identifiers) would
+ * otherwise produce self-referential or outright non-compiling C#.
+ *
+ * @param base - The preferred name, e.g. `"page"`.
+ * @param taken - Names already in scope; mutated to also claim the result.
+ * @returns `base`, or `base` suffixed with the first free number starting at 2.
+ */
+function uniqueLocalName(base: string, taken: Set<string>): string {
+  let candidate = base;
+  for (let n = 2; taken.has(candidate); n++) {
+    candidate = `${base}${n}`;
+  }
+  taken.add(candidate);
+  return candidate;
+}
+
+/**
+ * The C# numeric literal of a parameter's declared TypeSpec default
+ * (`@query @pageIndex pageIndex?: int32 = 1` → `"1"`), when it has one.
+ *
+ * Only a paging wrapper's own synthesized counter-seed expression consults
+ * this — the raw method's own parameter still defaults to plain C# `null`
+ * either way, since that convention is unrelated to what starting number
+ * *this* generated loop should assume when the caller omits the parameter
+ * entirely.
+ *
+ * @param property - The operation parameter.
+ * @returns The literal text, or `undefined` when there is no numeric default.
+ */
+function numericDefaultLiteral(property: ModelProperty): string | undefined {
+  const value = property.defaultValue;
+  return value?.valueKind === "NumericValue" ? value.value.toString() : undefined;
+}
+
+/**
  * Builds the {@link PagingMethodView} for an operation, when its `@list` paging
  * metadata resolves to a supported forward-iteration strategy.
  *
@@ -1091,6 +1133,17 @@ function isFlatPagingProperty(p: PagingProperty): boolean {
  * @param baseMethodName - The TypeSpec-derived base operation name (e.g. `"list"`).
  * @param rawMethodName - The raw single-page method's C# name (e.g. `"ListAsync"`).
  * @param doc - The operation's doc comment (already escaped), carried onto the wrapper.
+ * @param rawResponseType - The raw method's own resolved (non-generic, non-nullable)
+ *   response body type (e.g. `"PagedResult<Store>"`), reused verbatim as the
+ *   `nextLink` strategy's continuation-page type, so it can never drift from
+ *   whatever the raw method itself actually returns — regardless of which model
+ *   in an inheritance chain happens to declare `@pageItems`/`@nextLink`.
+ *   `undefined` (an operation with no response body) can't reach here, since
+ *   `getPagingOperation` wouldn't have resolved a `pageItems` role in the first place.
+ * @param headerParams - The raw method's header bindings, replayed on every
+ *   `nextLink` continuation request (which goes through `_client` directly,
+ *   not the raw method, so none of its own bindings would otherwise apply).
+ * @param cookieParams - The raw method's cookie bindings, replayed the same way.
  * @returns The paging wrapper view, or `undefined` when the operation isn't
  *   `@list`, carries no usable paging metadata, or resolves to an unsupported shape
  *   (in which case a diagnostic has already been reported).
@@ -1105,6 +1158,9 @@ function buildPagingMethodView(
   baseMethodName: string,
   rawMethodName: string,
   doc: string | undefined,
+  rawResponseType: string | undefined,
+  headerParams: HeaderParamView[],
+  cookieParams: CookieParamView[],
 ): PagingMethodView | undefined {
   if (!isList(program, operation)) return undefined;
 
@@ -1123,6 +1179,14 @@ function buildPagingMethodView(
   }
 
   const pageItemsProp = pagingOp.output.pageItems.property;
+  if (pageItemsProp.optional) {
+    reportUnsupportedPaging(
+      program,
+      operation,
+      "an optional (nullable) @pageItems array, which the generated loop cannot safely enumerate when the server omits it",
+    );
+    return undefined;
+  }
   const itemsArrayModel = pageItemsProp.type as Model;
   const itemType = mapType(
     itemsArrayModel.indexer!.value,
@@ -1134,10 +1198,29 @@ function buildPagingMethodView(
   const itemsPropertyName = toCsPropName(
     getClientName(program, pageItemsProp) ?? pageItemsProp.name,
   );
-  const pageModel = pageItemsProp.model;
-  const pageType = pageModel
-    ? mapType(pageModel, program, models, enums, usedHelpers)
-    : "object";
+
+  // The page type is the raw method's own resolved response type, never
+  // re-derived from wherever `@pageItems` happens to be declared: those can be
+  // different models when paging properties are split across an inheritance
+  // hierarchy, and only the operation's actual response type is guaranteed to
+  // carry every paging property this function goes on to read off of it. An
+  // anonymous or otherwise unmappable response maps to plain "object", which
+  // has no `.Items`/`.Next`/etc. members to read — generating against it would
+  // produce C# that cannot compile, so it's rejected outright instead. This
+  // also, as a side effect, covers a paging property bound to a response
+  // header rather than the JSON body: `@typespec/http` synthesizes an
+  // anonymous implicit body for whatever's left over whenever any response
+  // property is pulled out as a header, so `rawResponseType` is already
+  // "object" by the time such a case would reach here — no separate check needed.
+  const pageType = rawResponseType ?? "object";
+  if (pageType === "object") {
+    reportUnsupportedPaging(
+      program,
+      operation,
+      `an anonymous or unmappable page response type (there is no named C# type to read .${itemsPropertyName} from)`,
+    );
+    return undefined;
+  }
 
   // `allParams` already ends with the raw method's own plain `CancellationToken`
   // entry (see its construction above); the wrapper declares its own
@@ -1154,6 +1237,16 @@ function buildPagingMethodView(
   // if it's there anyway.
   const paramsText = commonDecls.join(", ");
 
+  // Every local identifier the generated loop body introduces must avoid
+  // colliding with a forwarded parameter name — a realistic TypeSpec operation
+  // can plausibly declare a parameter literally named "token", "page", or
+  // "count" — and with each other, hence the single shared `taken` set and
+  // sequential allocation below (each call also claims its own result).
+  const taken = new Set(forwardParams.map((p) => p.name));
+  taken.add("cancellationToken");
+  const pageVarName = uniqueLocalName("page", taken);
+  const itemVarName = uniqueLocalName("item", taken);
+
   const base: Pick<
     PagingMethodView,
     | "doc"
@@ -1163,7 +1256,19 @@ function buildPagingMethodView(
     | "pageType"
     | "itemsPropertyName"
     | "paramsText"
-  > = { doc, methodName, rawMethodName, itemType, pageType, itemsPropertyName, paramsText };
+    | "pageVarName"
+    | "itemVarName"
+  > = {
+    doc,
+    methodName,
+    rawMethodName,
+    itemType,
+    pageType,
+    itemsPropertyName,
+    paramsText,
+    pageVarName,
+    itemVarName,
+  };
 
   const nextLink = pagingOp.output.nextLink;
   if (nextLink) {
@@ -1185,6 +1290,11 @@ function buildPagingMethodView(
         ", ",
       ),
       nextLinkPropertyName,
+      nextLinkVarName: uniqueLocalName("nextLink", taken),
+      nextRequestVarName: uniqueLocalName("nextRequest", taken),
+      nextPageVarName: uniqueLocalName("nextPage", taken),
+      headerParams,
+      cookieParams,
     };
   }
 
@@ -1214,15 +1324,17 @@ function buildPagingMethodView(
       getClientName(program, continuationToken.property) ??
         continuationToken.property.name,
     );
+    const tokenVarName = uniqueLocalName("token", taken);
     return {
       ...base,
       strategy: "continuationToken",
       argsText: [
-        ...forwardParams.map((p) => (p === inputParam ? "token" : p.name)),
+        ...forwardParams.map((p) => (p === inputParam ? tokenVarName : p.name)),
         "cancellationToken",
       ].join(", "),
       continuationTokenPropertyName,
       continuationTokenSeedExpression: inputParam.name,
+      tokenVarName,
     };
   }
 
@@ -1251,10 +1363,19 @@ function buildPagingMethodView(
       );
       return undefined;
     }
-    const counterVarName =
-      counterStrategy === "offset" ? "currentOffset" : "currentPageIndex";
+    const counterVarName = uniqueLocalName(
+      counterStrategy === "offset" ? "currentOffset" : "currentPageIndex",
+      taken,
+    );
+    const countVarName = uniqueLocalName("count", taken);
+    // When the caller omits the parameter, the raw method's own C# parameter
+    // still defaults to plain `null` (so the request simply leaves it off and
+    // the server applies its own default) — but *this* generated loop needs a
+    // concrete number to start counting from regardless, so it falls back to
+    // the parameter's declared TypeSpec default when it has one (honoring,
+    // say, a documented 1-based `pageIndex`), and to 0 only otherwise.
     const counterSeedExpression = counterInput.property.optional
-      ? `${inputParam.name} ?? 0`
+      ? `${inputParam.name} ?? ${numericDefaultLiteral(counterInput.property) ?? "0"}`
       : inputParam.name;
     return {
       ...base,
@@ -1267,6 +1388,7 @@ function buildPagingMethodView(
       ].join(", "),
       counterVarName,
       counterSeedExpression,
+      countVarName,
     };
   }
 

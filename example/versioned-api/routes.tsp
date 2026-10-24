@@ -16,7 +16,11 @@ interface Stores {
     @doc("Retrieves a list of all stores.")
     @list
     @get
-    list(@query skip?: int32, @query take?: int32 = 25): PagedResult<Store>;
+    list(
+        @query skip?: int32,
+        @query take?: int32 = 25,
+        @header("X-Tenant-Id") tenantId?: string,
+    ): PagedResult<Store>;
 
     @doc("Retrieves a specific store by its unique identifier.")
     @get

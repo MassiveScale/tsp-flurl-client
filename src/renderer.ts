@@ -360,16 +360,43 @@ export interface PagingMethodView {
   paramsText: string;
   /** Pre-joined argument list to call {@link rawMethodName} with; the paging input parameter (if any) is already substituted for its loop-local variable name. */
   argsText: string;
+  /**
+   * Collision-free local variable name for the first page (every strategy),
+   * e.g. `"page"` — or `"page2"` when the operation already has a parameter
+   * named `page`.
+   */
+  pageVarName: string;
+  /** Collision-free local variable name for the `foreach` loop item (every strategy), e.g. `"item"`. */
+  itemVarName: string;
   /** `nextLink` strategy only: PascalCase name of the page model's next-link property, e.g. `"Next"`. */
   nextLinkPropertyName?: string;
+  /** `nextLink` strategy only: collision-free local variable name for the current next-link URL. */
+  nextLinkVarName?: string;
+  /** `nextLink` strategy only: collision-free local variable name for the Flurl request built against that URL. */
+  nextRequestVarName?: string;
+  /** `nextLink` strategy only: collision-free local variable name for the deserialized continuation page. */
+  nextPageVarName?: string;
+  /**
+   * `nextLink` strategy only: the raw method's header bindings, replayed on
+   * every continuation request — it goes through `_client` directly, not the
+   * raw method, so none of its own bindings would otherwise reach page two
+   * onward (a tenant or authentication header, for instance).
+   */
+  headerParams?: HeaderParamView[];
+  /** `nextLink` strategy only: the raw method's cookie bindings, replayed the same way as {@link headerParams}. */
+  cookieParams?: CookieParamView[];
   /** `continuationToken` strategy only: PascalCase name of the page model's continuation-token output property, e.g. `"ContinuationToken"`. */
   continuationTokenPropertyName?: string;
   /** `continuationToken` strategy only: expression seeding the local token variable, e.g. `"continuationToken"`. */
   continuationTokenSeedExpression?: string;
-  /** `offset` / `pageIndex` strategy only: local loop variable name, e.g. `"currentOffset"`. */
+  /** `continuationToken` strategy only: collision-free local variable name for the token. */
+  tokenVarName?: string;
+  /** `offset` / `pageIndex` strategy only: collision-free local loop variable name, e.g. `"currentOffset"`. */
   counterVarName?: string;
-  /** `offset` / `pageIndex` strategy only: expression seeding the local counter variable, e.g. `"offset ?? 0"` or `"pageIndex"` (no `?? 0` needed when the parameter is required). */
+  /** `offset` / `pageIndex` strategy only: expression seeding the local counter variable, e.g. `"offset ?? 0"` or `"pageIndex"` (no fallback needed when the parameter is required). */
   counterSeedExpression?: string;
+  /** `offset` / `pageIndex` strategy only: collision-free local variable name for the per-page item count. */
+  countVarName?: string;
 }
 
 /** View model for an endpoint interface (`IWidgets`). */
@@ -846,10 +873,43 @@ function renderPagingInterfaceMethod(m: PagingMethodView): string {
     ...renderDocLines(
       m.doc,
       [],
-      `Retrieves every item across all pages of <see cref="${m.rawMethodName}"/>.`,
+      // Plain code text, not `<see cref="...">`: the raw method can have a
+      // second, generic overload (any response holding a named model gets
+      // one — see endpoint-interface.hbs), which makes a bare, unqualified
+      // cref to its name ambiguous (CS0419) once XML docs are generated.
+      `Retrieves every item across all pages of <c>${m.rawMethodName}</c>.`,
     ),
     `    ${fx("IAsyncEnumerable", "generic")}<${m.itemType}> ${m.methodName}(${params});`,
   ].join("\n");
+}
+
+/**
+ * Renders the statements that replay the raw method's header and cookie
+ * bindings onto a manually-built Flurl request — needed only for a `nextLink`
+ * continuation request, which goes through `_client` directly rather than the
+ * raw method, so none of its own bindings (auth, tenant, API-version, ...)
+ * would otherwise reach page two onward.
+ *
+ * @param m - The paging method view.
+ * @param requestVar - The local variable holding the Flurl request to apply them to.
+ * @returns The statements, indented for placement inside the wrapper method body.
+ */
+function renderReplayedHeadersAndCookies(
+  m: PagingMethodView,
+  requestVar: string,
+): string[] {
+  const lines: string[] = [];
+  for (const h of m.headerParams ?? []) {
+    lines.push(
+      `            ${h.guard ? `if (${h.variable} is not null) ` : ""}${requestVar}.WithHeader("${escapeCsString(h.name)}", ClientRuntime.ToWireString(${h.value ?? h.variable}));`,
+    );
+  }
+  for (const c of m.cookieParams ?? []) {
+    lines.push(
+      `            ${c.guard ? `if (${c.variable} is not null) ` : ""}${requestVar}.WithCookie("${escapeCsString(c.name)}", ClientRuntime.ToWireString(${c.value ?? c.variable}));`,
+    );
+  }
+  return lines;
 }
 
 /**
@@ -862,25 +922,32 @@ function renderPagingInterfaceMethod(m: PagingMethodView): string {
  * @returns The statements, indented for placement inside the wrapper method body.
  */
 function renderNextLinkPagingBody(m: PagingMethodView): string[] {
+  const page = m.pageVarName;
+  const item = m.itemVarName;
+  const nextLink = m.nextLinkVarName!;
+  const nextRequest = m.nextRequestVarName!;
+  const nextPage = m.nextPageVarName!;
   return [
-    `        var page = await ${m.rawMethodName}(${m.argsText}).ConfigureAwait(false);`,
-    `        foreach (var item in page.${m.itemsPropertyName})`,
+    `        var ${page} = await ${m.rawMethodName}(${m.argsText}).ConfigureAwait(false);`,
+    `        foreach (var ${item} in ${page}.${m.itemsPropertyName})`,
     `        {`,
     `            cancellationToken.ThrowIfCancellationRequested();`,
-    `            yield return item;`,
+    `            yield return ${item};`,
     `        }`,
     ``,
-    `        var nextLink = page.${m.nextLinkPropertyName};`,
-    `        while (nextLink is not null)`,
+    `        var ${nextLink} = ${page}.${m.nextLinkPropertyName};`,
+    `        while (${nextLink} is not null)`,
     `        {`,
-    `            var nextPage = await _client.Request(nextLink).GetJsonAsync<${m.pageType}>(cancellationToken: cancellationToken).ConfigureAwait(false);`,
-    `            if (nextPage is null) yield break;`,
-    `            foreach (var item in nextPage.${m.itemsPropertyName})`,
+    `            var ${nextRequest} = _client.Request(${nextLink});`,
+    ...renderReplayedHeadersAndCookies(m, nextRequest),
+    `            var ${nextPage} = await ${nextRequest}.GetJsonAsync<${m.pageType}>(cancellationToken: cancellationToken).ConfigureAwait(false);`,
+    `            if (${nextPage} is null) yield break;`,
+    `            foreach (var ${item} in ${nextPage}.${m.itemsPropertyName})`,
     `            {`,
     `                cancellationToken.ThrowIfCancellationRequested();`,
-    `                yield return item;`,
+    `                yield return ${item};`,
     `            }`,
-    `            nextLink = nextPage.${m.nextLinkPropertyName};`,
+    `            ${nextLink} = ${nextPage}.${m.nextLinkPropertyName};`,
     `        }`,
   ];
 }
@@ -895,18 +962,21 @@ function renderNextLinkPagingBody(m: PagingMethodView): string[] {
  * @returns The statements, indented for placement inside the wrapper method body.
  */
 function renderContinuationTokenPagingBody(m: PagingMethodView): string[] {
+  const page = m.pageVarName;
+  const item = m.itemVarName;
+  const token = m.tokenVarName!;
   return [
-    `        var token = ${m.continuationTokenSeedExpression};`,
+    `        var ${token} = ${m.continuationTokenSeedExpression};`,
     `        do`,
     `        {`,
-    `            var page = await ${m.rawMethodName}(${m.argsText}).ConfigureAwait(false);`,
-    `            foreach (var item in page.${m.itemsPropertyName})`,
+    `            var ${page} = await ${m.rawMethodName}(${m.argsText}).ConfigureAwait(false);`,
+    `            foreach (var ${item} in ${page}.${m.itemsPropertyName})`,
     `            {`,
     `                cancellationToken.ThrowIfCancellationRequested();`,
-    `                yield return item;`,
+    `                yield return ${item};`,
     `            }`,
-    `            token = page.${m.continuationTokenPropertyName};`,
-    `        } while (!string.IsNullOrEmpty(token));`,
+    `            ${token} = ${page}.${m.continuationTokenPropertyName};`,
+    `        } while (!string.IsNullOrEmpty(${token}));`,
   ];
 }
 
@@ -921,23 +991,26 @@ function renderContinuationTokenPagingBody(m: PagingMethodView): string[] {
  * @returns The statements, indented for placement inside the wrapper method body.
  */
 function renderCounterPagingBody(m: PagingMethodView): string[] {
+  const page = m.pageVarName;
+  const item = m.itemVarName;
+  const count = m.countVarName!;
   const advance =
     m.strategy === "pageIndex"
       ? `${m.counterVarName}++;`
-      : `${m.counterVarName} += count;`;
+      : `${m.counterVarName} += ${count};`;
   return [
     `        var ${m.counterVarName} = ${m.counterSeedExpression};`,
     `        while (true)`,
     `        {`,
-    `            var page = await ${m.rawMethodName}(${m.argsText}).ConfigureAwait(false);`,
-    `            var count = 0;`,
-    `            foreach (var item in page.${m.itemsPropertyName})`,
+    `            var ${page} = await ${m.rawMethodName}(${m.argsText}).ConfigureAwait(false);`,
+    `            var ${count} = 0;`,
+    `            foreach (var ${item} in ${page}.${m.itemsPropertyName})`,
     `            {`,
     `                cancellationToken.ThrowIfCancellationRequested();`,
-    `                count++;`,
-    `                yield return item;`,
+    `                ${count}++;`,
+    `                yield return ${item};`,
     `            }`,
-    `            if (count == 0) yield break;`,
+    `            if (${count} == 0) yield break;`,
     `            ${advance}`,
     `        }`,
   ];

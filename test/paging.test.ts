@@ -55,10 +55,14 @@ describe("paging", () => {
         "Expected the PascalCase nextLink property",
       );
       ok(
+        client.includes("var nextRequest = _client.Request(nextLink);"),
+        "Expected the continuation request built against the opaque nextLink URL through _client",
+      );
+      ok(
         client.includes(
-          "_client.Request(nextLink).GetJsonAsync<PagedResult<Store>>(cancellationToken: cancellationToken)",
+          "nextRequest.GetJsonAsync<PagedResult<Store>>(cancellationToken: cancellationToken)",
         ),
-        "Expected continuation pages fetched directly through _client, with cancellationToken passed by name (GetJsonAsync's 2nd positional parameter is HttpCompletionOption, not CancellationToken)",
+        "Expected continuation pages fetched with cancellationToken passed by name (GetJsonAsync's 2nd positional parameter is HttpCompletionOption, not CancellationToken)",
       );
       ok(
         !client.includes("IHttpClientFactory"),
@@ -256,6 +260,308 @@ describe("paging", () => {
         !client.includes("while (!string.IsNullOrEmpty(token));"),
         "Expected no continuationToken loop to be generated",
       );
+    });
+  });
+
+  describe("local name collisions with forwarded parameters", () => {
+    it("renames the continuationToken loop variable when a parameter is literally named token", async () => {
+      const results = await emit(`
+        import "@typespec/http";
+        using Http;
+
+        @service(#{ title: "Test API" })
+        namespace TestApi;
+
+        model Pet { name: string; }
+
+        model TokenPagedResult<T> {
+          @pageItems items: T[];
+          @continuationToken continuationToken?: string;
+        }
+
+        @route("/pets")
+        interface Pets {
+          @list @get list(@query @continuationToken token?: string): TokenPagedResult<Pet>;
+        }
+      `);
+
+      const client = fileContent(results, "PetsEndpoint.g.cs");
+      ok(
+        client.includes("var token2 = token;"),
+        "Expected the loop-local token variable renamed to avoid shadowing the token parameter",
+      );
+      ok(
+        client.includes("token2 = page.ContinuationToken;") &&
+          client.includes("while (!string.IsNullOrEmpty(token2));"),
+        "Expected every reference to use the renamed variable consistently",
+      );
+    });
+
+    it("renames nextLink's page/nextRequest locals when parameters use those names", async () => {
+      const results = await emit(`
+        import "@typespec/http";
+        using Http;
+
+        @service(#{ title: "Test API" })
+        namespace TestApi;
+
+        model Store { name: string; }
+
+        model PagedResult<T> {
+          @pageItems items: T[];
+          @nextLink next?: url;
+        }
+
+        @route("/stores")
+        interface Stores {
+          @list @get list(@query page?: int32, @query nextRequest?: string): PagedResult<Store>;
+        }
+      `);
+
+      const client = fileContent(results, "StoresEndpoint.g.cs");
+      ok(
+        client.includes("var page2 = await ListAsync("),
+        "Expected the first-page variable renamed to avoid shadowing the page parameter",
+      );
+      ok(
+        client.includes("var nextRequest2 = _client.Request(nextLink);"),
+        "Expected the Flurl request variable renamed to avoid shadowing the nextRequest parameter",
+      );
+    });
+
+    it("renames offset/pageIndex's count variable when a parameter is literally named count", async () => {
+      const results = await emit(`
+        import "@typespec/http";
+        using Http;
+
+        @service(#{ title: "Test API" })
+        namespace TestApi;
+
+        model Customer { name: string; }
+
+        model OffsetPagedResult<T> {
+          @pageItems items: T[];
+        }
+
+        @route("/customers")
+        interface Customers {
+          @list @get list(@query @offset offset?: int32, @query count?: int32): OffsetPagedResult<Customer>;
+        }
+      `);
+
+      const client = fileContent(results, "CustomersEndpoint.g.cs");
+      ok(
+        client.includes("var count2 = 0;") &&
+          client.includes("count2++;") &&
+          client.includes("if (count2 == 0) yield break;") &&
+          client.includes("currentOffset += count2;"),
+        "Expected the item-count variable renamed to avoid shadowing the count parameter",
+      );
+    });
+  });
+
+  describe("headers and cookies on nextLink continuation requests", () => {
+    it("replays an optional header parameter on every continuation request", async () => {
+      const results = await emit(`
+        import "@typespec/http";
+        using Http;
+
+        @service(#{ title: "Test API" })
+        namespace TestApi;
+
+        model Store { name: string; }
+
+        model PagedResult<T> {
+          @pageItems items: T[];
+          @nextLink next?: url;
+        }
+
+        @route("/stores")
+        interface Stores {
+          @list @get list(@header("X-Tenant-Id") tenantId?: string): PagedResult<Store>;
+        }
+      `);
+
+      const client = fileContent(results, "StoresEndpoint.g.cs");
+      ok(
+        client.includes(
+          'if (tenantId is not null) nextRequest.WithHeader("X-Tenant-Id", ClientRuntime.ToWireString(tenantId));',
+        ),
+        "Expected the optional header replayed, guarded against null",
+      );
+    });
+
+    it("replays a cookie parameter on every continuation request", async () => {
+      const results = await emit(`
+        import "@typespec/http";
+        using Http;
+
+        @service(#{ title: "Test API" })
+        namespace TestApi;
+
+        model Store { name: string; }
+
+        model PagedResult<T> {
+          @pageItems items: T[];
+          @nextLink next?: url;
+        }
+
+        @route("/stores")
+        interface Stores {
+          @list @get list(@cookie sessionId?: string): PagedResult<Store>;
+        }
+      `);
+
+      const client = fileContent(results, "StoresEndpoint.g.cs");
+      ok(
+        client.includes(
+          'if (sessionId is not null) nextRequest.WithCookie("session_id", ClientRuntime.ToWireString(sessionId));',
+        ),
+        "Expected the cookie replayed (under its wire name, session_id), guarded against null",
+      );
+    });
+  });
+
+  describe("page type derivation", () => {
+    it("uses the operation's actual response type, not wherever @pageItems happens to be declared", async () => {
+      const results = await emit(`
+        import "@typespec/http";
+        using Http;
+
+        @service(#{ title: "Test API" })
+        namespace TestApi;
+
+        model Store { name: string; }
+
+        model BasePage<T> {
+          @pageItems items: T[];
+        }
+
+        model StorePage extends BasePage<Store> {
+          @nextLink next?: url;
+        }
+
+        @route("/stores")
+        interface Stores {
+          @list @get list(): StorePage;
+        }
+      `);
+
+      const client = fileContent(results, "StoresEndpoint.g.cs");
+      ok(
+        client.includes("GetJsonAsync<StorePage>(cancellationToken: cancellationToken)"),
+        "Expected continuation pages deserialized as the actual response type (StorePage), not the base model that merely declares @pageItems",
+      );
+    });
+
+    it("rejects an anonymous page response with no named C# type to read .Items/.Next from", async () => {
+      const [results, diagnostics] = await emitWithDiagnostics(`
+        import "@typespec/http";
+        using Http;
+
+        @service(#{ title: "Test API" })
+        namespace TestApi;
+
+        model Widget { name: string; }
+
+        @route("/widgets")
+        interface Widgets {
+          @list @get list(): { @pageItems items: Widget[]; @nextLink next?: url; };
+        }
+      `);
+
+      const messages = messagesFor(diagnostics, "unsupported-paging-style");
+      ok(messages.length === 1, "Expected one unsupported-paging-style warning");
+      ok(messages[0].includes("anonymous"), messages[0]);
+      ok(!fileContent(results, "WidgetsEndpoint.g.cs").includes("ListAllAsync"));
+    });
+  });
+
+  describe("nullable @pageItems", () => {
+    it("rejects an optional items array, which the loop could not safely enumerate when absent", async () => {
+      const [, diagnostics] = await emitWithDiagnostics(`
+        import "@typespec/http";
+        using Http;
+
+        @service(#{ title: "Test API" })
+        namespace TestApi;
+
+        model Store { name: string; }
+
+        model PagedResult<T> {
+          @pageItems items?: T[];
+          @nextLink next?: url;
+        }
+
+        @route("/stores")
+        interface Stores {
+          @list @get list(): PagedResult<Store>;
+        }
+      `);
+
+      const messages = messagesFor(diagnostics, "unsupported-paging-style");
+      ok(messages.length === 1, "Expected one unsupported-paging-style warning");
+      ok(messages[0].includes("optional"), messages[0]);
+    });
+  });
+
+  describe("offset/pageIndex counter default", () => {
+    it("seeds the counter from the parameter's declared default instead of hardcoded 0", async () => {
+      const results = await emit(`
+        import "@typespec/http";
+        using Http;
+
+        @service(#{ title: "Test API" })
+        namespace TestApi;
+
+        model Customer { name: string; }
+
+        model IndexedPagedResult<T> {
+          @pageItems items: T[];
+        }
+
+        @route("/customers")
+        interface Customers {
+          @list @get list(@query @pageIndex pageIndex?: int32 = 1): IndexedPagedResult<Customer>;
+        }
+      `);
+
+      const client = fileContent(results, "CustomersEndpoint.g.cs");
+      ok(
+        client.includes("var currentPageIndex = pageIndex ?? 1;"),
+        "Expected the declared default (1) honored instead of a hardcoded 0",
+      );
+    });
+  });
+
+  describe("interface doc comment ambiguity", () => {
+    it("does not emit an ambiguous <see cref> for a raw method with a generic overload", async () => {
+      const results = await emit(`
+        import "@typespec/http";
+        using Http;
+
+        @service(#{ title: "Test API" })
+        namespace TestApi;
+
+        model Store { name: string; }
+
+        model PagedResult<T> {
+          @pageItems items: T[];
+          @nextLink next?: url;
+        }
+
+        @route("/stores")
+        interface Stores {
+          @list @get list(): PagedResult<Store>;
+        }
+      `);
+
+      const iface = fileContent(results, "IStores.g.cs");
+      ok(
+        !iface.includes('<see cref="ListAsync"'),
+        "Expected plain <c> text instead of an ambiguous bare-name cref (ListAsync has a generic overload here, so a bare cref is CS0419 once XML docs are enabled)",
+      );
+      ok(iface.includes("<c>ListAsync</c>"), iface);
     });
   });
 
