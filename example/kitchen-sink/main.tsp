@@ -431,6 +431,6 @@ model SignedCatalog extends Catalog {
 
 @route("/catalogs")
 interface Catalogs {
-  @list @get signed(): SignedCatalog;
+  @list @get signed(@header("X-Tenant") tenant?: string): SignedCatalog;
   @route("any") @list @get any(): Catalog;
 }

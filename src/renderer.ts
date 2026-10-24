@@ -394,6 +394,10 @@ export interface PagingMethodView {
   };
   /** `nextLink` strategy only: collision-free local variable name for the Flurl request built against that URL. */
   nextRequestVarName?: string;
+  /** `nextLink` strategy only: collision-free local variable name for the response to a continuation request, which may be a redirect. */
+  nextResponseVarName?: string;
+  /** `nextLink` strategy only: collision-free local variable name for the count of redirects followed for one continuation page. */
+  redirectsVarName?: string;
   /** `nextLink` strategy only: collision-free local variable name for the deserialized continuation page. */
   nextPageVarName?: string;
   /**
@@ -986,21 +990,23 @@ function renderPagingInterfaceMethod(m: PagingMethodView): string {
  *
  * @param m - The paging method view.
  * @param requestVar - The local variable holding the Flurl request to apply them to.
- * @returns The statements, indented for placement inside the wrapper method body.
+ * @param indent - The indentation of the statements.
+ * @returns The statements.
  */
 function renderReplayedHeadersAndCookies(
   m: PagingMethodView,
   requestVar: string,
+  indent: string,
 ): string[] {
   const lines: string[] = [];
   for (const h of m.headerParams ?? []) {
     lines.push(
-      `            ${h.guard ? `if (${h.variable} is not null) ` : ""}${requestVar}.WithHeader("${escapeCsString(h.name)}", ClientRuntime.ToWireString(${h.value ?? h.variable}));`,
+      `${indent}${h.guard ? `if (${h.variable} is not null) ` : ""}${requestVar}.WithHeader("${escapeCsString(h.name)}", ClientRuntime.ToWireString(${h.value ?? h.variable}));`,
     );
   }
   for (const c of m.cookieParams ?? []) {
     lines.push(
-      `            ${c.guard ? `if (${c.variable} is not null) ` : ""}${requestVar}.WithCookie("${escapeCsString(c.name)}", ClientRuntime.ToWireString(${c.value ?? c.variable}));`,
+      `${indent}${c.guard ? `if (${c.variable} is not null) ` : ""}${requestVar}.WithCookie("${escapeCsString(c.name)}", ClientRuntime.ToWireString(${c.value ?? c.variable}));`,
     );
   }
   return lines;
@@ -1026,6 +1032,12 @@ function renderNullPageGuard(
     : [];
 }
 
+/** The redirect statuses a continuation request follows: those `HttpClientHandler` follows. */
+const REDIRECT_STATUSES = [301, 302, 303, 307, 308];
+
+/** The most redirects followed for one continuation page, as `HttpClientHandler` allows by default. */
+const MAX_REDIRECTS = 50;
+
 /**
  * Renders the loop body statements for the `nextLink` strategy: reads the raw
  * method's page, then follows the response's next-page link directly through
@@ -1048,6 +1060,8 @@ function renderNextLinkPagingBody(
   const pageUri = m.pageUriVarName!;
   const nextRequest = m.nextRequestVarName!;
   const nextPage = m.nextPageVarName!;
+  const nextResponse = m.nextResponseVarName!;
+  const redirects = m.redirectsVarName!;
   const builder = m.requestBuilder!;
   const uri = fx("Uri");
   const invalidOperation = fx("InvalidOperationException");
@@ -1083,15 +1097,30 @@ function renderNextLinkPagingBody(
     `                ? throw new ${invalidOperation}("Cannot follow a next-page link without a base URL to check its origin against.")`,
     `                : new ${uri}(_client.BaseUrl, ${fx("UriKind")}.Absolute);`,
     `            var ${nextUri} = new ${uri}(${pageUri}, ${nextLink});`,
-    `            if (${uri}.Compare(${nextUri}, ${baseUri}, ${fx("UriComponents")}.SchemeAndServer, ${fx("UriFormat")}.UriEscaped, ${fx("StringComparison")}.OrdinalIgnoreCase) != 0)`,
+    `            ${m.pageType}? ${nextPage};`,
+    // Redirects are followed here rather than by Flurl, so every hop gets the same
+    // origin check as the link itself before anything is sent there. Only the
+    // statuses HttpClientHandler follows are redirects; any other 3xx fails as before.
+    `            for (var ${redirects} = 0; ; ${redirects}++)`,
     `            {`,
-    `                throw new ${invalidOperation}($"Refusing to follow a next-page link to {${nextUri}.GetLeftPart(${fx("UriPartial")}.Authority)}, a different origin than the client's base URL.");`,
-    `            }`,
-    `            var ${nextRequest} = _client.Request(${nextUri}.AbsoluteUri);`,
+    `                if (${uri}.Compare(${nextUri}, ${baseUri}, ${fx("UriComponents")}.SchemeAndServer, ${fx("UriFormat")}.UriEscaped, ${fx("StringComparison")}.OrdinalIgnoreCase) != 0)`,
+    `                {`,
+    `                    throw new ${invalidOperation}("Refusing to send a next-page request to " + ${nextUri}.Scheme + "://" + ${nextUri}.Authority + ", which is not the origin of the client's base address.");`,
+    `                }`,
+    `                var ${nextRequest} = _client.Request(${nextUri}.AbsoluteUri).WithAutoRedirect(false).AllowHttpStatus("${REDIRECT_STATUSES.join(",")}");`,
     // The raw method's own header/cookie bindings (auth, tenant, API-version,
     // ...) are replayed by hand, since following nextLink bypasses it entirely.
-    ...renderReplayedHeadersAndCookies(m, nextRequest),
-    `            var ${nextPage} = await ${nextRequest}.GetJsonAsync<${m.pageType}>(cancellationToken: cancellationToken).ConfigureAwait(false);`,
+    ...renderReplayedHeadersAndCookies(m, nextRequest, "                "),
+    `                using var ${nextResponse} = await ${nextRequest}.GetAsync(cancellationToken: cancellationToken).ConfigureAwait(false);`,
+    `                if (${nextResponse}.StatusCode is ${REDIRECT_STATUSES.join(" or ")})`,
+    `                {`,
+    `                    if (${redirects} == ${MAX_REDIRECTS}) throw new ${invalidOperation}("Stopped following a next-page link after ${MAX_REDIRECTS} redirects.");`,
+    `                    ${nextUri} = new ${uri}(${nextUri}, ${nextResponse}.ResponseMessage.Headers.Location ?? throw new ${invalidOperation}("A next-page request was redirected without a Location header."));`,
+    `                    continue;`,
+    `                }`,
+    `                ${nextPage} = await ${nextResponse}.GetJsonAsync<${m.pageType}>().ConfigureAwait(false);`,
+    `                break;`,
+    `            }`,
     `            if (${nextPage} is null) yield break;`,
     `            ${pageUri} = ${nextUri};`,
     `            foreach (var ${item} in ${nextPage}.${m.itemsPropertyName})`,

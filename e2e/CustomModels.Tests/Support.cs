@@ -20,7 +20,7 @@ public sealed record RecordedRequest(
 /// </summary>
 public sealed class StubHandler : HttpMessageHandler
 {
-    private readonly Queue<(HttpStatusCode Status, byte[] Body, string ContentType)> _responses = new();
+    private readonly Queue<(HttpStatusCode Status, byte[] Body, string ContentType, string? Location)> _responses = new();
 
     public List<RecordedRequest> Requests { get; } = [];
 
@@ -28,19 +28,26 @@ public sealed class StubHandler : HttpMessageHandler
 
     public StubHandler RespondJson(string json, HttpStatusCode status = HttpStatusCode.OK)
     {
-        _responses.Enqueue((status, Encoding.UTF8.GetBytes(json), "application/json"));
+        _responses.Enqueue((status, Encoding.UTF8.GetBytes(json), "application/json", null));
         return this;
     }
 
     public StubHandler RespondText(string text)
     {
-        _responses.Enqueue((HttpStatusCode.OK, Encoding.UTF8.GetBytes(text), "text/plain"));
+        _responses.Enqueue((HttpStatusCode.OK, Encoding.UTF8.GetBytes(text), "text/plain", null));
         return this;
     }
 
     public StubHandler RespondBytes(byte[] data)
     {
-        _responses.Enqueue((HttpStatusCode.OK, data, "application/octet-stream"));
+        _responses.Enqueue((HttpStatusCode.OK, data, "application/octet-stream", null));
+        return this;
+    }
+
+    /// <summary>Queues a redirect to <paramref name="location"/>, absolute or relative.</summary>
+    public StubHandler RespondRedirect(string location, HttpStatusCode status = HttpStatusCode.Found)
+    {
+        _responses.Enqueue((status, [], "application/json", location));
         return this;
     }
 
@@ -62,11 +69,12 @@ public sealed class StubHandler : HttpMessageHandler
             bytes is null ? null : Encoding.UTF8.GetString(bytes),
             bytes));
 
-        var (status, body, contentType) = _responses.Count > 0
+        var (status, body, contentType, location) = _responses.Count > 0
             ? _responses.Dequeue()
-            : (HttpStatusCode.NoContent, [], "application/json");
+            : (HttpStatusCode.NoContent, [], "application/json", null);
         var response = new HttpResponseMessage(status) { Content = new ByteArrayContent(body) };
         response.Content.Headers.ContentType = new(contentType);
+        if (location is not null) response.Headers.Location = new Uri(location, UriKind.RelativeOrAbsolute);
         return response;
     }
 }

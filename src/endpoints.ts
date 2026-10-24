@@ -1456,6 +1456,8 @@ function buildPagingMethodView(
       baseUriVarName: uniqueLocalName("baseUri", taken),
       nextUriVarName: uniqueLocalName("nextUri", taken),
       nextRequestVarName: uniqueLocalName("nextRequest", taken),
+      nextResponseVarName: uniqueLocalName("nextResponse", taken),
+      redirectsVarName: uniqueLocalName("redirects", taken),
       nextPageVarName: uniqueLocalName("nextPage", taken),
       headerParams,
       cookieParams,

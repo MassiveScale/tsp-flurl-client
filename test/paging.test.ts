@@ -70,15 +70,18 @@ describe("paging", () => {
       );
       ok(
         client.includes(
-          "var nextRequest = _client.Request(nextUri.AbsoluteUri);",
+          "var nextRequest = _client.Request(nextUri.AbsoluteUri).WithAutoRedirect(false)",
         ),
         "Expected the continuation request built against the opaque nextLink URL through _client",
       );
       ok(
         client.includes(
-          "nextRequest.GetJsonAsync<PagedResult<Store>>(cancellationToken: cancellationToken)",
-        ),
-        "Expected continuation pages fetched with cancellationToken passed by name (GetJsonAsync's 2nd positional parameter is HttpCompletionOption, not CancellationToken)",
+          "await nextRequest.GetAsync(cancellationToken: cancellationToken)",
+        ) &&
+          client.includes(
+            "nextPage = await nextResponse.GetJsonAsync<PagedResult<Store>>()",
+          ),
+        "Expected continuation pages fetched with cancellationToken passed by name (GetAsync's first positional parameter is HttpCompletionOption, not CancellationToken)",
       );
       ok(
         !client.includes("IHttpClientFactory"),
@@ -349,7 +352,7 @@ describe("paging", () => {
       );
       ok(
         client.includes(
-          "var nextRequest2 = _client.Request(nextUri.AbsoluteUri);",
+          "var nextRequest2 = _client.Request(nextUri.AbsoluteUri)",
         ),
         "Expected the Flurl request variable renamed to avoid shadowing the nextRequest parameter",
       );
@@ -462,13 +465,13 @@ describe("paging", () => {
           "if (Uri.Compare(nextUri, baseUri, UriComponents.SchemeAndServer, UriFormat.UriEscaped, StringComparison.OrdinalIgnoreCase) != 0)",
         ) &&
           client.includes(
-            'throw new InvalidOperationException($"Refusing to follow a next-page link to {nextUri.GetLeftPart(UriPartial.Authority)}, a different origin than the client\'s base URL.");',
+            'throw new InvalidOperationException("Refusing to send a next-page request to " + nextUri.Scheme + "://" + nextUri.Authority + ", which is not the origin of the client\'s base address.");',
           ),
         "Expected a cross-origin next link refused, so the client's own credentials never reach another host",
       );
       const checkAt = client.indexOf("if (Uri.Compare(");
       const requestAt = client.indexOf(
-        "var nextRequest = _client.Request(nextUri.AbsoluteUri);",
+        "var nextRequest = _client.Request(nextUri.AbsoluteUri)",
       );
       ok(
         checkAt >= 0 && requestAt > checkAt,
@@ -606,7 +609,7 @@ describe("paging", () => {
       const client = fileContent(results, "StoresEndpoint.g.cs");
       ok(
         client.includes(
-          "GetJsonAsync<StorePage>(cancellationToken: cancellationToken)",
+          "nextPage = await nextResponse.GetJsonAsync<StorePage>()",
         ),
         "Expected continuation pages deserialized as the actual response type (StorePage), not the base model that merely declares @pageItems",
       );
@@ -1021,6 +1024,73 @@ describe("paging", () => {
           "if (Uri.Compare(nextUri, baseUri, UriComponents.SchemeAndServer",
         ),
         "Expected the origin still checked against the client's base URL",
+      );
+    });
+  });
+
+  describe("redirects of next-page requests", () => {
+    /**
+     * Emits a nextLink-paged `Stores.list` with a header parameter.
+     *
+     * @returns The generated `StoresEndpoint.g.cs`.
+     */
+    const storesEndpoint = async (): Promise<string> =>
+      fileContent(
+        await emit(`
+          import "@typespec/http";
+          using Http;
+
+          @service(#{ title: "Test API" })
+          namespace TestApi;
+
+          model Store { name: string; }
+          model StorePage { @pageItems items: Store[]; @nextLink next?: url; }
+
+          @route("/stores")
+          interface Stores {
+            @list @get list(@header("X-Tenant") tenant?: string): StorePage;
+          }
+        `),
+        "StoresEndpoint.g.cs",
+      );
+
+    it("turns off Flurl's automatic redirects and lets the redirect statuses through", async () => {
+      const client = await storesEndpoint();
+      ok(
+        client.includes(
+          '.WithAutoRedirect(false).AllowHttpStatus("301,302,303,307,308");',
+        ),
+      );
+    });
+
+    it("checks every hop's origin before sending and replays the headers on it", async () => {
+      const client = await storesEndpoint();
+      const loop = client.indexOf("for (var redirects = 0; ; redirects++)");
+      const check = client.indexOf("if (Uri.Compare(nextUri, baseUri", loop);
+      const header = client.indexOf('nextRequest.WithHeader("X-Tenant"', loop);
+      const send = client.indexOf("await nextRequest.GetAsync(", loop);
+      ok(
+        loop >= 0 && check > loop && header > check && send > header,
+        "Expected the check, then the headers, then the send, inside the loop every hop goes through",
+      );
+    });
+
+    it("resolves a redirect against the URL it came from and caps the hops at 50", async () => {
+      const client = await storesEndpoint();
+      ok(
+        client.includes(
+          "if (nextResponse.StatusCode is 301 or 302 or 303 or 307 or 308)",
+        ),
+      );
+      ok(
+        client.includes(
+          'if (redirects == 50) throw new InvalidOperationException("Stopped following a next-page link after 50 redirects.");',
+        ),
+      );
+      ok(
+        client.includes(
+          "nextUri = new Uri(nextUri, nextResponse.ResponseMessage.Headers.Location ?? throw new InvalidOperationException(",
+        ),
       );
     });
   });

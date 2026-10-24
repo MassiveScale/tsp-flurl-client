@@ -64,6 +64,70 @@ public sealed class KitchenSinkTests
     }
 
     [TestMethod]
+    public async Task A_same_origin_redirect_of_a_next_page_request_is_followed_with_the_operation_headers()
+    {
+        var (client, handler) = Create();
+        handler
+            .RespondJson("""{"kind":"signed","items":[{"title":"a","signedBy":"x"}],"next":"?cursor=2"}""")
+            .RespondRedirect("/catalogs/moved?cursor=2", System.Net.HttpStatusCode.TemporaryRedirect)
+            .RespondJson("""{"kind":"signed","items":[{"title":"b","signedBy":"y"}]}""");
+
+        var books = new List<Book>();
+        await foreach (var book in client.Catalogs.SignedAllAsync(tenant: "acme"))
+        {
+            books.Add(book);
+        }
+
+        books.Select(b => b.Title).Should().Equal("a", "b");
+        handler.Requests.Should().HaveCount(3);
+        handler.Requests[2].Uri.Should().Be(new Uri("https://api.test/catalogs/moved?cursor=2"));
+        handler.Requests[2].Headers["X-Tenant"].Should().Be("acme");
+    }
+
+    [TestMethod]
+    public async Task A_redirect_of_a_next_page_request_to_another_origin_throws_before_anything_is_sent_there()
+    {
+        var (client, handler) = Create();
+        handler
+            .RespondJson("""{"kind":"signed","items":[{"title":"a","signedBy":"x"}],"next":"?cursor=2"}""")
+            .RespondRedirect("https://elsewhere.test/steal");
+
+        var act = async () =>
+        {
+            await foreach (var _ in client.Catalogs.SignedAllAsync(tenant: "acme"))
+            {
+            }
+        };
+
+        await act.Should().ThrowAsync<InvalidOperationException>()
+            .WithMessage("Refusing to send a next-page request to https://elsewhere.test*");
+        handler.Requests.Should().HaveCount(2);
+        handler.Requests.Should().NotContain(r => r.Uri.Host == "elsewhere.test");
+    }
+
+    [TestMethod]
+    public async Task Redirects_of_a_next_page_request_stop_after_fifty()
+    {
+        var (client, handler) = Create();
+        handler.RespondJson("""{"kind":"signed","items":[{"title":"a","signedBy":"x"}],"next":"?cursor=2"}""");
+        for (var i = 0; i <= 50; i++)
+        {
+            handler.RespondRedirect($"/catalogs?hop={i}");
+        }
+
+        var act = async () =>
+        {
+            await foreach (var _ in client.Catalogs.SignedAllAsync())
+            {
+            }
+        };
+
+        await act.Should().ThrowAsync<InvalidOperationException>()
+            .WithMessage("Stopped following a next-page link after 50 redirects.");
+        handler.Requests.Should().HaveCount(52);
+    }
+
+    [TestMethod]
     public async Task A_discriminated_hierarchy_with_a_grouping_model_is_read_as_the_right_subtypes()
     {
         var (client, handler) = Create();
