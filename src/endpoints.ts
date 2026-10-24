@@ -580,7 +580,7 @@ export function buildEndpoint(
   // `read` and `Read` both become `ReadAsync`, which C# would reject as a duplicate
   // member (or an ambiguous overload), so the second is reported and left out.
   const methodScope = new MemberScope(program, "method", `interface ${csName}`);
-  const methods = ops.flatMap((op) => {
+  const built = ops.flatMap((op) => {
     // An operation whose name is not a valid C# identifier is reported and left
     // out, rather than rendered as a method that cannot compile.
     const declaredName =
@@ -606,18 +606,26 @@ export function buildEndpoint(
     ) {
       return [];
     }
-    if (
-      view.paging &&
-      !methodScope.claim(
-        view.paging.methodName,
-        `the auto-paginating wrapper for operation "${op.operation.name}"`,
-        op.operation,
-      )
-    ) {
-      view.paging = undefined;
-    }
-    return [view];
+    return [{ op, view }];
   });
+  // Wrapper names are claimed only after every operation has its own, so adding
+  // pagination to `list` can never push out a separately declared `listAll`: the
+  // wrapper is the one left out.
+  const memberNames = new Set(built.map(({ view }) => view.methodName));
+  for (const { op, view } of built) {
+    if (!view.paging) continue;
+    if (memberNames.has(view.paging.methodName)) {
+      reportUnsupportedPaging(
+        program,
+        op.operation,
+        `a wrapper name, ${view.paging.methodName}, that another method of the interface already uses`,
+      );
+      view.paging = undefined;
+      continue;
+    }
+    memberNames.add(view.paging.methodName);
+  }
+  const methods = built.map(({ view }) => view);
 
   const pagingMethods = methods
     .map((m) => m.paging)
@@ -744,10 +752,16 @@ function buildMethodView(
   );
   registerErrorModels(op.responses, program, models, enums, usedHelpers);
 
-  const requiredParams: { decl: string; name: string; property?: ModelProperty }[] =
-    [];
-  const optionalParams: { decl: string; name: string; property?: ModelProperty }[] =
-    [];
+  const requiredParams: {
+    decl: string;
+    name: string;
+    property?: ModelProperty;
+  }[] = [];
+  const optionalParams: {
+    decl: string;
+    name: string;
+    property?: ModelProperty;
+  }[] = [];
   const queryParams: QueryParamView[] = [];
   const headerParams: HeaderParamView[] = [];
   const cookieParams: CookieParamView[] = [];
@@ -1007,6 +1021,7 @@ function buildMethodView(
     methodName,
     doc,
     response ? withoutNullable(response.view.type) : undefined,
+    response?.view.type.endsWith("?") ?? false,
     headerParams,
     cookieParams,
   );
@@ -1105,7 +1120,9 @@ function uniqueLocalName(base: string, taken: Set<string>): string {
  */
 function numericDefaultLiteral(property: ModelProperty): string | undefined {
   const value = property.defaultValue;
-  return value?.valueKind === "NumericValue" ? value.value.toString() : undefined;
+  return value?.valueKind === "NumericValue"
+    ? value.value.toString()
+    : undefined;
 }
 
 /**
@@ -1140,6 +1157,8 @@ function numericDefaultLiteral(property: ModelProperty): string | undefined {
  *   in an inheritance chain happens to declare `@pageItems`/`@nextLink`.
  *   `undefined` (an operation with no response body) can't reach here, since
  *   `getPagingOperation` wouldn't have resolved a `pageItems` role in the first place.
+ * @param pageNullable - Whether the raw method can return `null` instead of a page,
+ *   as it does for a declared bodyless success (`PagedResult<Store> | void`).
  * @param headerParams - The raw method's header bindings, replayed on every
  *   `nextLink` continuation request (which goes through `_client` directly,
  *   not the raw method, so none of its own bindings would otherwise apply).
@@ -1159,6 +1178,7 @@ function buildPagingMethodView(
   rawMethodName: string,
   doc: string | undefined,
   rawResponseType: string | undefined,
+  pageNullable: boolean,
   headerParams: HeaderParamView[],
   cookieParams: CookieParamView[],
 ): PagingMethodView | undefined {
@@ -1258,6 +1278,7 @@ function buildPagingMethodView(
     | "paramsText"
     | "pageVarName"
     | "itemVarName"
+    | "pageNullable"
   > = {
     doc,
     methodName,
@@ -1268,6 +1289,7 @@ function buildPagingMethodView(
     paramsText,
     pageVarName,
     itemVarName,
+    pageNullable,
   };
 
   const nextLink = pagingOp.output.nextLink;
@@ -1283,6 +1305,9 @@ function buildPagingMethodView(
     const nextLinkPropertyName = toCsPropName(
       getClientName(program, nextLink.property) ?? nextLink.property.name,
     );
+    const nextLinkCsType = withoutNullable(
+      mapPropertyType(nextLink.property, program, models, enums, usedHelpers),
+    );
     return {
       ...base,
       strategy: "nextLink",
@@ -1290,10 +1315,12 @@ function buildPagingMethodView(
         ", ",
       ),
       nextLinkPropertyName,
+      nextLinkIsString: nextLinkCsType === "string",
       nextLinkVarName: uniqueLocalName("nextLink", taken),
+      baseUriVarName: uniqueLocalName("baseUri", taken),
+      nextUriVarName: uniqueLocalName("nextUri", taken),
       nextRequestVarName: uniqueLocalName("nextRequest", taken),
       nextPageVarName: uniqueLocalName("nextPage", taken),
-      sameOriginVarName: uniqueLocalName("sameOrigin", taken),
       headerParams,
       cookieParams,
     };
@@ -1321,6 +1348,23 @@ function buildPagingMethodView(
       );
       return undefined;
     }
+    // The loop stops on an empty token and feeds the response's token straight
+    // back into the input parameter, which only works when both are strings: a
+    // `@format("uuid")` token maps to `Guid`, which has no "empty" to stop on.
+    const tokenTypes = [inputToken!.property, continuationToken.property].map(
+      (p) =>
+        withoutNullable(
+          mapPropertyType(p, program, models, enums, usedHelpers),
+        ),
+    );
+    if (tokenTypes.some((t) => t !== "string")) {
+      reportUnsupportedPaging(
+        program,
+        operation,
+        `a non-string continuation token (${[...new Set(tokenTypes)].join(" / ")}), which the generated loop cannot test for emptiness or feed back unchanged`,
+      );
+      return undefined;
+    }
     const continuationTokenPropertyName = toCsPropName(
       getClientName(program, continuationToken.property) ??
         continuationToken.property.name,
@@ -1342,8 +1386,12 @@ function buildPagingMethodView(
   const offsetInput = pagingOp.input.offset;
   const pageIndexInput = pagingOp.input.pageIndex;
   const counterInput = offsetInput ?? pageIndexInput;
-  const counterStrategy: Extract<PagingStrategy, "offset" | "pageIndex"> | undefined =
-    offsetInput ? "offset" : pageIndexInput ? "pageIndex" : undefined;
+  const counterStrategy:
+    Extract<PagingStrategy, "offset" | "pageIndex"> | undefined = offsetInput
+    ? "offset"
+    : pageIndexInput
+      ? "pageIndex"
+      : undefined;
   if (counterInput && counterStrategy) {
     if (!isFlatPagingProperty(counterInput)) {
       reportUnsupportedPaging(

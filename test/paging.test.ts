@@ -1,6 +1,12 @@
 import { ok } from "node:assert";
 import { describe, it } from "node:test";
-import { emit, emitWithDiagnostics, fileContent, has, messagesFor } from "./host.js";
+import {
+  emit,
+  emitWithDiagnostics,
+  fileContent,
+  has,
+  messagesFor,
+} from "./host.js";
 
 describe("paging", () => {
   describe("nextLink strategy", () => {
@@ -42,20 +48,27 @@ describe("paging", () => {
         "Expected ListAllAsync implemented on the endpoint client",
       );
       ok(
-        client.includes("[EnumeratorCancellation] CancellationToken cancellationToken = default)"),
+        client.includes(
+          "[EnumeratorCancellation] CancellationToken cancellationToken = default)",
+        ),
         "Expected EnumeratorCancellation on the implementation's cancellation token",
       );
       ok(
         client.includes("var page = await ListAsync("),
         "Expected the wrapper to call the raw method directly (same class)",
       );
-      ok(client.includes("page.Items"), "Expected the PascalCase items property");
+      ok(
+        client.includes("page.Items"),
+        "Expected the PascalCase items property",
+      );
       ok(
         client.includes("var nextLink = page.Next;"),
         "Expected the PascalCase nextLink property",
       );
       ok(
-        client.includes("var nextRequest = _client.Request(nextLink);"),
+        client.includes(
+          "var nextRequest = _client.Request(nextUri.AbsoluteUri);",
+        ),
         "Expected the continuation request built against the opaque nextLink URL through _client",
       );
       ok(
@@ -99,7 +112,7 @@ describe("paging", () => {
         "Expected ListAllAsync implemented",
       );
       ok(
-        client.includes("var token = continuationToken;"),
+        client.includes("string? token = continuationToken;"),
         "Expected the token seeded from the input parameter",
       );
       ok(
@@ -111,7 +124,7 @@ describe("paging", () => {
         "Expected the loop to stop once the token is empty",
       );
       ok(
-        !client.includes("_client.Request(nextLink)"),
+        !client.includes("nextUri"),
         "continuationToken strategy must not bypass the raw method via an absolute-URL request",
       );
     });
@@ -138,7 +151,10 @@ describe("paging", () => {
       `);
 
       const messages = messagesFor(diagnostics, "unsupported-paging-style");
-      ok(messages.length === 1, "Expected one unsupported-paging-style warning");
+      ok(
+        messages.length === 1,
+        "Expected one unsupported-paging-style warning",
+      );
       ok(
         messages[0].includes("continuationToken"),
         "Expected the reason to mention the unmatched continuationToken",
@@ -179,7 +195,9 @@ describe("paging", () => {
 
       const client = fileContent(results, "CustomersEndpoint.g.cs");
       ok(
-        client.includes("public async IAsyncEnumerable<Customer> ListAllAsync("),
+        client.includes(
+          "public async IAsyncEnumerable<Customer> ListAllAsync(",
+        ),
         "Expected ListAllAsync implemented",
       );
       ok(
@@ -253,7 +271,7 @@ describe("paging", () => {
 
       const client = fileContent(results, "WidgetsEndpoint.g.cs");
       ok(
-        client.includes("_client.Request(nextLink)"),
+        client.includes("_client.Request(nextUri.AbsoluteUri)"),
         "Expected the nextLink strategy to win over continuationToken",
       );
       ok(
@@ -287,7 +305,7 @@ describe("paging", () => {
 
       const client = fileContent(results, "PetsEndpoint.g.cs");
       ok(
-        client.includes("var token2 = token;"),
+        client.includes("string? token2 = token;"),
         "Expected the loop-local token variable renamed to avoid shadowing the token parameter",
       );
       ok(
@@ -324,7 +342,9 @@ describe("paging", () => {
         "Expected the first-page variable renamed to avoid shadowing the page parameter",
       );
       ok(
-        client.includes("var nextRequest2 = _client.Request(nextLink);"),
+        client.includes(
+          "var nextRequest2 = _client.Request(nextUri.AbsoluteUri);",
+        ),
         "Expected the Flurl request variable renamed to avoid shadowing the nextRequest parameter",
       );
     });
@@ -390,18 +410,12 @@ describe("paging", () => {
         "Expected the optional header replayed, guarded against null",
       );
       ok(
-        client.includes(
-          "var sameOrigin = _client.HttpClient.BaseAddress is not null",
-        ) &&
-          client.includes(
-            "Uri.Compare(nextLink, _client.HttpClient.BaseAddress, UriComponents.SchemeAndServer, UriFormat.UriEscaped, StringComparison.OrdinalIgnoreCase) == 0;",
-          ) &&
-          client.includes("if (sameOrigin)"),
-        "Expected the header gated behind a same-origin check, so nextLink can't be used to exfiltrate credentials to a different host",
+        !client.includes("sameOrigin"),
+        "Expected the header replayed unconditionally, since a cross-origin link is refused before sending",
       );
     });
 
-    it("does not emit a same-origin check at all when there is nothing to replay", async () => {
+    it("refuses a next link to another origin before sending anything, even with nothing to replay", async () => {
       const results = await emit(`
         import "@typespec/http";
         using Http;
@@ -424,8 +438,106 @@ describe("paging", () => {
 
       const client = fileContent(results, "StoresEndpoint.g.cs");
       ok(
-        !client.includes("sameOrigin"),
-        "Expected no dead same-origin check when there are no headers or cookies to guard",
+        client.includes(
+          "var baseUri = string.IsNullOrEmpty(_client.BaseUrl)",
+        ) &&
+          client.includes(
+            '? throw new InvalidOperationException("Cannot follow a next-page link without a base URL to check its origin against.")',
+          ) &&
+          client.includes(": new Uri(_client.BaseUrl, UriKind.Absolute);"),
+        "Expected the base taken from the Flurl client's BaseUrl, which both the DI and Create(baseUrl) paths set",
+      );
+      ok(
+        client.includes("var nextUri = new Uri(baseUri, nextLink);"),
+        "Expected a relative next link resolved against the base URL",
+      );
+      ok(
+        client.includes(
+          "if (Uri.Compare(nextUri, baseUri, UriComponents.SchemeAndServer, UriFormat.UriEscaped, StringComparison.OrdinalIgnoreCase) != 0)",
+        ) &&
+          client.includes(
+            'throw new InvalidOperationException($"Refusing to follow a next-page link to {nextUri.GetLeftPart(UriPartial.Authority)}, a different origin than the client\'s base URL.");',
+          ),
+        "Expected a cross-origin next link refused, so the client's own credentials never reach another host",
+      );
+      const checkAt = client.indexOf("if (Uri.Compare(");
+      const requestAt = client.indexOf(
+        "var nextRequest = _client.Request(nextUri.AbsoluteUri);",
+      );
+      ok(
+        checkAt >= 0 && requestAt > checkAt,
+        "Expected the origin check before the continuation request is built",
+      );
+      const iface = fileContent(results, "IStores.g.cs");
+      ok(
+        iface.includes(
+          'else throws <see cref="InvalidOperationException"/> before any request is sent,',
+        ),
+        "Expected the cross-origin refusal documented on the interface",
+      );
+    });
+
+    it("loops on a non-empty string for a string-typed next link", async () => {
+      const results = await emit(`
+        import "@typespec/http";
+        using Http;
+
+        @service(#{ title: "Test API" })
+        namespace TestApi;
+
+        model Store { name: string; }
+
+        model PagedResult<T> {
+          @pageItems items: T[];
+          @nextLink next?: string;
+        }
+
+        @route("/stores")
+        interface Stores {
+          @list @get list(): PagedResult<Store>;
+        }
+      `);
+
+      const client = fileContent(results, "StoresEndpoint.g.cs");
+      ok(
+        client.includes("while (!string.IsNullOrEmpty(nextLink))"),
+        "Expected an empty string to end the loop too",
+      );
+      ok(
+        client.includes("var nextUri = new Uri(baseUri, nextLink);"),
+        "Expected the string link resolved through the same Uri constructor",
+      );
+    });
+
+    it("qualifies the framework types it names when a model hides them", async () => {
+      const results = await emit(`
+        import "@typespec/http";
+        using Http;
+
+        @service(#{ title: "Test API" })
+        namespace TestApi;
+
+        model \`Uri\` { v: string; }
+        model StringComparison { v: string; }
+        model Store { name: string; }
+
+        model PagedResult<T> {
+          @pageItems items: T[];
+          @nextLink next?: url;
+        }
+
+        @route("/stores")
+        interface Stores {
+          @list @get list(): PagedResult<Store>;
+        }
+      `);
+
+      const client = fileContent(results, "StoresEndpoint.g.cs");
+      ok(
+        client.includes(
+          "if (global::System.Uri.Compare(nextUri, baseUri, UriComponents.SchemeAndServer, UriFormat.UriEscaped, global::System.StringComparison.OrdinalIgnoreCase) != 0)",
+        ),
+        "Expected Uri and StringComparison written in full when generated models hide them",
       );
     });
 
@@ -487,7 +599,9 @@ describe("paging", () => {
 
       const client = fileContent(results, "StoresEndpoint.g.cs");
       ok(
-        client.includes("GetJsonAsync<StorePage>(cancellationToken: cancellationToken)"),
+        client.includes(
+          "GetJsonAsync<StorePage>(cancellationToken: cancellationToken)",
+        ),
         "Expected continuation pages deserialized as the actual response type (StorePage), not the base model that merely declares @pageItems",
       );
     });
@@ -509,9 +623,14 @@ describe("paging", () => {
       `);
 
       const messages = messagesFor(diagnostics, "unsupported-paging-style");
-      ok(messages.length === 1, "Expected one unsupported-paging-style warning");
+      ok(
+        messages.length === 1,
+        "Expected one unsupported-paging-style warning",
+      );
       ok(messages[0].includes("anonymous"), messages[0]);
-      ok(!fileContent(results, "WidgetsEndpoint.g.cs").includes("ListAllAsync"));
+      ok(
+        !fileContent(results, "WidgetsEndpoint.g.cs").includes("ListAllAsync"),
+      );
     });
   });
 
@@ -538,7 +657,10 @@ describe("paging", () => {
       `);
 
       const messages = messagesFor(diagnostics, "unsupported-paging-style");
-      ok(messages.length === 1, "Expected one unsupported-paging-style warning");
+      ok(
+        messages.length === 1,
+        "Expected one unsupported-paging-style warning",
+      );
       ok(messages[0].includes("optional"), messages[0]);
     });
   });
@@ -659,6 +781,168 @@ describe("paging", () => {
     });
   });
 
+  describe("wrapper names", () => {
+    it("never displaces a separately declared operation that already has the wrapper's name", async () => {
+      const [results, diagnostics] = await emitWithDiagnostics(`
+        import "@typespec/http";
+        using Http;
+
+        @service(#{ title: "Test API" })
+        namespace TestApi;
+
+        model Store { name: string; }
+
+        model PagedResult<T> {
+          @pageItems items: T[];
+          @nextLink next?: url;
+        }
+
+        @route("/stores")
+        interface Stores {
+          @list @get list(): PagedResult<Store>;
+          @route("all") @get listAll(): Store[];
+        }
+      `);
+
+      const iface = fileContent(results, "IStores.g.cs");
+      ok(
+        iface.includes("Task<List<Store>> ListAllAsync("),
+        "Expected the declared listAll operation kept",
+      );
+      ok(
+        !iface.includes("IAsyncEnumerable<Store> ListAllAsync("),
+        "Expected the colliding wrapper left out",
+      );
+      ok(
+        iface.includes("Task<PagedResult<Store>> ListAsync("),
+        "Expected the raw paged method kept",
+      );
+      const messages = messagesFor(diagnostics, "unsupported-paging-style");
+      ok(
+        messages.length === 1 && messages[0].includes("ListAllAsync"),
+        "Expected one unsupported-paging-style warning naming the wrapper",
+      );
+      ok(
+        messagesFor(diagnostics, "name-collision").length === 0,
+        "Expected no name-collision error, since no operation was dropped",
+      );
+    });
+  });
+
+  describe("continuation token types", () => {
+    it("rejects a non-string token, which the loop cannot test for emptiness", async () => {
+      const [results, diagnostics] = await emitWithDiagnostics(`
+        import "@typespec/http";
+        using Http;
+
+        @service(#{ title: "Test API" })
+        namespace TestApi;
+
+        model Pet { name: string; }
+
+        model TokenPagedResult<T> {
+          @pageItems items: T[];
+          @continuationToken @format("uuid") continuationToken?: string;
+        }
+
+        @route("/pets")
+        interface Pets {
+          @list @get list(@query @continuationToken @format("uuid") continuationToken?: string): TokenPagedResult<Pet>;
+        }
+      `);
+
+      const messages = messagesFor(diagnostics, "unsupported-paging-style");
+      ok(
+        messages.length === 1 && messages[0].includes("non-string"),
+        "Expected one unsupported-paging-style warning for the non-string token",
+      );
+      ok(!fileContent(results, "PetsEndpoint.g.cs").includes("ListAllAsync"));
+    });
+  });
+
+  describe("bodyless success responses", () => {
+    it("stops on a null page instead of reading its items, in every strategy", async () => {
+      const results = await emit(`
+        import "@typespec/http";
+        using Http;
+
+        @service(#{ title: "Test API" })
+        namespace TestApi;
+
+        model Store { name: string; }
+
+        model LinkPage<T> {
+          @pageItems items: T[];
+          @nextLink next?: url;
+        }
+
+        model TokenPage<T> {
+          @pageItems items: T[];
+          @continuationToken continuationToken?: string;
+        }
+
+        model OffsetPage<T> {
+          @pageItems items: T[];
+        }
+
+        @route("/links")
+        interface Links {
+          @list @get list(): LinkPage<Store> | void;
+        }
+
+        @route("/tokens")
+        interface Tokens {
+          @list @get list(@query @continuationToken continuationToken?: string): TokenPage<Store> | void;
+        }
+
+        @route("/offsets")
+        interface Offsets {
+          @list @get list(@query @offset offset?: int32): OffsetPage<Store> | void;
+        }
+      `);
+
+      for (const file of [
+        "LinksEndpoint.g.cs",
+        "TokensEndpoint.g.cs",
+        "OffsetsEndpoint.g.cs",
+      ]) {
+        const client = fileContent(results, file);
+        ok(client.includes("ListAllAsync("), `Expected a wrapper in ${file}`);
+        ok(
+          client.includes("if (page is null) yield break;"),
+          `Expected a null-page guard in ${file}`,
+        );
+      }
+    });
+
+    it("emits no null-page guard when the raw method never returns null", async () => {
+      const results = await emit(`
+        import "@typespec/http";
+        using Http;
+
+        @service(#{ title: "Test API" })
+        namespace TestApi;
+
+        model Store { name: string; }
+
+        model OffsetPage<T> {
+          @pageItems items: T[];
+        }
+
+        @route("/offsets")
+        interface Offsets {
+          @list @get list(@query @offset offset?: int32): OffsetPage<Store>;
+        }
+      `);
+
+      ok(
+        !fileContent(results, "OffsetsEndpoint.g.cs").includes(
+          "if (page is null)",
+        ),
+      );
+    });
+  });
+
   describe("unsupported shapes", () => {
     it("warns and falls back to the raw method for a nested paging property", async () => {
       const [results, diagnostics] = await emitWithDiagnostics(`
@@ -686,9 +970,14 @@ describe("paging", () => {
       `);
 
       const messages = messagesFor(diagnostics, "unsupported-paging-style");
-      ok(messages.length === 1, "Expected one unsupported-paging-style warning");
+      ok(
+        messages.length === 1,
+        "Expected one unsupported-paging-style warning",
+      );
       ok(messages[0].includes("nested"), messages[0]);
-      ok(!fileContent(results, "WidgetsEndpoint.g.cs").includes("ListAllAsync"));
+      ok(
+        !fileContent(results, "WidgetsEndpoint.g.cs").includes("ListAllAsync"),
+      );
     });
 
     it("warns and falls back to the raw method when no forward-iteration signal is recognized", async () => {
@@ -715,7 +1004,10 @@ describe("paging", () => {
       `);
 
       const messages = messagesFor(diagnostics, "unsupported-paging-style");
-      ok(messages.length === 1, "Expected one unsupported-paging-style warning");
+      ok(
+        messages.length === 1,
+        "Expected one unsupported-paging-style warning",
+      );
 
       const client = fileContent(results, "WidgetsEndpoint.g.cs");
       ok(!client.includes("ListAllAsync"));
@@ -729,7 +1021,9 @@ describe("paging", () => {
       );
       const model = fileContent(results, "LinkOnlyPagedResult.g.cs");
       ok(
-        model.includes("Prev") && model.includes("First") && model.includes("Last"),
+        model.includes("Prev") &&
+          model.includes("First") &&
+          model.includes("Last"),
         "Expected prevLink/firstLink/lastLink to still render as ordinary properties",
       );
     });

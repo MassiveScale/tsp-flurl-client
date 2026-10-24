@@ -322,10 +322,7 @@ export interface BodyGenericView {
  * `continuationToken` > `offset`/`pageIndex`.
  */
 export type PagingStrategy =
-  | "nextLink"
-  | "continuationToken"
-  | "offset"
-  | "pageIndex";
+  "nextLink" | "continuationToken" | "offset" | "pageIndex";
 
 /**
  * View model for a single generated `IAsyncEnumerable<T>` auto-paginating wrapper
@@ -368,24 +365,30 @@ export interface PagingMethodView {
   pageVarName: string;
   /** Collision-free local variable name for the `foreach` loop item (every strategy), e.g. `"item"`. */
   itemVarName: string;
+  /** Whether the raw method can return `null` instead of a page (a declared bodyless success), so the loop must stop on it rather than read its items. */
+  pageNullable: boolean;
   /** `nextLink` strategy only: PascalCase name of the page model's next-link property, e.g. `"Next"`. */
   nextLinkPropertyName?: string;
-  /** `nextLink` strategy only: collision-free local variable name for the current next-link URL. */
+  /** `nextLink` strategy only: whether the next-link property is a `string` (`@nextLink next?: string`) rather than a `Uri`, so an empty string also ends the loop. */
+  nextLinkIsString?: boolean;
+  /** `nextLink` strategy only: collision-free local variable name for the current next-link value. */
   nextLinkVarName?: string;
+  /** `nextLink` strategy only: collision-free local variable name for the client's base URL, the origin every next link must stay on. */
+  baseUriVarName?: string;
+  /** `nextLink` strategy only: collision-free local variable name for the next link resolved against the base URL. */
+  nextUriVarName?: string;
   /** `nextLink` strategy only: collision-free local variable name for the Flurl request built against that URL. */
   nextRequestVarName?: string;
   /** `nextLink` strategy only: collision-free local variable name for the deserialized continuation page. */
   nextPageVarName?: string;
-  /** `nextLink` strategy only: collision-free local variable name for the same-origin check gating header/cookie replay. */
-  sameOriginVarName?: string;
   /**
    * `nextLink` strategy only: the raw method's header bindings, replayed on
    * every continuation request — it goes through `_client` directly, not the
    * raw method, so none of its own bindings would otherwise reach page two
-   * onward (a tenant or authentication header, for instance) — but only when
-   * `nextLink` resolves to the same origin `_client` is configured for, since
-   * it's a server-controlled URL and blindly forwarding credentials to
-   * wherever it happens to point would leak them to a different host.
+   * onward (a tenant or authentication header, for instance). A next link to a
+   * different origin than the client's base URL is refused before anything is
+   * sent, so neither these nor the client's own default credentials can leak
+   * to another host.
    */
   headerParams?: HeaderParamView[];
   /** `nextLink` strategy only: the raw method's cookie bindings, replayed the same way as {@link headerParams}. */
@@ -876,10 +879,21 @@ function renderClientMethod(m: MethodView): string {
  */
 function renderPagingInterfaceMethod(m: PagingMethodView): string {
   const params = `${m.paramsText}, ${fx("CancellationToken")} cancellationToken = default`;
+  const remarks =
+    m.strategy === "nextLink"
+      ? [
+          "<remarks>",
+          "Follows each page's next link until none remains. A next link must stay on the",
+          "origin (scheme, host, and port) of the client's base URL: one that points anywhere",
+          `else throws <see cref="${fx("InvalidOperationException")}"/> before any request is sent,`,
+          "so neither the operation's headers nor the client's own credentials reach another host.",
+          "</remarks>",
+        ]
+      : [];
   return [
     ...renderDocLines(
       m.doc,
-      [],
+      remarks,
       // Plain code text, not `<see cref="...">`: the raw method can have a
       // second, generic overload (any response holding a named model gets
       // one — see endpoint-interface.hbs), which makes a bare, unqualified
@@ -908,15 +922,35 @@ function renderReplayedHeadersAndCookies(
   const lines: string[] = [];
   for (const h of m.headerParams ?? []) {
     lines.push(
-      `                ${h.guard ? `if (${h.variable} is not null) ` : ""}${requestVar}.WithHeader("${escapeCsString(h.name)}", ClientRuntime.ToWireString(${h.value ?? h.variable}));`,
+      `            ${h.guard ? `if (${h.variable} is not null) ` : ""}${requestVar}.WithHeader("${escapeCsString(h.name)}", ClientRuntime.ToWireString(${h.value ?? h.variable}));`,
     );
   }
   for (const c of m.cookieParams ?? []) {
     lines.push(
-      `                ${c.guard ? `if (${c.variable} is not null) ` : ""}${requestVar}.WithCookie("${escapeCsString(c.name)}", ClientRuntime.ToWireString(${c.value ?? c.variable}));`,
+      `            ${c.guard ? `if (${c.variable} is not null) ` : ""}${requestVar}.WithCookie("${escapeCsString(c.name)}", ClientRuntime.ToWireString(${c.value ?? c.variable}));`,
     );
   }
   return lines;
+}
+
+/**
+ * Renders the statement that ends the loop on a `null` page, which the raw method
+ * returns for a declared bodyless success (`PagedResult<Store> | void`) — reading
+ * its items would throw. Nothing is rendered when the raw method never returns `null`.
+ *
+ * @param m - The paging method view.
+ * @param pageVar - The local variable holding the page.
+ * @param indent - The indentation of the surrounding statements.
+ * @returns The statement, or nothing.
+ */
+function renderNullPageGuard(
+  m: PagingMethodView,
+  pageVar: string,
+  indent: string,
+): string[] {
+  return m.pageNullable
+    ? [`${indent}if (${pageVar} is null) yield break;`]
+    : [];
 }
 
 /**
@@ -932,13 +966,15 @@ function renderNextLinkPagingBody(m: PagingMethodView): string[] {
   const page = m.pageVarName;
   const item = m.itemVarName;
   const nextLink = m.nextLinkVarName!;
+  const baseUri = m.baseUriVarName!;
+  const nextUri = m.nextUriVarName!;
   const nextRequest = m.nextRequestVarName!;
   const nextPage = m.nextPageVarName!;
-  const sameOrigin = m.sameOriginVarName!;
-  const hasReplayedCredentials =
-    (m.headerParams ?? []).length > 0 || (m.cookieParams ?? []).length > 0;
+  const uri = fx("Uri");
+  const invalidOperation = fx("InvalidOperationException");
   return [
     `        var ${page} = await ${m.rawMethodName}(${m.argsText}).ConfigureAwait(false);`,
+    ...renderNullPageGuard(m, page, "        "),
     `        foreach (var ${item} in ${page}.${m.itemsPropertyName})`,
     `        {`,
     `            cancellationToken.ThrowIfCancellationRequested();`,
@@ -946,26 +982,25 @@ function renderNextLinkPagingBody(m: PagingMethodView): string[] {
     `        }`,
     ``,
     `        var ${nextLink} = ${page}.${m.nextLinkPropertyName};`,
-    `        while (${nextLink} is not null)`,
+    `        while (${m.nextLinkIsString ? `!string.IsNullOrEmpty(${nextLink})` : `${nextLink} is not null`})`,
     `        {`,
-    `            var ${nextRequest} = _client.Request(${nextLink});`,
+    // The next link is server-controlled, and this client carries credentials of
+    // its own (default headers, handlers) besides the operation's headers, so a
+    // link to another origin is refused before anything is sent. `BaseUrl` is
+    // the base in both the DI and the `Create(baseUrl)` paths; `HttpClient.BaseAddress`
+    // is not set by the latter.
+    `            var ${baseUri} = string.IsNullOrEmpty(_client.BaseUrl)`,
+    `                ? throw new ${invalidOperation}("Cannot follow a next-page link without a base URL to check its origin against.")`,
+    `                : new ${uri}(_client.BaseUrl, ${fx("UriKind")}.Absolute);`,
+    `            var ${nextUri} = new ${uri}(${baseUri}, ${nextLink});`,
+    `            if (${uri}.Compare(${nextUri}, ${baseUri}, ${fx("UriComponents")}.SchemeAndServer, ${fx("UriFormat")}.UriEscaped, ${fx("StringComparison")}.OrdinalIgnoreCase) != 0)`,
+    `            {`,
+    `                throw new ${invalidOperation}($"Refusing to follow a next-page link to {${nextUri}.GetLeftPart(${fx("UriPartial")}.Authority)}, a different origin than the client's base URL.");`,
+    `            }`,
+    `            var ${nextRequest} = _client.Request(${nextUri}.AbsoluteUri);`,
     // The raw method's own header/cookie bindings (auth, tenant, API-version,
-    // ...) are replayed by hand, since following nextLink bypasses the raw
-    // method entirely — but only when nextLink resolves to the same origin
-    // _client is configured for: nextLink is server-controlled, and blindly
-    // forwarding credentials to wherever it happens to point would leak them
-    // to a different host. No configured base address means there's nothing
-    // safe to compare against, so nothing is replayed in that case either.
-    ...(hasReplayedCredentials
-      ? [
-          `            var ${sameOrigin} = _client.HttpClient.BaseAddress is not null`,
-          `                && Uri.Compare(${nextLink}, _client.HttpClient.BaseAddress, UriComponents.SchemeAndServer, UriFormat.UriEscaped, StringComparison.OrdinalIgnoreCase) == 0;`,
-          `            if (${sameOrigin})`,
-          `            {`,
-          ...renderReplayedHeadersAndCookies(m, nextRequest),
-          `            }`,
-        ]
-      : []),
+    // ...) are replayed by hand, since following nextLink bypasses it entirely.
+    ...renderReplayedHeadersAndCookies(m, nextRequest),
     `            var ${nextPage} = await ${nextRequest}.GetJsonAsync<${m.pageType}>(cancellationToken: cancellationToken).ConfigureAwait(false);`,
     `            if (${nextPage} is null) yield break;`,
     `            foreach (var ${item} in ${nextPage}.${m.itemsPropertyName})`,
@@ -992,10 +1027,13 @@ function renderContinuationTokenPagingBody(m: PagingMethodView): string[] {
   const item = m.itemVarName;
   const token = m.tokenVarName!;
   return [
-    `        var ${token} = ${m.continuationTokenSeedExpression};`,
+    // Declared as `string?` so a required token parameter (`string`) can still
+    // take the response's nullable token without a nullable warning.
+    `        string? ${token} = ${m.continuationTokenSeedExpression};`,
     `        do`,
     `        {`,
     `            var ${page} = await ${m.rawMethodName}(${m.argsText}).ConfigureAwait(false);`,
+    ...renderNullPageGuard(m, page, "            "),
     `            foreach (var ${item} in ${page}.${m.itemsPropertyName})`,
     `            {`,
     `                cancellationToken.ThrowIfCancellationRequested();`,
@@ -1029,6 +1067,7 @@ function renderCounterPagingBody(m: PagingMethodView): string[] {
     `        while (true)`,
     `        {`,
     `            var ${page} = await ${m.rawMethodName}(${m.argsText}).ConfigureAwait(false);`,
+    ...renderNullPageGuard(m, page, "            "),
     `            var ${count} = 0;`,
     `            foreach (var ${item} in ${page}.${m.itemsPropertyName})`,
     `            {`,

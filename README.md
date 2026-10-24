@@ -485,7 +485,7 @@ A request or success response that cannot be sent or read correctly is reported 
 - A `@discriminator` model that is also a variant of another discriminated model (a nested discriminator). `System.Text.Json` can resolve only one discriminator per hierarchy: reading through the base type would return the wrong subtype, and writing a subtype would fail or omit a discriminator. Reported as `unsupported-nested-discriminator`. A grouping model with no discriminator of its own (`model Dog extends Animal {}`) is fine.
 - `@encode` values the client cannot honour (see the encodings table). Reported as `unsupported-encoding`, and an operation that sends or reads one is left out.
 - Streaming responses such as server-sent events are read in full before the call returns.
-- A `@list` operation whose paging shape cannot be auto-paginated: a paging property nested inside a sub-object, or none of `@nextLink`/`@continuationToken`/`@offset`/`@pageIndex` to follow. Reported as `unsupported-paging-style`; the raw single-page method is still generated.
+- A `@list` operation whose paging shape cannot be auto-paginated: a paging property nested inside a sub-object, a non-string continuation token, a wrapper name another method already uses, or none of `@nextLink`/`@continuationToken`/`@offset`/`@pageIndex` to follow. Reported as `unsupported-paging-style`; the raw single-page method is still generated.
 
 ### Merge-patch request bodies
 
@@ -559,15 +559,17 @@ await foreach (var store in client.Stores.ListAllAsync(cancellationToken: ct))
 
 Three paging styles are supported, detected from whichever decorators the page model and operation parameters carry (priority `@nextLink` > `@continuationToken` > `@offset`/`@pageIndex`, when a page model somehow carries more than one):
 
-| Decorator                | How `ListAllAsync` follows it                                                                                                    |
-| ------------------------ | ---------------------------------------------------------------------------------------------------------------------------------- |
-| `@nextLink` (a `url`)    | Follows the link directly through `_client`, since it's an opaque absolute URL the raw method's own route cannot express.          |
-| `@continuationToken`     | Re-calls the raw method with the previous response's token in place of the matching input parameter, until the token comes back empty. |
-| `@offset` / `@pageIndex` | Re-calls the raw method with the counter advanced, until a page comes back with no items (there is no total-count signal to stop on otherwise). |
+| Decorator                         | How `ListAllAsync` follows it                                                                                                                   |
+| --------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `@nextLink` (a `url` or `string`) | Follows the link directly through `_client`, resolved against the client's base URL, replaying the operation's header and cookie parameters.    |
+| `@continuationToken` (a `string`) | Re-calls the raw method with the previous response's token in place of the matching input parameter, until the token comes back empty.          |
+| `@offset` / `@pageIndex`          | Re-calls the raw method with the counter advanced, until a page comes back with no items (there is no total-count signal to stop on otherwise). |
+
+A next link is server-controlled, so it must stay on the origin (scheme, host, and port) of the client's base URL. A link to any other origin throws `InvalidOperationException` before anything is sent, so neither the operation's headers and cookies nor credentials configured on the client itself reach another host. A response declared with a bodyless success (`PagedResult<Store> | void`) ends the enumeration when it arrives.
 
 `@prevLink`, `@firstLink`, `@lastLink`, and `@pageSize` are read as ordinary model and operation properties — they're backward and random-access links, not something a forward-only `IAsyncEnumerable<T>` follows.
 
-A page model whose paging property is nested inside a sub-object, or a `@list` operation carrying none of the decorators above, is reported as `unsupported-paging-style`; the raw single-page method is still generated.
+A page model whose paging property is nested inside a sub-object, a non-string continuation token, a `@list` operation carrying none of the decorators above, or a wrapper whose name another method of the interface already uses, is reported as `unsupported-paging-style`; the raw single-page method is still generated.
 
 ## Development
 
