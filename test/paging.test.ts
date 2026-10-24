@@ -54,8 +54,11 @@ describe("paging", () => {
         "Expected EnumeratorCancellation on the implementation's cancellation token",
       );
       ok(
-        client.includes("var page = await ListAsync("),
-        "Expected the wrapper to call the raw method directly (same class)",
+        client.includes("var flurlRequest = ListRequest(") &&
+          client.includes(
+            "page = (await flurlResponse.GetJsonAsync<PagedResult<Store>>()",
+          ),
+        "Expected the wrapper to send the first page through the raw method's request builder",
       );
       ok(
         client.includes("page.Items"),
@@ -338,7 +341,10 @@ describe("paging", () => {
 
       const client = fileContent(results, "StoresEndpoint.g.cs");
       ok(
-        client.includes("var page2 = await ListAsync("),
+        client.includes("PagedResult<Store> page2;") &&
+          client.includes(
+            "page2 = (await flurlResponse.GetJsonAsync<PagedResult<Store>>()",
+          ),
         "Expected the first-page variable renamed to avoid shadowing the page parameter",
       );
       ok(
@@ -448,8 +454,8 @@ describe("paging", () => {
         "Expected the base taken from the Flurl client's BaseUrl, which both the DI and Create(baseUrl) paths set",
       );
       ok(
-        client.includes("var nextUri = new Uri(baseUri, nextLink);"),
-        "Expected a relative next link resolved against the base URL",
+        client.includes("var nextUri = new Uri(pageUri, nextLink);"),
+        "Expected a relative next link resolved against the page that returned it",
       );
       ok(
         client.includes(
@@ -504,7 +510,7 @@ describe("paging", () => {
         "Expected an empty string to end the loop too",
       );
       ok(
-        client.includes("var nextUri = new Uri(baseUri, nextLink);"),
+        client.includes("var nextUri = new Uri(pageUri, nextLink);"),
         "Expected the string link resolved through the same Uri constructor",
       );
     });
@@ -939,6 +945,82 @@ describe("paging", () => {
         !fileContent(results, "OffsetsEndpoint.g.cs").includes(
           "if (page is null)",
         ),
+      );
+    });
+  });
+
+  describe("relative next links", () => {
+    /**
+     * Emits a nextLink-paged `Stores.list` with a header and a query parameter.
+     *
+     * @returns The generated `StoresEndpoint.g.cs`.
+     */
+    const storesEndpoint = async (): Promise<string> =>
+      fileContent(
+        await emit(`
+          import "@typespec/http";
+          using Http;
+
+          @service(#{ title: "Test API" })
+          namespace TestApi;
+
+          model Store { name: string; }
+          model StorePage { @pageItems items: Store[]; @nextLink next?: url; }
+
+          @route("/stores")
+          interface Stores {
+            @list @get list(@query skip?: int32, @header("X-Tenant") tenant?: string): StorePage;
+          }
+        `),
+        "StoresEndpoint.g.cs",
+      );
+
+    it("builds the raw method's request in one private method both callers use", async () => {
+      const client = await storesEndpoint();
+      ok(
+        client.includes(
+          "private IFlurlRequest ListRequest(int? skip = null, string? tenant = null, Dictionary<string, object>? additionalQueryParameters = null)",
+        ),
+        "Expected the builder to take everything but the body and the cancellation token",
+      );
+      ok(
+        client.split(
+          "var flurlRequest = ListRequest(skip, tenant, additionalQueryParameters);",
+        ).length === 3,
+        "Expected the raw method and the wrapper to build the request the same way",
+      );
+      ok(
+        client.split('flurlRequest.SetQueryParam("skip"').length === 2,
+        "Expected the request built in one place only",
+      );
+    });
+
+    it("resolves the first page's link against the URL the first page was fetched from", async () => {
+      const client = await storesEndpoint();
+      const fetched = client.indexOf("pageUri = flurlRequest.Url.ToUri();");
+      const sent = client.indexOf(
+        "using var flurlResponse = await flurlRequest.SendAsync(HttpMethod.Get",
+        fetched,
+      );
+      ok(fetched >= 0 && sent > fetched, "Expected the first page's URL kept");
+      ok(
+        client.includes("var nextUri = new Uri(pageUri, nextLink);"),
+        "Expected a query-only (?skip=25) or path-relative (page2) link resolved against that page",
+      );
+    });
+
+    it("resolves a later page's link against the URL that later page was fetched from", async () => {
+      const client = await storesEndpoint();
+      const read = client.indexOf("if (nextPage is null) yield break;");
+      ok(
+        read >= 0 && client.indexOf("pageUri = nextUri;", read) > read,
+        "Expected each later page to become the base for the link it returns",
+      );
+      ok(
+        client.includes(
+          "if (Uri.Compare(nextUri, baseUri, UriComponents.SchemeAndServer",
+        ),
+        "Expected the origin still checked against the client's base URL",
       );
     });
   });

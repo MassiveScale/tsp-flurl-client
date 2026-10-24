@@ -1432,9 +1432,21 @@ function buildPagingMethodView(
       );
       return undefined;
     }
+    // The builder takes everything that shapes the request but the body, which is
+    // attached when it is sent.
+    const builderParams = forwardParams.filter((p) => p.name !== "body");
+    // The wrapper sends the first page with the raw method's own local names.
+    taken.add("flurlRequest");
+    taken.add("flurlResponse");
     return {
       ...base,
       strategy: "nextLink",
+      requestBuilder: {
+        name: `${rawMethodName.replace(/Async$/, "")}Request`,
+        paramsText: builderParams.map((p) => p.decl).join(", "),
+        argsText: builderParams.map((p) => p.name).join(", "),
+      },
+      pageUriVarName: uniqueLocalName("pageUri", taken),
       argsText: [...forwardParams.map((p) => p.name), "cancellationToken"].join(
         ", ",
       ),

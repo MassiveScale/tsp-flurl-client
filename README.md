@@ -561,13 +561,13 @@ await foreach (var store in client.Stores.ListAllAsync(cancellationToken: ct))
 
 Three paging styles are supported, detected from whichever decorators the page model and operation parameters carry (priority `@nextLink` > `@continuationToken` > `@offset`/`@pageIndex`, when a page model somehow carries more than one):
 
-| Decorator                         | How `ListAllAsync` follows it                                                                                                                   |
-| --------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| `@nextLink` (a `url` or `string`) | Follows the link directly through `_client`, resolved against the client's base URL, replaying the operation's header and cookie parameters.    |
-| `@continuationToken` (a `string`) | Re-calls the raw method with the previous response's token in place of the matching input parameter, until the token comes back empty.          |
-| `@offset` / `@pageIndex`          | Re-calls the raw method with the counter advanced, until a page comes back with no items (there is no total-count signal to stop on otherwise). |
+| Decorator                         | How `ListAllAsync` follows it                                                                                                                               |
+| --------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `@nextLink` (a `url` or `string`) | Follows the link directly through `_client`, resolved against the URL of the page that returned it, replaying the operation's header and cookie parameters. |
+| `@continuationToken` (a `string`) | Re-calls the raw method with the previous response's token in place of the matching input parameter, until the token comes back empty.                      |
+| `@offset` / `@pageIndex`          | Re-calls the raw method with the counter advanced, until a page comes back with no items (there is no total-count signal to stop on otherwise).             |
 
-A next link is server-controlled, so it must stay on the origin (scheme, host, and port) of the client's base URL. A link to any other origin throws `InvalidOperationException` before anything is sent, so neither the operation's headers and cookies nor credentials configured on the client itself reach another host. A response declared with a bodyless success (`PagedResult<Store> | void`) ends the enumeration when it arrives.
+A relative next link resolves against the page that returned it, as RFC 3986 has it: `?skip=25` keeps that page's path, and `page2` replaces its last segment. To know the first page's URL, the wrapper sends the first request itself, built by the same private method the raw method uses. A next link is server-controlled, so once resolved it must stay on the origin (scheme, host, and port) of the client's base URL. A link to any other origin throws `InvalidOperationException` before anything is sent, so neither the operation's headers and cookies nor credentials configured on the client itself reach another host. A response declared with a bodyless success (`PagedResult<Store> | void`) ends the enumeration when it arrives.
 
 `@prevLink`, `@firstLink`, `@lastLink`, and `@pageSize` are read as ordinary model and operation properties — they're backward and random-access links, not something a forward-only `IAsyncEnumerable<T>` follows.
 

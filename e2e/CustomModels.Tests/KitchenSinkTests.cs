@@ -41,6 +41,29 @@ public sealed class KitchenSinkTests
     }
 
     [TestMethod]
+    public async Task A_query_only_next_link_resolves_against_the_page_that_returned_it()
+    {
+        var (client, handler) = Create();
+        handler
+            .RespondJson("""{"kind":"signed","items":[{"title":"a","signedBy":"x"}],"next":"?cursor=2"}""")
+            .RespondJson("""{"kind":"signed","items":[{"title":"b","signedBy":"y"}],"next":"?cursor=3"}""")
+            .RespondJson("""{"kind":"signed","items":[{"title":"c","signedBy":"z"}]}""");
+
+        var books = new List<Book>();
+        await foreach (var book in client.Catalogs.SignedAllAsync())
+        {
+            books.Add(book);
+        }
+
+        books.Select(b => b.Title).Should().Equal("a", "b", "c");
+        handler.Requests.Should().HaveCount(3);
+        var first = handler.Requests[0].Uri;
+        first.AbsolutePath.Should().NotBe("/", "the operation's own path, not the service root");
+        handler.Requests[1].Uri.Should().Be(new Uri(first, "?cursor=2"));
+        handler.Requests[2].Uri.Should().Be(new Uri(first, "?cursor=3"));
+    }
+
+    [TestMethod]
     public async Task A_discriminated_hierarchy_with_a_grouping_model_is_read_as_the_right_subtypes()
     {
         var (client, handler) = Create();
