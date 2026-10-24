@@ -376,11 +376,16 @@ export interface PagingMethodView {
   nextRequestVarName?: string;
   /** `nextLink` strategy only: collision-free local variable name for the deserialized continuation page. */
   nextPageVarName?: string;
+  /** `nextLink` strategy only: collision-free local variable name for the same-origin check gating header/cookie replay. */
+  sameOriginVarName?: string;
   /**
    * `nextLink` strategy only: the raw method's header bindings, replayed on
    * every continuation request — it goes through `_client` directly, not the
    * raw method, so none of its own bindings would otherwise reach page two
-   * onward (a tenant or authentication header, for instance).
+   * onward (a tenant or authentication header, for instance) — but only when
+   * `nextLink` resolves to the same origin `_client` is configured for, since
+   * it's a server-controlled URL and blindly forwarding credentials to
+   * wherever it happens to point would leak them to a different host.
    */
   headerParams?: HeaderParamView[];
   /** `nextLink` strategy only: the raw method's cookie bindings, replayed the same way as {@link headerParams}. */
@@ -397,6 +402,8 @@ export interface PagingMethodView {
   counterSeedExpression?: string;
   /** `offset` / `pageIndex` strategy only: collision-free local variable name for the per-page item count. */
   countVarName?: string;
+  /** `offset` / `pageIndex` strategy only: the counter's own mapped C# type (e.g. `"ulong"`), used to cast the (always-`int`) per-page item count before adding it — C# has no built-in `+=` between an unrelated integer type and a non-constant `int`. */
+  counterCsType?: string;
 }
 
 /** View model for an endpoint interface (`IWidgets`). */
@@ -901,12 +908,12 @@ function renderReplayedHeadersAndCookies(
   const lines: string[] = [];
   for (const h of m.headerParams ?? []) {
     lines.push(
-      `            ${h.guard ? `if (${h.variable} is not null) ` : ""}${requestVar}.WithHeader("${escapeCsString(h.name)}", ClientRuntime.ToWireString(${h.value ?? h.variable}));`,
+      `                ${h.guard ? `if (${h.variable} is not null) ` : ""}${requestVar}.WithHeader("${escapeCsString(h.name)}", ClientRuntime.ToWireString(${h.value ?? h.variable}));`,
     );
   }
   for (const c of m.cookieParams ?? []) {
     lines.push(
-      `            ${c.guard ? `if (${c.variable} is not null) ` : ""}${requestVar}.WithCookie("${escapeCsString(c.name)}", ClientRuntime.ToWireString(${c.value ?? c.variable}));`,
+      `                ${c.guard ? `if (${c.variable} is not null) ` : ""}${requestVar}.WithCookie("${escapeCsString(c.name)}", ClientRuntime.ToWireString(${c.value ?? c.variable}));`,
     );
   }
   return lines;
@@ -927,6 +934,9 @@ function renderNextLinkPagingBody(m: PagingMethodView): string[] {
   const nextLink = m.nextLinkVarName!;
   const nextRequest = m.nextRequestVarName!;
   const nextPage = m.nextPageVarName!;
+  const sameOrigin = m.sameOriginVarName!;
+  const hasReplayedCredentials =
+    (m.headerParams ?? []).length > 0 || (m.cookieParams ?? []).length > 0;
   return [
     `        var ${page} = await ${m.rawMethodName}(${m.argsText}).ConfigureAwait(false);`,
     `        foreach (var ${item} in ${page}.${m.itemsPropertyName})`,
@@ -939,7 +949,23 @@ function renderNextLinkPagingBody(m: PagingMethodView): string[] {
     `        while (${nextLink} is not null)`,
     `        {`,
     `            var ${nextRequest} = _client.Request(${nextLink});`,
-    ...renderReplayedHeadersAndCookies(m, nextRequest),
+    // The raw method's own header/cookie bindings (auth, tenant, API-version,
+    // ...) are replayed by hand, since following nextLink bypasses the raw
+    // method entirely — but only when nextLink resolves to the same origin
+    // _client is configured for: nextLink is server-controlled, and blindly
+    // forwarding credentials to wherever it happens to point would leak them
+    // to a different host. No configured base address means there's nothing
+    // safe to compare against, so nothing is replayed in that case either.
+    ...(hasReplayedCredentials
+      ? [
+          `            var ${sameOrigin} = _client.HttpClient.BaseAddress is not null`,
+          `                && Uri.Compare(${nextLink}, _client.HttpClient.BaseAddress, UriComponents.SchemeAndServer, UriFormat.UriEscaped, StringComparison.OrdinalIgnoreCase) == 0;`,
+          `            if (${sameOrigin})`,
+          `            {`,
+          ...renderReplayedHeadersAndCookies(m, nextRequest),
+          `            }`,
+        ]
+      : []),
     `            var ${nextPage} = await ${nextRequest}.GetJsonAsync<${m.pageType}>(cancellationToken: cancellationToken).ConfigureAwait(false);`,
     `            if (${nextPage} is null) yield break;`,
     `            foreach (var ${item} in ${nextPage}.${m.itemsPropertyName})`,
@@ -997,7 +1023,7 @@ function renderCounterPagingBody(m: PagingMethodView): string[] {
   const advance =
     m.strategy === "pageIndex"
       ? `${m.counterVarName}++;`
-      : `${m.counterVarName} += ${count};`;
+      : `${m.counterVarName} += (${m.counterCsType})${count};`;
   return [
     `        var ${m.counterVarName} = ${m.counterSeedExpression};`,
     `        while (true)`,

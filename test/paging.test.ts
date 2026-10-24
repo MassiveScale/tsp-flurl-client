@@ -187,8 +187,8 @@ describe("paging", () => {
         "Expected the optional offset parameter seeded with ?? 0",
       );
       ok(
-        client.includes("currentOffset += count;"),
-        "Expected the offset advanced by the number of items actually received",
+        client.includes("currentOffset += (int)count;"),
+        "Expected the offset advanced by the number of items actually received, cast to the counter's own type",
       );
       ok(
         client.includes("if (count == 0) yield break;"),
@@ -354,7 +354,7 @@ describe("paging", () => {
         client.includes("var count2 = 0;") &&
           client.includes("count2++;") &&
           client.includes("if (count2 == 0) yield break;") &&
-          client.includes("currentOffset += count2;"),
+          client.includes("currentOffset += (int)count2;"),
         "Expected the item-count variable renamed to avoid shadowing the count parameter",
       );
     });
@@ -388,6 +388,44 @@ describe("paging", () => {
           'if (tenantId is not null) nextRequest.WithHeader("X-Tenant-Id", ClientRuntime.ToWireString(tenantId));',
         ),
         "Expected the optional header replayed, guarded against null",
+      );
+      ok(
+        client.includes(
+          "var sameOrigin = _client.HttpClient.BaseAddress is not null",
+        ) &&
+          client.includes(
+            "Uri.Compare(nextLink, _client.HttpClient.BaseAddress, UriComponents.SchemeAndServer, UriFormat.UriEscaped, StringComparison.OrdinalIgnoreCase) == 0;",
+          ) &&
+          client.includes("if (sameOrigin)"),
+        "Expected the header gated behind a same-origin check, so nextLink can't be used to exfiltrate credentials to a different host",
+      );
+    });
+
+    it("does not emit a same-origin check at all when there is nothing to replay", async () => {
+      const results = await emit(`
+        import "@typespec/http";
+        using Http;
+
+        @service(#{ title: "Test API" })
+        namespace TestApi;
+
+        model Store { name: string; }
+
+        model PagedResult<T> {
+          @pageItems items: T[];
+          @nextLink next?: url;
+        }
+
+        @route("/stores")
+        interface Stores {
+          @list @get list(@query skip?: int32): PagedResult<Store>;
+        }
+      `);
+
+      const client = fileContent(results, "StoresEndpoint.g.cs");
+      ok(
+        !client.includes("sameOrigin"),
+        "Expected no dead same-origin check when there are no headers or cookies to guard",
       );
     });
 
@@ -530,6 +568,62 @@ describe("paging", () => {
       ok(
         client.includes("var currentPageIndex = pageIndex ?? 1;"),
         "Expected the declared default (1) honored instead of a hardcoded 0",
+      );
+    });
+  });
+
+  describe("counter type compatibility", () => {
+    it("casts the per-page item count to the offset parameter's own type instead of a bare int addition", async () => {
+      const results = await emit(`
+        import "@typespec/http";
+        using Http;
+
+        @service(#{ title: "Test API" })
+        namespace TestApi;
+
+        model Customer { name: string; }
+
+        model OffsetPagedResult<T> {
+          @pageItems items: T[];
+        }
+
+        @route("/customers")
+        interface Customers {
+          @list @get list(@query @offset offset?: uint64): OffsetPagedResult<Customer>;
+        }
+      `);
+
+      const client = fileContent(results, "CustomersEndpoint.g.cs");
+      ok(
+        client.includes("currentOffset += (ulong)count;"),
+        "Expected the int item-count cast to ulong before being added to the ulong counter — C# has no built-in += between them otherwise",
+      );
+    });
+
+    it("needs no cast for pageIndex, since ++ works on any numeric type", async () => {
+      const results = await emit(`
+        import "@typespec/http";
+        using Http;
+
+        @service(#{ title: "Test API" })
+        namespace TestApi;
+
+        model Customer { name: string; }
+
+        model IndexedPagedResult<T> {
+          @pageItems items: T[];
+        }
+
+        @route("/customers")
+        interface Customers {
+          @list @get list(@query @pageIndex pageIndex?: uint64): IndexedPagedResult<Customer>;
+        }
+      `);
+
+      const client = fileContent(results, "CustomersEndpoint.g.cs");
+      ok(
+        client.includes("currentPageIndex++;"),
+        "Expected a plain increment, which needs no cast regardless of the counter's numeric type",
       );
     });
   });

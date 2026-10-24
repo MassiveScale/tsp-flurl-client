@@ -1293,6 +1293,7 @@ function buildPagingMethodView(
       nextLinkVarName: uniqueLocalName("nextLink", taken),
       nextRequestVarName: uniqueLocalName("nextRequest", taken),
       nextPageVarName: uniqueLocalName("nextPage", taken),
+      sameOriginVarName: uniqueLocalName("sameOrigin", taken),
       headerParams,
       cookieParams,
     };
@@ -1377,6 +1378,18 @@ function buildPagingMethodView(
     const counterSeedExpression = counterInput.property.optional
       ? `${inputParam.name} ?? ${numericDefaultLiteral(counterInput.property) ?? "0"}`
       : inputParam.name;
+    // The per-page item count is always a plain `int`, but the counter can be
+    // any integer scalar the author declared (`@offset offset: uint64`, for
+    // instance) — C# has no built-in `+=` between an unrelated integer type
+    // and a non-constant `int`, so `offset`'s advance step casts the count to
+    // match (`pageIndex`'s `++` needs no such cast; it works on any numeric type).
+    const counterCsType = mapPropertyType(
+      counterInput.property,
+      program,
+      models,
+      enums,
+      usedHelpers,
+    );
     return {
       ...base,
       strategy: counterStrategy,
@@ -1389,6 +1402,7 @@ function buildPagingMethodView(
       counterVarName,
       counterSeedExpression,
       countVarName,
+      counterCsType,
     };
   }
 
