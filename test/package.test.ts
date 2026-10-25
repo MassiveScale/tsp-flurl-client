@@ -20,24 +20,29 @@ describe("the published package", () => {
       shell: true,
     },
   );
-  let parsed: { files: { path: string }[] }[] | undefined;
+  let entry: { files: { path: string }[] } | undefined;
   let parseError: string | undefined;
   if (pack.status === 0) {
     try {
       const result: unknown = JSON.parse(pack.stdout);
-      parsed = Array.isArray(result)
-        ? (result as { files: { path: string }[] }[])
-        : undefined;
+      // npm < 12 reports `[{ files: [...] }]`; npm >= 12 reports
+      // `{ "<package name>": { files: [...] } }`.
+      entry = Array.isArray(result)
+        ? (result[0] as { files: { path: string }[] } | undefined)
+        : result !== null && typeof result === "object"
+          ? (Object.values(result)[0] as
+              { files: { path: string }[] } | undefined)
+          : undefined;
     } catch (error) {
       parseError = (error as Error).message;
     }
   }
-  const files: string[] = (parsed?.[0]?.files ?? []).map((f) => f.path);
+  const files: string[] = (entry?.files ?? []).map((f) => f.path);
 
   it("can be packed", () => {
     strictEqual(pack.status, 0, pack.stderr);
     ok(
-      parsed?.length === 1,
+      entry !== undefined,
       parseError ?? `Expected one packed entry, got: ${pack.stdout}`,
     );
     ok(files.length > 0);
