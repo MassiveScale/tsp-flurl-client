@@ -20,15 +20,26 @@ describe("the published package", () => {
       shell: true,
     },
   );
-  const files: string[] =
-    pack.status === 0
-      ? (JSON.parse(pack.stdout)[0].files as { path: string }[]).map(
-          (f) => f.path,
-        )
-      : [];
+  let parsed: { files: { path: string }[] }[] | undefined;
+  let parseError: string | undefined;
+  if (pack.status === 0) {
+    try {
+      const result: unknown = JSON.parse(pack.stdout);
+      parsed = Array.isArray(result)
+        ? (result as { files: { path: string }[] }[])
+        : undefined;
+    } catch (error) {
+      parseError = (error as Error).message;
+    }
+  }
+  const files: string[] = (parsed?.[0]?.files ?? []).map((f) => f.path);
 
   it("can be packed", () => {
     strictEqual(pack.status, 0, pack.stderr);
+    ok(
+      parsed?.length === 1,
+      parseError ?? `Expected one packed entry, got: ${pack.stdout}`,
+    );
     ok(files.length > 0);
   });
 
