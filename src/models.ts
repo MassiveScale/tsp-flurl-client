@@ -654,6 +654,17 @@ export function isCsValueType(csType: string, type: Type): boolean {
   );
 }
 
+/**
+ * The framework value types the generated code names, as it writes them: by the
+ * short name, or in full when a generated type of the same name hides it. A model
+ * called `Guid` is then written `Guid` and is not among them.
+ *
+ * @returns The value type names, as written.
+ */
+export function csValueTypeNames(): Set<string> {
+  return new Set([...CS_VALUE_TYPES].map((name) => fx(name)));
+}
+
 /** C# types that are value types, which can never be null and so need no initializer. */
 const CS_VALUE_TYPES = new Set([
   "bool",

@@ -1,10 +1,10 @@
 // Emitter entry point and orchestration. `$onEmit` drives the whole run;
 // `emitService` coordinates the per-service pipeline, delegating the actual C#
 // generation to the domain modules:
-//   - ./endpoints  — endpoint interfaces + Flurl clients (+ request-type collection)
+//   - ./endpoints  — Flurl request builders (+ request-type collection)
 //   - ./models     — records and enums
-//   - ./helpers    — ModelMap, ClientRuntime and MergePatch helper files
-//   - ./client     — DI extensions + aggregate client
+//   - ./helpers    — ModelMap, ClientRuntime, RequestBuilder and MergePatch helper files
+//   - ./client     — DI extensions + client
 //   - ./project    — .csproj + NuGet version
 //   - ./utils      — type mapping and name/format helpers
 // Everything else here is coordination: renderer setup, file IO, dotnet-format,
@@ -47,6 +47,7 @@ import { checkName, MemberScope } from "./names.js";
 import { getClientName, getAccess } from "./decorators.js";
 import {
   buildEndpoint,
+  builderClassName,
   requestRecordName,
   requestSubstitute,
   RequestType,
@@ -68,7 +69,8 @@ import {
   helperFolder,
   type HelperName,
 } from "./helpers.js";
-import { buildExtensions, type EndpointName } from "./client.js";
+import { buildExtensions } from "./client.js";
+import type { ClientBuilderEntry } from "./renderer.js";
 import { buildCsproj, deriveNugetVersion } from "./project.js";
 import {
   docText,
@@ -123,7 +125,7 @@ export async function $onEmit(
   const helperNamespaces: HelperNamespaces = new Map(
     ALL_HELPERS.map((name) => [name, new Set<string>()]),
   );
-  // Endpoint and aggregate-client files are named after the interface and client,
+  // Request-builder and client files are named after the interface and client,
   // not the service, so two services can aim at the same path. Their reservations
   // are shared so the clash is reported instead of the later write winning.
   const endpointOutputOwners = new Map<string, OutputNameOwner>();
@@ -487,7 +489,7 @@ function validateOptions(program: Program, options: EmitterOptions): boolean {
  *
  * @param program - The compiler program, used to report diagnostics.
  * @param projectName - The effective project name (dots separate namespace-like segments).
- * @param clientName - The effective aggregate client name.
+ * @param clientName - The effective client name.
  * @param rootNamespace - The effective root C# namespace.
  * @param clientNameIsDerived - Whether the client name was derived from the project
  *   name rather than given. A derived name is only checked when the project name is
@@ -539,8 +541,8 @@ function validateNames(
 
 /**
  * Emits all output for a single HTTP service: resolves options and target
- * versions, groups operations by container, then writes the endpoint interfaces
- * and clients (via {@link buildEndpoint}), request-type records, DI extensions,
+ * versions, groups operations by container, then writes the request builders
+ * (via {@link buildEndpoint}), request-type records, the client and its DI extensions,
  * model and enum files, and finally the `.csproj`. Handles both versioned
  * (optionally per-version folders) and unversioned emission.
  *
@@ -554,7 +556,7 @@ function validateNames(
  *   helper. This service adds its own namespace to every helper it uses; the
  *   caller writes the helper files once every service has been emitted.
  * @param endpointOutputOwners - Shared record of which declaration claimed each
- *   endpoint and aggregate-client file, keyed by path relative to the output
+ *   request-builder and client file, keyed by path relative to the output
  *   directory, so clashes between services are reported.
  * @param helperTypeNames - Shared record of the generated type names each helper
  *   namespace can see; this service adds its own under its root namespace.
@@ -611,15 +613,15 @@ async function emitService(
     options["all-versions"] === true && versionsToEmit.length > 0;
 
   /**
-   * Emits one self-contained set of output: the endpoint interfaces and clients,
-   * the aggregate client, and exactly the models, enums and request records those
-   * endpoints reference, projected onto the unit's API version. A unit owns its
-   * own model and enum accumulators and its own output-name reservations, so the
-   * same name can be used by different versions without clashing.
+   * Emits one self-contained set of output: the request builders, the client, and
+   * exactly the models, enums and request records those builders reference,
+   * projected onto the unit's API version. A unit owns its own model and enum
+   * accumulators and its own output-name reservations, so the same name can be
+   * used by different versions without clashing.
    *
    * @param unit - Where and how to emit.
-   * @param unit.dir - Folder the Endpoints folder and aggregate client are written under.
-   * @param unit.endpointNs - C# namespace of the endpoints and aggregate client.
+   * @param unit.dir - Folder the Endpoints folder and client are written under.
+   * @param unit.endpointNs - C# namespace of the request builders and client.
    * @param unit.modelNs - C# namespace of the models, enums, and request records.
    * @param unit.modelsDir - Folder the models, enums, and request records are written to.
    * @param unit.version - The API version emitted, or `undefined` when unversioned.
@@ -653,7 +655,10 @@ async function emitService(
     for (const name of generatedTypeNames(
       program,
       projected.namespace,
-      [...byContainer.values()].map((c) => c.name),
+      [...byContainer.values()].map((c) => ({
+        name: c.name,
+        operations: c.ops.length,
+      })),
       clientName,
     )) {
       serviceTypeNames.add(name);
@@ -664,7 +669,7 @@ async function emitService(
     const modelOutputOwners = new Map<string, OutputNameOwner>();
     const usedHelpers: UsedHelpers = new Set();
     const requestTypes = new Map<string, RequestType>();
-    const endpointNames: EndpointName[] = [];
+    const clientBuilders: ClientBuilderEntry[] = [];
 
     /**
      * Claims a model, enum, or request-record file by its path under the output
@@ -689,12 +694,12 @@ async function emitService(
         target,
       );
 
-    // An endpoint is a property of the aggregate client, so its name cannot be the
-    // client's own name (a member cannot share its type's name) or one of the
-    // members the client generates.
+    // Each endpoint group is a method of the client, so its name cannot be the
+    // client's own name (a member cannot share its type's name), one of the members
+    // the client generates, or one every C# object has, which it would hide.
     const clientMembers = new MemberScope(
       program,
-      "property",
+      "method",
       `client ${clientName}`,
       [
         [
@@ -703,6 +708,17 @@ async function emitService(
         ],
         ["FlurlClient", "the client's Flurl client"],
         ["Create", "the client's Create factory methods"],
+        ...[
+          "Equals",
+          "Finalize",
+          "GetHashCode",
+          "GetType",
+          "MemberwiseClone",
+          "ToString",
+        ].map(
+          (member) =>
+            [member, `the ${member} method every C# object has`] as const,
+        ),
       ],
     );
 
@@ -711,7 +727,7 @@ async function emitService(
         isInVersion(program, op.operation, version),
       );
       if (vOps.length === 0) continue;
-      // The name becomes two class names and two file names.
+      // The name becomes a client method, class names, and a file name.
       if (!checkName(program, "interface", name, container)) continue;
       if (
         !clientMembers.checkReserved(
@@ -722,45 +738,22 @@ async function emitService(
       ) {
         continue;
       }
-      const interfaceName = `I${name}`;
-      const endpointClientName = `${name}Endpoint`;
+      const fileName = `${name}RequestBuilders`;
       const label = `interface ${container.name ?? name} in ${getNamespaceFullName(container.kind === "Interface" ? (container.namespace ?? projected.namespace) : container)}`;
-      const claimed = [interfaceName, endpointClientName].map((file) =>
-        tryReserveModelOutputName(
+      if (
+        !tryReserveModelOutputName(
           program,
           endpointOutputOwners,
-          relativeTo(outputDir, resolvePath(dir, "Endpoints", file)),
+          relativeTo(outputDir, resolvePath(dir, "Endpoints", fileName)),
           label,
           NoTarget,
-        ),
-      );
-      // Both names are always claimed (so every clash is reported); the interface
-      // is only emitted when it won both files.
-      if (claimed.includes(false)) continue;
-      // The endpoint types live in the same C# namespace as the models, so a model
-      // with one of their names would be a duplicate type.
-      const typesFree = [
-        [interfaceName, `the ${interfaceName} endpoint interface`],
-        [endpointClientName, `the ${endpointClientName} endpoint client`],
-      ].map(([typeName, owner]) =>
-        tryReserveModelOutputName(
-          program,
-          modelOutputOwners,
-          typeName,
-          owner,
-          NoTarget,
-        ),
-      );
-      if (typesFree.includes(false)) continue;
+        )
+      ) {
+        continue;
+      }
       const access = getAccess(program, container) ?? "public";
-      endpointNames.push({
-        interfaceName,
-        clientName: endpointClientName,
-        access,
-      });
-      const sources = buildEndpoint(
-        interfaceName,
-        endpointClientName,
+      const endpoint = buildEndpoint(
+        name,
         endpointNs,
         vOps,
         docText(program, container),
@@ -774,16 +767,23 @@ async function emitService(
         renderer,
         rawRoutePrefix,
         additionalUsings,
+        // The builders live in the same C# namespace as the models, so a model with
+        // one of their names would be a duplicate type.
+        (typeName) =>
+          tryReserveModelOutputName(
+            program,
+            modelOutputOwners,
+            typeName,
+            `the ${typeName} request builder`,
+            NoTarget,
+          ),
       );
+      if (!endpoint) continue;
+      clientBuilders.push(...endpoint.builders);
       await writeFile(
         program,
-        resolvePath(dir, "Endpoints", `${interfaceName}.g.cs`),
-        sources.interfaceSource,
-      );
-      await writeFile(
-        program,
-        resolvePath(dir, "Endpoints", `${endpointClientName}.g.cs`),
-        sources.clientSource,
+        resolvePath(dir, "Endpoints", `${fileName}.g.cs`),
+        endpoint.source,
       );
     }
 
@@ -876,10 +876,10 @@ async function emitService(
       );
     }
 
-    // The aggregate client and its extensions class are types in the same namespace
+    // The client and its extensions class are types in the same namespace
     // as the models, too.
-    const aggregateFree =
-      endpointNames.length === 0 ||
+    const clientFree =
+      clientBuilders.length === 0 ||
       [clientName, `${clientName}Extensions`]
         .map((typeName) =>
           tryReserveModelOutputName(
@@ -893,8 +893,8 @@ async function emitService(
         .every(Boolean);
 
     if (
-      aggregateFree &&
-      endpointNames.length > 0 &&
+      clientFree &&
+      clientBuilders.length > 0 &&
       tryReserveModelOutputName(
         program,
         endpointOutputOwners,
@@ -909,7 +909,7 @@ async function emitService(
         buildExtensions(
           clientName,
           endpointNs,
-          endpointNames,
+          clientBuilders,
           renderer,
           additionalUsings,
         ),
@@ -1296,26 +1296,28 @@ function resolveTargetVersions(
 /**
  * The names of the C# types a service's emit unit can declare: every model and
  * enum in its namespace and the namespaces nested in it (by their client names),
- * the type parameters of its generic models, its endpoint interfaces and clients,
- * and its aggregate client. It may name more than are written, which only means a
- * framework type is written in full where it did not need to be.
+ * the type parameters of its generic models, its request builders, and its client.
+ * It may name more than are written, which only means a framework type is written
+ * in full where it did not need to be.
  *
  * @param program - The compiler program, for client names.
  * @param namespace - The (projected) service namespace.
- * @param containers - The names of its endpoint containers.
- * @param clientName - The aggregate client's name.
+ * @param containers - Its endpoint containers: each one's name, and how many
+ *   operations it has, which bounds how many request builders it can have.
+ * @param clientName - The client's name.
  * @returns The type names.
  */
 function generatedTypeNames(
   program: Program,
   namespace: Namespace,
-  containers: string[],
+  containers: { name: string; operations: number }[],
   clientName: string,
 ): Set<string> {
   const names = new Set<string>([clientName, `${clientName}Extensions`]);
-  for (const container of containers) {
-    names.add(`I${container}`);
-    names.add(`${container}Endpoint`);
+  for (const { name, operations } of containers) {
+    for (let item = 0; item <= operations; item++) {
+      names.add(builderClassName(name, item));
+    }
   }
   const visit = (ns: Namespace): void => {
     for (const model of ns.models.values()) {

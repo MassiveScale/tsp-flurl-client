@@ -21,11 +21,11 @@ describe("success responses with different bodies", () => {
       }
     `);
 
-    const iface = fileContent(results, "IItems.g.cs");
+    const iface = fileContent(results, "ItemsRequestBuilders.g.cs");
     ok(iface.includes("Task<JsonElement> UpsertAsync("));
     ok(!iface.includes("UpsertAsync<TResult>"));
     ok(
-      fileContent(results, "ItemsEndpoint.g.cs").includes(
+      fileContent(results, "ItemsRequestBuilders.g.cs").includes(
         "GetJsonAsync<JsonElement>()",
       ),
     );
@@ -45,7 +45,7 @@ describe("success responses with different bodies", () => {
       }
     `);
 
-    const iface = fileContent(results, "IItems.g.cs");
+    const iface = fileContent(results, "ItemsRequestBuilders.g.cs");
     ok(iface.includes("Task<Item> UpsertAsync("));
     ok(iface.includes("Task<TResult> UpsertAsync<TResult>("));
   });
@@ -61,7 +61,7 @@ describe("success responses with different bodies", () => {
     `);
 
     ok(
-      fileContent(results, "IItems.g.cs").includes(
+      fileContent(results, "ItemsRequestBuilders.g.cs").includes(
         "Task<JsonElement?> UpsertAsync(",
       ),
     );
@@ -80,7 +80,11 @@ describe("success responses with different bodies", () => {
     const messages = messagesFor(diagnostics, "unsupported-feature");
     strictEqual(messages.length, 1);
     ok(messages[0].includes("different bodies that are not all JSON"));
-    ok(!fileContent(results, "IItems.g.cs").includes("UpsertAsync"));
+    ok(
+      !fileContent(results, "ItemsRequestBuilders.g.cs").includes(
+        "UpsertAsync",
+      ),
+    );
   });
 });
 
@@ -118,7 +122,7 @@ describe("responses declared with several media types", () => {
     `);
 
     ok(
-      fileContent(results, "LabelsEndpoint.g.cs").includes(
+      fileContent(results, "LabelsRequestBuilders.g.cs").includes(
         "return await ClientRuntime.ReadJsonOrTextAsync<string>(flurlResponse).ConfigureAwait(false);",
       ),
     );
@@ -144,7 +148,7 @@ describe("responses declared with several media types", () => {
     `);
 
     ok(
-      fileContent(results, "ItemsEndpoint.g.cs").includes(
+      fileContent(results, "ItemsRequestBuilders.g.cs").includes(
         "SendJsonAsync(HttpMethod.Post, body,",
       ),
     );
@@ -160,7 +164,7 @@ describe("text bodies with a declared charset", () => {
     `);
 
     ok(
-      fileContent(results, "NotesEndpoint.g.cs").includes(
+      fileContent(results, "NotesRequestBuilders.g.cs").includes(
         'ClientRuntime.TextContent(ClientRuntime.ToWireString(body), "text/plain; charset=iso-8859-1")',
       ),
     );
@@ -187,10 +191,18 @@ describe("decorators on a body property", () => {
       }
     `);
 
-    ok(fileContent(results, "IIds.g.cs").includes("SendAsync(Guid body,"));
-    ok(fileContent(results, "IIds.g.cs").includes("Task<Guid> ReadAsync("));
     ok(
-      fileContent(results, "IdsEndpoint.g.cs").includes(
+      fileContent(results, "IdsRequestBuilders.g.cs").includes(
+        "SendAsync(Guid body,",
+      ),
+    );
+    ok(
+      fileContent(results, "IdsRequestBuilders.g.cs").includes(
+        "Task<Guid> ReadAsync(",
+      ),
+    );
+    ok(
+      fileContent(results, "IdsRequestBuilders.g.cs").includes(
         "ClientRuntime.FromText<Guid>(",
       ),
     );
@@ -203,7 +215,11 @@ describe("decorators on a body property", () => {
       }
     `);
 
-    ok(fileContent(results, "IFlags.g.cs").includes("SendAsync(string body,"));
+    ok(
+      fileContent(results, "FlagsRequestBuilders.g.cs").includes(
+        "SendAsync(string body,",
+      ),
+    );
   });
 
   it("writes and reads an encoded plain-text body through the runtime encoder", async () => {
@@ -215,7 +231,7 @@ describe("decorators on a body property", () => {
     `);
 
     strictEqual(messagesFor(diagnostics, "unsupported-encoding").length, 0);
-    const client = fileContent(results, "DurationsEndpoint.g.cs");
+    const client = fileContent(results, "DurationsRequestBuilders.g.cs");
     ok(
       client.includes(
         "ClientRuntime.ToWireString(ClientRuntime.Encode(body, ClientRuntime.WireEncoding.WholeSeconds))",
@@ -236,7 +252,12 @@ describe("decorators on a body property", () => {
     const messages = messagesFor(diagnostics, "unsupported-encoding");
     strictEqual(messages.length, 1);
     ok(messages[0].includes('The body "value"'));
-    ok(!fileContent(results, "IDurations.g.cs").includes("SendAsync"));
+    const builders = fileContent(results, "DurationsRequestBuilders.g.cs");
+    ok(
+      !/ SendAsync\(/.test(builders),
+      "The send operation is left out; only Flurl's own flurlRequest.SendAsync remains",
+    );
+    ok(builders.includes("OkAsync("));
   });
 
   it("accepts a number encoded as a string when it travels as plain text", async () => {
@@ -248,7 +269,7 @@ describe("decorators on a body property", () => {
 
     strictEqual(messagesFor(diagnostics, "unsupported-encoding").length, 0);
     ok(
-      fileContent(results, "NumbersEndpoint.g.cs").includes(
+      fileContent(results, "NumbersRequestBuilders.g.cs").includes(
         'ClientRuntime.TextContent(ClientRuntime.ToWireString(body), "text/plain")',
       ),
     );

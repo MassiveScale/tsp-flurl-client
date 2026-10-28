@@ -28,8 +28,8 @@ describe("request records", () => {
     `);
 
     ok(
-      fileContent(results, "IWidgets.g.cs").includes(
-        "ReplaceAsync(string id, WidgetReplaceRequest body,",
+      fileContent(results, "WidgetsRequestBuilders.g.cs").includes(
+        "ReplaceAsync(WidgetReplaceRequest body,",
       ),
     );
     ok(
@@ -162,8 +162,8 @@ describe("diagnostics", () => {
       ),
     );
     ok(
-      fileContent(results, "ItemsEndpoint.g.cs").includes(
-        "class ItemsEndpoint",
+      fileContent(results, "ItemsRequestBuilders.g.cs").includes(
+        "class ItemsRequestBuilder",
       ),
     );
   });

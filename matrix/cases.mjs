@@ -282,6 +282,11 @@ const AWKWARD_NAMES = [
   "ToString",
   "Equals",
   "GetType",
+  "flurlClient",
+  "Client",
+  "ApplyModifiers",
+  "AppendHeader",
+  "ConfigureRequest",
 ];
 
 /**
@@ -313,6 +318,7 @@ const SHADOWING = [
   ["MergePatch", 0],
   ["ClientRuntime", 0],
   ["ModelMap", 0],
+  ["RequestBuilder", 0],
   ["Matrix", 0],
   ["MatrixClient", 0],
 ];
@@ -488,8 +494,8 @@ export function buildCases() {
     ],
   );
 
-  // Each interface is a property of the aggregate client and a parameter of its
-  // constructor, beside \`flurlClient\`, so these are names that need care there.
+  // Each interface is a method of the client, beside its `FlurlClient` property,
+  // and names a request builder class, so these are names that need care there.
   for (const name of ["flurlClient", "Params", "Class", "Event", "Await"]) {
     const id = idOf("endpointNamed", name);
     add(id, name, [`@route("/${id}") @get ${id}(): void;`]);

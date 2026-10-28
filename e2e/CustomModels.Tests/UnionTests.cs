@@ -15,8 +15,8 @@ public sealed class UnionTests
         handler.RespondJson("""{"kind":"mixed","value":7,"note":null,"owner":null}""");
         handler.RespondJson("""{"kind":"mixed","value":"seven","note":"n","owner":{"name":"o"}}""");
 
-        var number = await client.Mixes.ReadAsync();
-        var text = await client.Mixes.ReadAsync();
+        var number = await client.Mixes().ReadAsync();
+        var text = await client.Mixes().ReadAsync();
 
         number.Value.ValueKind.Should().Be(JsonValueKind.Number);
         number.Value.GetInt32().Should().Be(7);
@@ -31,8 +31,8 @@ public sealed class UnionTests
         handler.RespondJson("""{"kind":"mixed","value":1,"note":null,"owner":null}""");
         handler.RespondJson("""{"kind":"mixed","value":1,"note":"n","owner":{"name":"o"}}""");
 
-        var empty = await client.Mixes.ReadAsync();
-        var full = await client.Mixes.ReadAsync();
+        var empty = await client.Mixes().ReadAsync();
+        var full = await client.Mixes().ReadAsync();
 
         empty.Note.Should().BeNull();
         empty.Owner.Should().BeNull();
@@ -46,7 +46,7 @@ public sealed class UnionTests
         var (client, handler) = Harness.Create();
         handler.RespondJson("""{"id":"1","name":"gear"}""");
 
-        var either = await client.Mixes.EitherAsync();
+        var either = await client.Mixes().EitherAsync();
 
         either.Deserialize<Widget>(new JsonSerializerOptions(JsonSerializerDefaults.Web))!.Name.Should().Be("gear");
     }
@@ -57,7 +57,7 @@ public sealed class UnionTests
         var (client, handler) = Harness.Create();
         handler.RespondJson("""{"kind":"mixed","value":1,"note":null,"owner":null}""");
 
-        await client.Mixes.CreateAsync(new Mixed
+        await client.Mixes().CreateAsync(new Mixed
         {
             Value = JsonSerializer.SerializeToElement(42),
             Note = null,
@@ -78,7 +78,7 @@ public sealed class UnionTests
         var (client, handler) = Harness.Create();
         handler.RespondJson("""{"kind":"mixed","value":1,"note":"n","owner":null}""");
 
-        await client.Mixes.CreateAsync(new Mixed
+        await client.Mixes().CreateAsync(new Mixed
         {
             Value = JsonSerializer.SerializeToElement(1),
             Note = "hello",

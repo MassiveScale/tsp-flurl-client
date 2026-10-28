@@ -44,7 +44,7 @@ describe("client", () => {
     );
   });
 
-  it("emits an aggregate client class with one property per interface", async () => {
+  it("emits an aggregate client class with one method per request builder", async () => {
     const results = await emit(`
       import "@typespec/http";
       using Http;
@@ -77,35 +77,33 @@ describe("client", () => {
       "Expected aggregate class declaration",
     );
     ok(
-      content.includes("public IPets Pets { get; }"),
-      "Expected Pets property",
-    );
-    ok(
-      content.includes("public IStores Stores { get; }"),
-      "Expected Stores property",
-    );
-    ok(content.includes("IPets pets"), "Expected pets constructor param");
-    ok(content.includes("IStores stores"), "Expected stores constructor param");
-    ok(
       content.includes(
-        "Pets = pets ?? throw new ArgumentNullException(nameof(pets));",
+        "public PetsRequestBuilder Pets() =>\n        new PetsRequestBuilder(this.FlurlClient);",
       ),
-      "Expected Pets assignment in constructor",
+      "Expected Pets method",
     );
     ok(
       content.includes(
-        "Stores = stores ?? throw new ArgumentNullException(nameof(stores));",
+        "public StoresRequestBuilder Stores() =>\n        new StoresRequestBuilder(this.FlurlClient);",
       ),
-      "Expected Stores assignment in constructor",
+      "Expected Stores method",
+    );
+    ok(
+      content.includes("public TestApiClient(IFlurlClient flurlClient)"),
+      "Expected the constructor to take only the Flurl client",
+    );
+    ok(
+      !content.includes("IPets") && !content.includes("IStores"),
+      "Expected no endpoint interfaces",
     );
     ok(
       content.includes("AddTransient<TestApiClient>("),
       "Expected aggregate client registered as transient",
     );
-    ok(content.includes("AddTransient<IPets>"), "Expected IPets registered");
     ok(
-      content.includes("AddTransient<IStores>"),
-      "Expected IStores registered",
+      !content.includes("AddTransient<PetsRequestBuilder>") &&
+        !content.includes("AddTransient<StoresRequestBuilder>"),
+      "Expected the request builders not to be registered",
     );
   });
 });

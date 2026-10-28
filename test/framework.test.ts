@@ -169,7 +169,7 @@ describe("models named after framework types", () => {
       @route("/w") interface Widgets { @get read(): Widget; @delete remove(): void; }
     `);
 
-    const iface = fileContent(results, "IWidgets.g.cs");
+    const iface = fileContent(results, "WidgetsRequestBuilders.g.cs");
     ok(
       iface.includes(
         "global::System.Threading.CancellationToken cancellationToken = default",

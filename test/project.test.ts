@@ -204,7 +204,7 @@ describe("project", () => {
         "nuget-version": "2.0.0",
         "nuget-authors": "Acme Corp",
         "nuget-description": "Client library for the Acme Pet Store API.",
-        "nuget-tags": "refit petstore api",
+        "nuget-tags": "flurl petstore api",
       },
     );
 
@@ -224,7 +224,7 @@ describe("project", () => {
       "Expected Description",
     );
     ok(
-      content.includes("<PackageTags>refit petstore api</PackageTags>"),
+      content.includes("<PackageTags>flurl petstore api</PackageTags>"),
       "Expected PackageTags",
     );
   });

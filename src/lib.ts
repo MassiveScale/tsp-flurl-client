@@ -48,7 +48,7 @@ const EmitterOptionsSchema: JSONSchemaType<EmitterOptions> = {
     "client-name": {
       type: "string",
       description:
-        "The client display name. Used as the aggregate client class name, the DI extension class/method prefix (e.g. 'PetStore' → 'AddPetStore(...)') and as the default NuGet <Title> when 'nuget-title' is not set.",
+        "The client display name. Used as the client class name, the DI extension class/method prefix (e.g. 'PetStore' → 'AddPetStore(...)') and as the default NuGet <Title> when 'nuget-title' is not set.",
       nullable: true,
     },
     "root-namespace": {
@@ -180,16 +180,17 @@ const EmitterOptionsSchema: JSONSchemaType<EmitterOptions> = {
           nullable: true,
           description: "C# enum template.",
         },
-        "endpoint-interface": {
-          type: "string",
-          nullable: true,
-          description: "Endpoint interface template (e.g. IWidgets).",
-        },
-        "endpoint-client": {
+        "request-builder": {
           type: "string",
           nullable: true,
           description:
-            "Endpoint client implementation template (e.g. WidgetsEndpoint).",
+            "Request builder template: the operations of one interface that share a set of path parameters (e.g. PetsItemRequestBuilder).",
+        },
+        "request-builder-base": {
+          type: "string",
+          nullable: true,
+          description:
+            "RequestBuilder<TBuilder> template: the base class that adds AppendHeader, AppendQueryParameter, AppendCookie, and ConfigureRequest to every request builder.",
         },
         csproj: {
           type: "string",
@@ -199,8 +200,7 @@ const EmitterOptionsSchema: JSONSchemaType<EmitterOptions> = {
         extensions: {
           type: "string",
           nullable: true,
-          description:
-            "Aggregate client and DI registration extension class template.",
+          description: "Client and DI registration extension class template.",
         },
         "merge-patch": {
           type: "string",
@@ -218,7 +218,7 @@ const EmitterOptionsSchema: JSONSchemaType<EmitterOptions> = {
           type: "string",
           nullable: true,
           description:
-            "ClientRuntime template: serializer configuration and wire-format helpers shared by every endpoint client.",
+            "ClientRuntime template: serializer configuration and wire-format helpers shared by every request builder.",
         },
       },
       required: [],

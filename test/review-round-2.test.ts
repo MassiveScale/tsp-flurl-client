@@ -173,7 +173,11 @@ describe("@clientName on a type", () => {
       }
     `);
 
-    ok(fileContent(results, "IThings.g.cs").includes("DefaultAsync("));
+    ok(
+      fileContent(results, "ThingsRequestBuilders.g.cs").includes(
+        "DefaultAsync(",
+      ),
+    );
     ok(fileContent(results, "Thing.g.cs").includes("public string Event"));
   });
 });
@@ -383,10 +387,16 @@ describe("endpoint output name collisions", () => {
       namespace B { @route("/b") interface Items { @get list(): string[]; } }
     `);
 
-    ok(collisions.some((m) => m.includes("Endpoints/IItems.g.cs")));
-    ok(collisions.some((m) => m.includes("Endpoints/ItemsEndpoint.g.cs")));
     ok(
-      fileContent(results, "IItems.g.cs").includes("namespace A.Client;"),
+      collisions.some((m) => m.includes("Endpoints/ItemsRequestBuilders.g.cs")),
+    );
+    ok(
+      collisions.some((m) => m.includes("Endpoints/ItemsRequestBuilders.g.cs")),
+    );
+    ok(
+      fileContent(results, "ItemsRequestBuilders.g.cs").includes(
+        "namespace A.Client;",
+      ),
       "The first claim is kept rather than overwritten",
     );
   });
@@ -397,7 +407,9 @@ describe("endpoint output name collisions", () => {
       @clientName("Same") @route("/b") interface Second { @get list(): string[]; }
     `);
 
-    ok(collisions.some((m) => m.includes("Endpoints/ISame.g.cs")));
+    ok(
+      collisions.some((m) => m.includes("Endpoints/SameRequestBuilders.g.cs")),
+    );
   });
 
   it("reports two services that share an aggregate client name", async () => {
@@ -457,17 +469,17 @@ describe("version projection", () => {
   it("leaves a parameter added in v2 out of a v1 client", async () => {
     const results = await emit(spec, { "target-version": "v1.0" });
 
-    const client = fileContent(results, "WidgetsEndpoint.g.cs");
+    const client = fileContent(results, "WidgetsRequestBuilders.g.cs");
     ok(client.includes('SetQueryParam("always"'));
     ok(!client.includes('SetQueryParam("extra"'));
-    ok(!fileContent(results, "IWidgets.g.cs").includes("extra"));
+    ok(!fileContent(results, "WidgetsRequestBuilders.g.cs").includes("extra"));
   });
 
   it("keeps a parameter added in v2 in a v2 client", async () => {
     const results = await emit(spec, { "target-version": "v2.0" });
 
     ok(
-      fileContent(results, "WidgetsEndpoint.g.cs").includes(
+      fileContent(results, "WidgetsRequestBuilders.g.cs").includes(
         'SetQueryParam("extra"',
       ),
     );
@@ -504,14 +516,16 @@ describe("version projection", () => {
       "No unversioned copy of a versioned model is written",
     );
     ok(
-      !fileContent(results, "v1.0/Endpoints/WidgetsEndpoint.g.cs").includes(
-        'SetQueryParam("extra"',
-      ),
+      !fileContent(
+        results,
+        "v1.0/Endpoints/WidgetsRequestBuilders.g.cs",
+      ).includes('SetQueryParam("extra"'),
     );
     ok(
-      fileContent(results, "v2.0/Endpoints/WidgetsEndpoint.g.cs").includes(
-        'SetQueryParam("extra"',
-      ),
+      fileContent(
+        results,
+        "v2.0/Endpoints/WidgetsRequestBuilders.g.cs",
+      ).includes('SetQueryParam("extra"'),
     );
   });
 });

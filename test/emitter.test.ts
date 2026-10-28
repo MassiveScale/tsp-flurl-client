@@ -32,16 +32,16 @@ describe("emitter", () => {
     `);
 
     const v1File = Object.keys(results).find(
-      (k) => k.includes("v1.0") && k.endsWith("IItems.g.cs"),
+      (k) => k.includes("v1.0") && k.endsWith("ItemsRequestBuilders.g.cs"),
     );
     const iItemsFile = Object.keys(results).find((k) =>
-      k.endsWith("IItems.g.cs"),
+      k.endsWith("ItemsRequestBuilders.g.cs"),
     );
 
     ok(!v1File, "v1.0 should not be emitted by default");
     ok(
       iItemsFile,
-      "Expected IItems.g.cs at root (no version folder in single-version mode)",
+      "Expected ItemsRequestBuilders.g.cs at root (no version folder in single-version mode)",
     );
     ok(results[iItemsFile!].includes("ListAsync("), "v2 should have ListAsync");
     ok(
@@ -77,18 +77,18 @@ describe("emitter", () => {
     );
 
     const v1File = Object.keys(results).find(
-      (k) => k.includes("v1.0") && k.endsWith("IItems.g.cs"),
+      (k) => k.includes("v1.0") && k.endsWith("ItemsRequestBuilders.g.cs"),
     );
     const v2File = Object.keys(results).find(
-      (k) => k.includes("v2.0") && k.endsWith("IItems.g.cs"),
+      (k) => k.includes("v2.0") && k.endsWith("ItemsRequestBuilders.g.cs"),
     );
     const iItemsFile = Object.keys(results).find((k) =>
-      k.endsWith("IItems.g.cs"),
+      k.endsWith("ItemsRequestBuilders.g.cs"),
     );
 
     ok(!v1File, "No v1.0 folder in single-version mode");
     ok(!v2File, "v2.0 should not be emitted when target-version is v1.0");
-    ok(iItemsFile, "Expected IItems.g.cs at root");
+    ok(iItemsFile, "Expected ItemsRequestBuilders.g.cs at root");
     ok(results[iItemsFile!].includes("ListAsync("), "v1 should have ListAsync");
     ok(
       !results[iItemsFile!].includes("CreateAsync("),
@@ -123,14 +123,14 @@ describe("emitter", () => {
     );
 
     const v1File = Object.keys(results).find(
-      (k) => k.includes("v1.0") && k.endsWith("IItems.g.cs"),
+      (k) => k.includes("v1.0") && k.endsWith("ItemsRequestBuilders.g.cs"),
     );
     const v2File = Object.keys(results).find(
-      (k) => k.includes("v2.0") && k.endsWith("IItems.g.cs"),
+      (k) => k.includes("v2.0") && k.endsWith("ItemsRequestBuilders.g.cs"),
     );
 
-    ok(v1File, "Expected v1.0/Endpoints/IItems.g.cs");
-    ok(v2File, "Expected v2.0/Endpoints/IItems.g.cs");
+    ok(v1File, "Expected v1.0/Endpoints/ItemsRequestBuilders.g.cs");
+    ok(v2File, "Expected v2.0/Endpoints/ItemsRequestBuilders.g.cs");
     ok(results[v1File].includes("ListAsync("), "v1 should have ListAsync");
     ok(
       !results[v1File].includes("CreateAsync("),
@@ -192,16 +192,16 @@ describe("emitter", () => {
     );
 
     const ifaceFile = Object.keys(results).find((k) =>
-      k.endsWith("IItems.g.cs"),
+      k.endsWith("ItemsRequestBuilders.g.cs"),
     );
-    ok(ifaceFile, "Expected IItems.g.cs");
+    ok(ifaceFile, "Expected ItemsRequestBuilders.g.cs");
     ok(
       results[ifaceFile].includes("namespace TestApi.Client.V2_0"),
       "Expected version in namespace",
     );
 
     const vFolderFile = Object.keys(results).find(
-      (k) => k.includes("v2.0") && k.endsWith("IItems.g.cs"),
+      (k) => k.includes("v2.0") && k.endsWith("ItemsRequestBuilders.g.cs"),
     );
     ok(
       !vFolderFile,
@@ -232,13 +232,13 @@ describe("emitter", () => {
     );
 
     const v1File = Object.keys(results).find(
-      (k) => k.includes("v1.0") && k.endsWith("IItems.g.cs"),
+      (k) => k.includes("v1.0") && k.endsWith("ItemsRequestBuilders.g.cs"),
     );
     const v2File = Object.keys(results).find(
-      (k) => k.includes("v2.0") && k.endsWith("IItems.g.cs"),
+      (k) => k.includes("v2.0") && k.endsWith("ItemsRequestBuilders.g.cs"),
     );
-    ok(v1File, "Expected v1.0/Endpoints/IItems.g.cs");
-    ok(v2File, "Expected v2.0/Endpoints/IItems.g.cs");
+    ok(v1File, "Expected v1.0/Endpoints/ItemsRequestBuilders.g.cs");
+    ok(v2File, "Expected v2.0/Endpoints/ItemsRequestBuilders.g.cs");
     ok(
       results[v1File].includes("namespace TestApi.Client.V1_0"),
       "Expected version in v1 namespace",
@@ -307,10 +307,10 @@ describe("emitter", () => {
     );
 
     const ifaceFile = Object.keys(results).find((k) =>
-      k.endsWith("IItems.g.cs"),
+      k.endsWith("ItemsRequestBuilders.g.cs"),
     );
     const modelFile = Object.keys(results).find((k) => k.endsWith("Item.g.cs"));
-    ok(ifaceFile, "Expected IItems.g.cs");
+    ok(ifaceFile, "Expected ItemsRequestBuilders.g.cs");
     ok(modelFile, "Expected Item.g.cs");
     ok(
       results[ifaceFile].includes("using Shared.Helpers;") &&
@@ -341,9 +341,9 @@ describe("emitter", () => {
     `);
 
     const ifaceFile = Object.keys(results).find((k) =>
-      k.endsWith("IItems.g.cs"),
+      k.endsWith("ItemsRequestBuilders.g.cs"),
     );
-    ok(ifaceFile, "Expected IItems.g.cs");
+    ok(ifaceFile, "Expected ItemsRequestBuilders.g.cs");
     ok(
       !results[ifaceFile].includes("Shared."),
       "Expected no stray usings when additional-usings is not set",
@@ -510,7 +510,7 @@ describe("emitter", () => {
       );
 
       const ifaceFile = Object.keys(results).find((k) =>
-        k.endsWith("IWidgets.g.cs"),
+        k.endsWith("WidgetsRequestBuilders.g.cs"),
       );
       ok(
         results[ifaceFile!].includes("namespace TestApi.Client.V1_0;"),

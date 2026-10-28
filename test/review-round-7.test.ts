@@ -59,7 +59,7 @@ describe("version projection", () => {
     );
     ok(!has(results, "/Gizmo.g.cs"));
 
-    const iface = fileContent(results, "IGizmos.g.cs");
+    const iface = fileContent(results, "GizmosRequestBuilders.g.cs");
     ok(iface.includes("Task<Gadget> ReadAsync(string q,"));
     ok(iface.includes("Task<int> CountAsync("));
   });
@@ -74,7 +74,9 @@ describe("version projection", () => {
     ok(gizmo.includes("public string Size"));
     ok(gizmo.includes("public string? Note"));
     ok(
-      fileContent(results, "IGizmos.g.cs").includes("ReadAsync(string search,"),
+      fileContent(results, "GizmosRequestBuilders.g.cs").includes(
+        "ReadAsync(string search,",
+      ),
     );
   });
 
@@ -87,7 +89,9 @@ describe("version projection", () => {
     );
 
     ok(
-      fileContent(results, "IGizmos.g.cs").includes("IMergePatch<Gadget> body"),
+      fileContent(results, "GizmosRequestBuilders.g.cs").includes(
+        "IMergePatch<Gadget> body",
+      ),
     );
     ok(has(results, "/Gadget.g.cs"));
     ok(
@@ -105,7 +109,7 @@ describe("version projection", () => {
     );
 
     ok(
-      fileContent(results, "IGizmos.g.cs").includes(
+      fileContent(results, "GizmosRequestBuilders.g.cs").includes(
         "Task<Page<Gadget>> ListAsync(",
       ),
     );
@@ -151,14 +155,22 @@ describe("file names that differ only in case", () => {
     );
   });
 
-  it("reports an interface and a model whose files differ only in case", async () => {
+  it("reports a request builder and a model whose names differ only in case", async () => {
     const [, diagnostics] = await emitWithDiagnostics(`${PREAMBLE}
-      model iwidgets { a: string; }
+      model widgetsrequestbuilder { a: string; }
 
-      @route("/w") interface Widgets { @get one(): iwidgets; }
+      @route("/w") interface Widgets { @get one(): widgetsrequestbuilder; }
     `);
 
-    ok(messagesFor(diagnostics, "output-name-collision").length >= 1);
+    const messages = messagesFor(diagnostics, "output-name-collision");
+    ok(
+      messages.some(
+        (m) =>
+          m.includes("differ only in case") &&
+          m.includes("the WidgetsRequestBuilder request builder"),
+      ),
+      messages.join("; "),
+    );
   });
 });
 
@@ -173,14 +185,14 @@ describe("optional request bodies", () => {
       }
     `);
 
-    const iface = fileContent(results, "IItems.g.cs");
+    const iface = fileContent(results, "ItemsRequestBuilders.g.cs");
     ok(
       iface.includes(
         "CreateAsync(string q, Item? body = null, string? tag = null,",
       ),
     );
     ok(iface.includes("NoteAsync(string? body = null,"));
-    const client = fileContent(results, "ItemsEndpoint.g.cs");
+    const client = fileContent(results, "ItemsRequestBuilders.g.cs");
     ok(
       client.includes(
         "body is null ? await flurlRequest.SendAsync(HttpMethod.Post, cancellationToken: cancellationToken).ConfigureAwait(false) : await flurlRequest.SendJsonAsync(HttpMethod.Post, body,",
@@ -194,8 +206,16 @@ describe("optional request bodies", () => {
       @route("/i") interface Items { @post create(@body body: Item): void; }
     `);
 
-    ok(fileContent(results, "IItems.g.cs").includes("CreateAsync(Item body,"));
-    ok(!fileContent(results, "ItemsEndpoint.g.cs").includes("body is null"));
+    ok(
+      fileContent(results, "ItemsRequestBuilders.g.cs").includes(
+        "CreateAsync(Item body,",
+      ),
+    );
+    ok(
+      !fileContent(results, "ItemsRequestBuilders.g.cs").includes(
+        "body is null",
+      ),
+    );
   });
 });
 
@@ -208,7 +228,7 @@ describe("success response shapes", () => {
       }
     `);
 
-    const iface = fileContent(results, "IItems.g.cs");
+    const iface = fileContent(results, "ItemsRequestBuilders.g.cs");
     ok(iface.includes("Task<Item?> ReadAsync("));
     ok(iface.includes("Task<TResult?> ReadAsync<TResult>("));
   });
@@ -221,7 +241,7 @@ describe("success response shapes", () => {
     `);
 
     ok(
-      fileContent(results, "IItems.g.cs").includes(
+      fileContent(results, "ItemsRequestBuilders.g.cs").includes(
         "Task<List<string>> ReadAsync(",
       ),
     );
@@ -277,7 +297,7 @@ describe("request records for a discriminated body", () => {
       ),
     );
 
-    const iface = fileContent(results, "IPets.g.cs");
+    const iface = fileContent(results, "PetsRequestBuilders.g.cs");
     ok(iface.includes("CreateAsync(PetCreateRequest body,"));
     ok(iface.includes("CreateDogAsync(DogCreateRequest body,"));
   });
@@ -289,7 +309,11 @@ describe("request records for a discriminated body", () => {
       @route("/pets") interface Pets { @post create(@body body: Pet): Pet; }
     `);
 
-    ok(fileContent(results, "IPets.g.cs").includes("CreateAsync(Pet body,"));
+    ok(
+      fileContent(results, "PetsRequestBuilders.g.cs").includes(
+        "CreateAsync(Pet body,",
+      ),
+    );
     ok(!has(results, "PetCreateRequest.g.cs"));
   });
 
@@ -303,7 +327,7 @@ describe("request records for a discriminated body", () => {
     `);
 
     ok(
-      fileContent(results, "IPets.g.cs").includes(
+      fileContent(results, "PetsRequestBuilders.g.cs").includes(
         "CreateDraftAsync(PetCreateDraftRequest body,",
       ),
     );
@@ -353,7 +377,7 @@ describe("template parameters", () => {
       ),
     );
     ok(
-      fileContent(results, "IX.g.cs").includes(
+      fileContent(results, "XRequestBuilders.g.cs").includes(
         "Task<Tagged<Item, string>> ReadAsync(",
       ),
     );
@@ -369,7 +393,7 @@ describe("template parameters", () => {
     );
 
     ok(
-      fileContent(results, "IHolders.g.cs").includes(
+      fileContent(results, "HoldersRequestBuilders.g.cs").includes(
         "Task<Holder<Gadget>> ReadAsync(",
       ),
     );
@@ -388,7 +412,7 @@ describe("template parameters", () => {
     );
 
     ok(
-      fileContent(results, "IParts2.g.cs").includes(
+      fileContent(results, "Parts2RequestBuilders.g.cs").includes(
         "IMergePatch<OldPart> body",
       ),
     );

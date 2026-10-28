@@ -34,7 +34,7 @@ describe("operations using a nested discriminator", () => {
       messagesFor(diagnostics, "unsupported-nested-discriminator").length,
       1,
     );
-    const iface = fileContent(results, "IKennels.g.cs");
+    const iface = fileContent(results, "KennelsRequestBuilders.g.cs");
     ok(!iface.includes("ReadAsync"));
     ok(iface.includes("PingAsync"));
   });
@@ -47,7 +47,11 @@ describe("operations using a nested discriminator", () => {
       }
     `);
 
-    ok(!fileContent(results, "IKennels.g.cs").includes("CreateAsync"));
+    ok(
+      !fileContent(results, "KennelsRequestBuilders.g.cs").includes(
+        "CreateAsync",
+      ),
+    );
   });
 });
 

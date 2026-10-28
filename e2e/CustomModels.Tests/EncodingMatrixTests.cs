@@ -46,7 +46,7 @@ public sealed class EncodingMatrixTests
         var (client, handler) = Create();
         handler.RespondText("1704164645");
 
-        (await client.Encodings.UnixAsync(At, At, At, At, At)).Should().Be(At);
+        (await client.Encodings(At).UnixAsync(At, At, At, At)).Should().Be(At);
 
         AssertEverywhere(handler, "1704164645");
     }
@@ -57,7 +57,7 @@ public sealed class EncodingMatrixTests
         var (client, handler) = Create();
         handler.RespondText("Tue, 02 Jan 2024 03:04:05 GMT");
 
-        (await client.Encodings.Rfc7231Async(At, At, At, At, At)).Should().Be(At);
+        (await client.Encodings(At).Rfc7231Async(At, At, At, At)).Should().Be(At);
 
         AssertEverywhere(handler, "Tue, 02 Jan 2024 03:04:05 GMT");
     }
@@ -69,7 +69,7 @@ public sealed class EncodingMatrixTests
         var value = TimeSpan.FromSeconds(90);
         handler.RespondText("90");
 
-        (await client.Encodings.WholeSecondsAsync(value, value, value, value, value)).Should().Be(value);
+        (await client.Encodings(value).WholeSecondsAsync(value, value, value, value)).Should().Be(value);
 
         AssertEverywhere(handler, "90");
     }
@@ -81,7 +81,7 @@ public sealed class EncodingMatrixTests
         var value = TimeSpan.FromSeconds(1.5);
         handler.RespondText("1.5");
 
-        (await client.Encodings.SecondsAsync(value, value, value, value, value)).Should().Be(value);
+        (await client.Encodings(value).SecondsAsync(value, value, value, value)).Should().Be(value);
 
         AssertEverywhere(handler, "1.5");
     }
@@ -93,7 +93,7 @@ public sealed class EncodingMatrixTests
         var value = TimeSpan.FromMilliseconds(250);
         handler.RespondText("250");
 
-        (await client.Encodings.WholeMillisecondsAsync(value, value, value, value, value)).Should().Be(value);
+        (await client.Encodings(value).WholeMillisecondsAsync(value, value, value, value)).Should().Be(value);
 
         AssertEverywhere(handler, "250");
     }
@@ -105,7 +105,7 @@ public sealed class EncodingMatrixTests
         var value = TimeSpan.FromMilliseconds(1.5);
         handler.RespondText("1.5");
 
-        (await client.Encodings.MillisecondsAsync(value, value, value, value, value)).Should().Be(value);
+        (await client.Encodings(value).MillisecondsAsync(value, value, value, value)).Should().Be(value);
 
         AssertEverywhere(handler, "1.5");
     }
@@ -117,7 +117,7 @@ public sealed class EncodingMatrixTests
         byte[] value = [0xFB, 0xFF];
         handler.RespondText("-_8");
 
-        (await client.Encodings.Base64urlAsync(value, value, value, value, value)).Should().Equal(value);
+        (await client.Encodings(value).Base64urlAsync(value, value, value, value)).Should().Equal(value);
 
         // TypeSpec declares a bytes body as application/octet-stream; the @encode makes it base64url text.
         AssertEverywhere(handler, "-_8", "application/octet-stream");
@@ -130,7 +130,7 @@ public sealed class EncodingMatrixTests
         byte[] value = [0xFB, 0xFF];
         handler.RespondText("+/8=");
 
-        (await client.Encodings.Base64Async(value, value, value, value, value)).Should().Equal(value);
+        (await client.Encodings(value).Base64Async(value, value, value, value)).Should().Equal(value);
 
         AssertEverywhere(handler, "+/8=", "application/octet-stream");
     }
@@ -140,7 +140,7 @@ public sealed class EncodingMatrixTests
     {
         var (client, handler) = Create();
 
-        await client.Encodings.PipeAsync(["a", "b"], ["a", "b"], ["a", "b"]);
+        await client.Encodings().PipeAsync(["a", "b"], ["a", "b"], ["a", "b"]);
 
         AssertParameters(handler, "a|b");
     }
@@ -150,7 +150,7 @@ public sealed class EncodingMatrixTests
     {
         var (client, handler) = Create();
 
-        await client.Encodings.SpaceAsync(["a", "b"], ["a", "b"], ["a", "b"]);
+        await client.Encodings().SpaceAsync(["a", "b"], ["a", "b"], ["a", "b"]);
 
         AssertParameters(handler, "a b");
     }
@@ -160,7 +160,7 @@ public sealed class EncodingMatrixTests
     {
         var (client, handler) = Create();
 
-        await client.Encodings.CommaAsync(["a", "b"], ["a", "b"], ["a", "b"]);
+        await client.Encodings().CommaAsync(["a", "b"], ["a", "b"], ["a", "b"]);
 
         AssertParameters(handler, "a,b");
     }
@@ -170,7 +170,7 @@ public sealed class EncodingMatrixTests
     {
         var (client, handler) = Create();
 
-        await client.Encodings.NewlineQueryAsync(["a", "b"]);
+        await client.Encodings().NewlineQueryAsync(["a", "b"]);
 
         Uri.UnescapeDataString(handler.Last.Uri.Query).Should().Be("?q=a\nb");
     }

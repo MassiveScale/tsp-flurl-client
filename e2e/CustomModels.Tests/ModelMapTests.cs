@@ -54,7 +54,7 @@ public sealed class ModelMapTests
         var (client, handler) = Harness.Create(m => m.Map<Widget, MyWidget>().Map<Widget, Widget>());
         handler.RespondJson("""{"id":"1","name":"gear","sku":"S-1"}""");
 
-        var widget = await client.Widgets.ReadAsync("1");
+        var widget = await client.Widgets("1").ReadAsync();
 
         widget.Should().BeOfType<Widget>();
     }

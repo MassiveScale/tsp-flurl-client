@@ -14,7 +14,7 @@ public sealed class SendingCustomModelsTests
         var (client, handler) = Harness.Create();
         handler.RespondJson("""{"id":"1","name":"gear"}""");
 
-        await client.Widgets.CreateAsync(new MyCreateRequest { Name = "gear", Sku = "G-1" });
+        await client.Widgets().CreateAsync(new MyCreateRequest { Name = "gear", Sku = "G-1" });
 
         using var sent = JsonDocument.Parse(handler.Last.Body!);
         sent.RootElement.GetProperty("name").GetString().Should().Be("gear");
@@ -27,7 +27,7 @@ public sealed class SendingCustomModelsTests
         var (client, handler) = Harness.Create();
         handler.RespondJson("""{"id":"1","name":"gear"}""");
 
-        await client.Widgets.CreateAsync(new WidgetCreateRequest { Name = "gear" });
+        await client.Widgets().CreateAsync(new WidgetCreateRequest { Name = "gear" });
 
         handler.Last.Body.Should().Be("""{"name":"gear"}""");
     }
@@ -38,7 +38,7 @@ public sealed class SendingCustomModelsTests
         var (client, handler) = Harness.Create();
         handler.RespondJson("[]");
 
-        await client.Widgets.CreateManyAsync(new List<MyCreateRequest> { new() { Name = "a", Sku = "S-1" } });
+        await client.Widgets().CreateManyAsync(new List<MyCreateRequest> { new() { Name = "a", Sku = "S-1" } });
 
         using var sent = JsonDocument.Parse(handler.Last.Body!);
         sent.RootElement[0].GetProperty("sku").GetString().Should().Be("S-1");
@@ -51,7 +51,7 @@ public sealed class SendingCustomModelsTests
         var (client, handler) = Harness.Create();
         handler.RespondJson("""{"a":{"id":"1","name":"a"}}""");
 
-        var created = await client.Widgets.CreateKeyedAsync(
+        var created = await client.Widgets().CreateKeyedAsync(
             new Dictionary<string, MyCreateRequest> { ["a"] = new() { Name = "a", Sku = "S-1" } });
 
         using var sent = JsonDocument.Parse(handler.Last.Body!);
@@ -66,7 +66,7 @@ public sealed class SendingCustomModelsTests
         var (client, handler) = Harness.Create();
         handler.RespondJson("""{"a":{"id":"1","name":"a","sku":"S-9"}}""");
 
-        var created = await client.Widgets.CreateKeyedAsync<MyWidget, MyCreateRequest>(
+        var created = await client.Widgets().CreateKeyedAsync<MyWidget, MyCreateRequest>(
             new Dictionary<string, MyCreateRequest> { ["a"] = new() { Name = "a", Sku = "S-1" } });
 
         created["a"].Sku.Should().Be("S-9");
@@ -82,8 +82,8 @@ public sealed class SendingCustomModelsTests
             .RespondJson("""{"a":{"id":"1","name":"a","sku":"S-9"}}""");
         var body = new Dictionary<string, WidgetCreateRequest> { ["a"] = new() { Name = "a" } };
 
-        (await client.Widgets.CreateKeyedAsync(body))["a"].Should().BeOfType<Widget>();
-        (await client.Widgets.CreateKeyedAsync<MyWidget>(body))["a"].Sku.Should().Be("S-9");
+        (await client.Widgets().CreateKeyedAsync(body))["a"].Should().BeOfType<Widget>();
+        (await client.Widgets().CreateKeyedAsync<MyWidget>(body))["a"].Sku.Should().Be("S-9");
     }
 
     [TestMethod]
@@ -93,7 +93,7 @@ public sealed class SendingCustomModelsTests
         handler.RespondJson("""{"id":"1","name":"gear"}""");
 
         var patch = new MergePatch<MyWidget>().Set(w => w.Sku, "S-2").Clear(w => w.Color);
-        await client.Widgets.UpdateAsync("1", patch);
+        await client.Widgets("1").UpdateAsync(patch);
 
         handler.Last.Method.Should().Be(HttpMethod.Patch);
         handler.Last.Body.Should().Be("""{"sku":"S-2","color":null}""");
@@ -105,7 +105,7 @@ public sealed class SendingCustomModelsTests
         var (client, handler) = Harness.Create();
         handler.RespondJson("""{"kind":"dog","name":"rex","isBarker":true}""");
 
-        await client.Pets.CreateAsync(new MyDog { Name = "rex", IsBarker = true, Breed = "lab" });
+        await client.Pets().CreateAsync(new MyDog { Name = "rex", IsBarker = true, Breed = "lab" });
 
         using var sent = JsonDocument.Parse(handler.Last.Body!);
         sent.RootElement.GetProperty("kind").GetString().Should().Be("dog");
@@ -118,7 +118,7 @@ public sealed class SendingCustomModelsTests
         var (client, handler) = Harness.Create();
         handler.RespondJson("""{"kind":"dog","name":"rex","isBarker":true}""");
 
-        await client.Pets.CreateAsync(new Dog { Name = "rex", IsBarker = true });
+        await client.Pets().CreateAsync(new Dog { Name = "rex", IsBarker = true });
 
         using var sent = JsonDocument.Parse(handler.Last.Body!);
         sent.RootElement.GetProperty("kind").GetString().Should().Be("dog");
@@ -131,7 +131,7 @@ public sealed class SendingCustomModelsTests
         handler.RespondJson("""{"id":"1","owner":{"name":"ann"},"tags":{},"raw":null,"bytes":""}""");
 
         var patch = new MergePatch<Gadget>().Set(g => g.Owner, new MyOwner { Name = "ann", Nickname = "annie" });
-        await client.Gadgets.UpdateAsync("1", patch);
+        await client.Gadgets("1").UpdateAsync(patch);
 
         using var sent = JsonDocument.Parse(handler.Last.Body!);
         var owner = sent.RootElement.GetProperty("owner");
@@ -145,7 +145,7 @@ public sealed class SendingCustomModelsTests
         var (client, handler) = Harness.Create();
         handler.RespondJson("""{"id":"1","owner":{"name":"ann"},"tags":{},"raw":null,"bytes":""}""");
 
-        await client.Gadgets.UpdateAsync("1", new MergePatch<Gadget>().Set("raw", (object?)null));
+        await client.Gadgets("1").UpdateAsync(new MergePatch<Gadget>().Set("raw", (object?)null));
 
         handler.Last.Body.Should().Be("""{"raw":null}""");
     }
@@ -156,7 +156,7 @@ public sealed class SendingCustomModelsTests
         var (client, handler) = Harness.Create(m => m.Map<Dog, MyDog>());
         handler.RespondJson("""{"kind":"dog","name":"rex","isBarker":true}""");
 
-        await client.Pets.CreateAsync(new MyDog { Name = "rex", IsBarker = true, Breed = "lab" });
+        await client.Pets().CreateAsync(new MyDog { Name = "rex", IsBarker = true, Breed = "lab" });
 
         handler.Last.Body.Should().Contain("\"breed\":\"lab\"");
         CountOf(handler.Last.Body!, "\"kind\":\"dog\"").Should().Be(1, "the discriminator is written exactly once");
@@ -168,7 +168,7 @@ public sealed class SendingCustomModelsTests
         var (client, handler) = Harness.Create(m => m.Map<Dog, MyDog>());
         handler.RespondJson("[]");
 
-        await client.Pets.CreateManyAsync(
+        await client.Pets().CreateManyAsync(
             [new MyDog { Name = "rex", IsBarker = true, Breed = "lab" }, new Cat { Name = "tom", IsPurrer = true }]);
 
         using var sent = JsonDocument.Parse(handler.Last.Body!);
@@ -183,10 +183,10 @@ public sealed class SendingCustomModelsTests
     {
         var (client, handler) = Harness.Create(m => m.Map<Dog, MyDog>());
         handler.RespondJson("""{"kind":"dog","name":"rex","isBarker":true}""");
-        await client.Pets.CreateAsync(new MyDog { Name = "rex", IsBarker = true, Breed = "lab" });
+        await client.Pets().CreateAsync(new MyDog { Name = "rex", IsBarker = true, Breed = "lab" });
 
         handler.RespondJson("""[{"kind":"dog","name":"rex","isBarker":true,"breed":"lab"}]""");
-        var pets = await client.Pets.ListAsync();
+        var pets = await client.Pets().ListAsync();
 
         pets[0].Should().BeOfType<MyDog>().Which.Breed.Should().Be("lab");
     }

@@ -3,7 +3,7 @@ import { describe, it } from "node:test";
 import { emit } from "./host.js";
 
 describe("endpoints", () => {
-  it("emits a GET interface for a simple HTTP service", async () => {
+  it("emits a GET request builder for a simple HTTP service", async () => {
     const results = await emit(`
       import "@typespec/http";
       using Http;
@@ -18,13 +18,15 @@ describe("endpoints", () => {
     `);
 
     const ifaceFile = Object.keys(results).find((k) =>
-      k.endsWith("IItems.g.cs"),
+      k.endsWith("ItemsRequestBuilders.g.cs"),
     );
-    ok(ifaceFile, "Expected IItems.g.cs to be emitted");
+    ok(ifaceFile, "Expected ItemsRequestBuilders.g.cs to be emitted");
     const content = results[ifaceFile];
     ok(
-      content.includes("public interface IItems"),
-      "Expected interface declaration",
+      content.includes(
+        "public sealed class ItemsRequestBuilder : RequestBuilder<ItemsRequestBuilder>",
+      ),
+      "Expected request builder class declaration",
     );
     ok(
       content.includes("Task<List<string>>"),
@@ -32,9 +34,9 @@ describe("endpoints", () => {
     );
 
     const clientFile = Object.keys(results).find((k) =>
-      k.endsWith("ItemsEndpoint.g.cs"),
+      k.endsWith("ItemsRequestBuilders.g.cs"),
     );
-    ok(clientFile, "Expected ItemsEndpoint.g.cs to be emitted");
+    ok(clientFile, "Expected ItemsRequestBuilders.g.cs to be emitted");
     ok(
       results[clientFile].includes('AppendPathSegment($"api/items")'),
       "Expected the default route prefix in the request path",
@@ -65,9 +67,9 @@ describe("endpoints", () => {
     `);
 
     const ifaceFile = Object.keys(results).find((k) =>
-      k.endsWith("ItemsEndpoint.g.cs"),
+      k.endsWith("ItemsRequestBuilders.g.cs"),
     );
-    ok(ifaceFile, "Expected ItemsEndpoint.g.cs");
+    ok(ifaceFile, "Expected ItemsRequestBuilders.g.cs");
     const content = results[ifaceFile];
     ok(
       content.includes('AppendPathSegment($"api/items")') &&
@@ -76,13 +78,13 @@ describe("endpoints", () => {
     );
     ok(
       content.includes(
-        'AppendPathSegment($"api/items/{ClientRuntime.EscapePathSegment(id)}")',
+        'AppendPathSegment($"api/items/{ClientRuntime.EscapePathSegment(this._id)}")',
       ) && results[ifaceFile].includes("HttpMethod.Patch"),
       "Expected Patch attribute with default route prefix",
     );
     ok(
       content.includes(
-        'AppendPathSegment($"api/items/{ClientRuntime.EscapePathSegment(id)}")',
+        'AppendPathSegment($"api/items/{ClientRuntime.EscapePathSegment(this._id)}")',
       ) && results[ifaceFile].includes("HttpMethod.Delete"),
       "Expected Delete attribute with default route prefix",
     );
@@ -106,7 +108,7 @@ describe("endpoints", () => {
     `);
 
     const ifaceFile = Object.keys(results).find((k) =>
-      k.endsWith("IItems.g.cs"),
+      k.endsWith("ItemsRequestBuilders.g.cs"),
     );
     ok(ifaceFile);
     ok(
@@ -132,14 +134,29 @@ describe("endpoints", () => {
     `);
 
     const ifaceFile = Object.keys(results).find((k) =>
-      k.endsWith("WidgetsEndpoint.g.cs"),
+      k.endsWith("WidgetsRequestBuilders.g.cs"),
     );
     ok(ifaceFile);
     const content = results[ifaceFile];
-    ok(content.includes("string id"), "Expected string id parameter");
     ok(
       content.includes(
-        'AppendPathSegment($"api/widgets/{ClientRuntime.EscapePathSegment(id)}")',
+        "internal WidgetsItemRequestBuilder(IFlurlClient flurlClient, string id)",
+      ),
+      "Expected the item builder to take the string id path parameter",
+    );
+    ok(
+      content.includes("private readonly string _id;"),
+      "Expected the path parameter to be held in a field",
+    );
+    ok(
+      content.includes(
+        "ReadAsync(CancellationToken cancellationToken = default)",
+      ),
+      "Expected the path parameter not to be a method parameter",
+    );
+    ok(
+      content.includes(
+        'AppendPathSegment($"api/widgets/{ClientRuntime.EscapePathSegment(this._id)}")',
       ) && results[ifaceFile].includes("HttpMethod.Get"),
       "Expected path in attribute with default route prefix",
     );
@@ -165,9 +182,9 @@ describe("endpoints", () => {
     `);
 
     const ifaceFile = Object.keys(results).find((k) =>
-      k.endsWith("ItemsEndpoint.g.cs"),
+      k.endsWith("ItemsRequestBuilders.g.cs"),
     );
-    ok(ifaceFile, "Expected ItemsEndpoint.g.cs");
+    ok(ifaceFile, "Expected ItemsRequestBuilders.g.cs");
     ok(
       results[ifaceFile].includes('AppendPathSegment($"api/v1.0/items")') &&
         results[ifaceFile].includes("HttpMethod.Get"),
@@ -190,9 +207,9 @@ describe("endpoints", () => {
     `);
 
     const ifaceFile = Object.keys(results).find((k) =>
-      k.endsWith("ItemsEndpoint.g.cs"),
+      k.endsWith("ItemsRequestBuilders.g.cs"),
     );
-    ok(ifaceFile, "Expected ItemsEndpoint.g.cs");
+    ok(ifaceFile, "Expected ItemsRequestBuilders.g.cs");
     ok(
       results[ifaceFile].includes('AppendPathSegment($"api/items")') &&
         results[ifaceFile].includes("HttpMethod.Get"),
@@ -218,9 +235,9 @@ describe("endpoints", () => {
     );
 
     const ifaceFile = Object.keys(results).find((k) =>
-      k.endsWith("ItemsEndpoint.g.cs"),
+      k.endsWith("ItemsRequestBuilders.g.cs"),
     );
-    ok(ifaceFile, "Expected ItemsEndpoint.g.cs");
+    ok(ifaceFile, "Expected ItemsRequestBuilders.g.cs");
     ok(
       results[ifaceFile].includes('AppendPathSegment($"v1/api/items")') &&
         results[ifaceFile].includes("HttpMethod.Get"),
@@ -246,9 +263,9 @@ describe("endpoints", () => {
     );
 
     const ifaceFile = Object.keys(results).find((k) =>
-      k.endsWith("ItemsEndpoint.g.cs"),
+      k.endsWith("ItemsRequestBuilders.g.cs"),
     );
-    ok(ifaceFile, "Expected ItemsEndpoint.g.cs");
+    ok(ifaceFile, "Expected ItemsRequestBuilders.g.cs");
     ok(
       results[ifaceFile].includes('AppendPathSegment($"api/items")') &&
         results[ifaceFile].includes("HttpMethod.Get"),
@@ -278,9 +295,9 @@ describe("endpoints", () => {
     );
 
     const ifaceFile = Object.keys(results).find((k) =>
-      k.endsWith("ItemsEndpoint.g.cs"),
+      k.endsWith("ItemsRequestBuilders.g.cs"),
     );
-    ok(ifaceFile, "Expected ItemsEndpoint.g.cs");
+    ok(ifaceFile, "Expected ItemsRequestBuilders.g.cs");
     ok(
       results[ifaceFile].includes('AppendPathSegment($"items")') &&
         results[ifaceFile].includes("HttpMethod.Get"),
@@ -304,9 +321,9 @@ describe("endpoints", () => {
     `);
 
     const ifaceFile = Object.keys(results).find((k) =>
-      k.endsWith("IItems.g.cs"),
+      k.endsWith("ItemsRequestBuilders.g.cs"),
     );
-    ok(ifaceFile, "Expected IItems.g.cs");
+    ok(ifaceFile, "Expected ItemsRequestBuilders.g.cs");
     const content = results[ifaceFile];
     ok(content.includes("/// Op first."), "Expected first op doc line");
     ok(content.includes("/// Op second."), "Expected second op doc line");
@@ -327,9 +344,9 @@ describe("endpoints", () => {
     `);
 
     const ifaceFile = Object.keys(results).find((k) =>
-      k.endsWith("IItems.g.cs"),
+      k.endsWith("ItemsRequestBuilders.g.cs"),
     );
-    ok(ifaceFile, "Expected IItems.g.cs");
+    ok(ifaceFile, "Expected ItemsRequestBuilders.g.cs");
     const content = results[ifaceFile];
     ok(
       content.includes("int? skip = null"),
@@ -356,9 +373,9 @@ describe("endpoints", () => {
     `);
 
     const ifaceFile = Object.keys(results).find((k) =>
-      k.endsWith("IItems.g.cs"),
+      k.endsWith("ItemsRequestBuilders.g.cs"),
     );
-    ok(ifaceFile, "Expected IItems.g.cs");
+    ok(ifaceFile, "Expected ItemsRequestBuilders.g.cs");
     const content = results[ifaceFile];
     ok(
       content.includes("string filter"),
@@ -391,21 +408,27 @@ describe("endpoints", () => {
     `);
 
     const ifaceFile = Object.keys(results).find((k) =>
-      k.endsWith("IItems.g.cs"),
+      k.endsWith("ItemsRequestBuilders.g.cs"),
     );
-    ok(ifaceFile, "Expected IItems.g.cs");
+    ok(ifaceFile, "Expected ItemsRequestBuilders.g.cs");
     const content = results[ifaceFile];
+    ok(
+      content.includes(
+        "internal ItemsItemRequestBuilder(IFlurlClient flurlClient, string storeId)",
+      ),
+      "Required path param storeId must be taken by the item builder",
+    );
     const methodLine = content
       .split("\n")
       .find((l) => l.includes("CreateAsync("));
     ok(methodLine, "Expected CreateAsync method");
-    const skipIdx = methodLine!.indexOf("storeId");
+    ok(
+      !methodLine!.includes("storeId"),
+      "Path param storeId must not be a method parameter",
+    );
     const bodyIdx = methodLine!.indexOf("Item body");
     const dryRunIdx = methodLine!.indexOf("dryRun");
-    ok(
-      skipIdx < bodyIdx,
-      "Required path param storeId must come before required body",
-    );
+    ok(bodyIdx >= 0, "Expected the required body parameter");
     ok(bodyIdx < dryRunIdx, "Required body must come before optional dryRun");
     ok(
       content.includes("bool? dryRun = null"),
@@ -413,7 +436,7 @@ describe("endpoints", () => {
     );
   });
 
-  it("@clientName on an interface overrides the C# interface name", async () => {
+  it("@clientName on an interface overrides the C# request builder name", async () => {
     const results = await emit(`
       import "@typespec/http";
       import "@massivescale/tsp-flurl-client";
@@ -431,17 +454,24 @@ describe("endpoints", () => {
     `);
 
     const ifaceFile = Object.keys(results).find((k) =>
-      k.endsWith("IWidgets.g.cs"),
+      k.endsWith("WidgetsRequestBuilders.g.cs"),
     );
-    ok(ifaceFile, "Expected IWidgets.g.cs (clientName override)");
+    ok(ifaceFile, "Expected WidgetsRequestBuilders.g.cs (clientName override)");
     ok(
-      results[ifaceFile].includes("public interface IWidgets"),
-      "Expected interface named IWidgets",
+      results[ifaceFile].includes("public sealed class WidgetsRequestBuilder"),
+      "Expected request builder named WidgetsRequestBuilder",
+    );
+    ok(
+      !results[ifaceFile].includes("ThingsRequestBuilder"),
+      "Expected no builder named after the TypeSpec interface",
     );
     const thingsFile = Object.keys(results).find((k) =>
-      k.endsWith("IThings.g.cs"),
+      k.endsWith("ThingsRequestBuilders.g.cs"),
     );
-    ok(!thingsFile, "IThings.g.cs should not exist when clientName is Widgets");
+    ok(
+      !thingsFile,
+      "ThingsRequestBuilders.g.cs should not exist when clientName is Widgets",
+    );
   });
 
   it("@clientName on an operation overrides the C# method name", async () => {
@@ -462,15 +492,15 @@ describe("endpoints", () => {
     `);
 
     const ifaceFile = Object.keys(results).find((k) =>
-      k.endsWith("IItems.g.cs"),
+      k.endsWith("ItemsRequestBuilders.g.cs"),
     );
-    ok(ifaceFile, "Expected IItems.g.cs");
+    ok(ifaceFile, "Expected ItemsRequestBuilders.g.cs");
     const content = results[ifaceFile];
     ok(content.includes("SearchAsync("), "Expected SearchAsync method name");
     ok(!content.includes("ListAsync("), "ListAsync should not appear");
   });
 
-  it("@access(Access.internal) on an interface emits internal interface", async () => {
+  it("@access(Access.internal) on an interface emits an internal request builder", async () => {
     const results = await emit(`
       import "@typespec/http";
       import "@massivescale/tsp-flurl-client";
@@ -488,20 +518,20 @@ describe("endpoints", () => {
     `);
 
     const ifaceFile = Object.keys(results).find((k) =>
-      k.endsWith("IItems.g.cs"),
+      k.endsWith("ItemsRequestBuilders.g.cs"),
     );
-    ok(ifaceFile, "Expected IItems.g.cs");
+    ok(ifaceFile, "Expected ItemsRequestBuilders.g.cs");
     ok(
-      results[ifaceFile].includes("internal interface IItems"),
-      "Expected internal interface",
+      results[ifaceFile].includes("internal sealed class ItemsRequestBuilder"),
+      "Expected internal request builder",
     );
     ok(
-      !results[ifaceFile].includes("public interface IItems"),
-      "Should not contain public interface",
+      !results[ifaceFile].includes("public sealed class ItemsRequestBuilder"),
+      "Should not contain a public request builder",
     );
   });
 
-  it("adds an additionalQueryParameters dictionary parameter to every generated method", async () => {
+  it("ends every generated method with the cancellation token and no additionalQueryParameters", async () => {
     const results = await emit(`
       import "@typespec/http";
       using Http;
@@ -520,25 +550,35 @@ describe("endpoints", () => {
     `);
 
     const ifaceFile = Object.keys(results).find((k) =>
-      k.endsWith("IItems.g.cs"),
+      k.endsWith("ItemsRequestBuilders.g.cs"),
     );
-    ok(ifaceFile, "Expected IItems.g.cs");
+    ok(ifaceFile, "Expected ItemsRequestBuilders.g.cs");
     const content = results[ifaceFile];
-    const expected =
-      "Dictionary<string, object>? additionalQueryParameters = null";
     ok(
       content.includes(
-        `ListAsync(int? skip = null, ${expected}, CancellationToken`,
+        "ListAsync(int? skip = null, CancellationToken cancellationToken = default)",
       ),
-      "Expected additionalQueryParameters on ListAsync, after existing optional params",
+      "Expected the cancellation token straight after ListAsync's optional params",
     );
     ok(
-      content.includes(`CreateAsync(Item body, ${expected}, CancellationToken`),
-      "Expected additionalQueryParameters on CreateAsync, which has no query params of its own",
+      content.includes(
+        "CreateAsync(Item body, CancellationToken cancellationToken = default)",
+      ),
+      "Expected the cancellation token straight after CreateAsync's body",
     );
     ok(
-      content.includes(`RemoveAsync(string id, ${expected}, CancellationToken`),
-      "Expected additionalQueryParameters on RemoveAsync, a DELETE with no body",
+      content.includes(
+        "RemoveAsync(CancellationToken cancellationToken = default)",
+      ),
+      "Expected RemoveAsync, a DELETE with no body, to take only the cancellation token",
+    );
+    ok(
+      !content.includes("additionalQueryParameters"),
+      "Extra query parameters are added on the builder, not per method",
+    );
+    ok(
+      (content.match(/ApplyModifiers\(flurlRequest\);/g) ?? []).length === 3,
+      "Expected every request to apply the builder's modifiers",
     );
   });
 
@@ -559,9 +599,9 @@ describe("endpoints", () => {
     `);
 
     const ifaceFile = Object.keys(results).find((k) =>
-      k.endsWith("IWidgets.g.cs"),
+      k.endsWith("WidgetsRequestBuilders.g.cs"),
     );
-    ok(ifaceFile, "Expected IWidgets.g.cs");
+    ok(ifaceFile, "Expected WidgetsRequestBuilders.g.cs");
     const content = results[ifaceFile];
     ok(
       content.includes("IMergePatch<Widget> body"),

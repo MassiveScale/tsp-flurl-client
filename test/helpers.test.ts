@@ -133,7 +133,7 @@ describe("helper files", () => {
       ),
     );
     ok(
-      fileContent(results, "v1.0/Endpoints/ItemsEndpoint.g.cs").includes(
+      fileContent(results, "v1.0/Endpoints/ItemsRequestBuilders.g.cs").includes(
         "namespace TestApi.Client.V1_0;",
       ),
     );
@@ -229,22 +229,22 @@ describe("helper files", () => {
 });
 
 describe("helpers module", () => {
-  it("lists every helper, with the runtime pair always emitted", () => {
-    deepStrictEqual([...ALL_HELPERS].sort(), [
-      "ClientRuntime",
-      "MergePatch",
-      "ModelMap",
-    ]);
-    deepStrictEqual([...ALWAYS_EMITTED_HELPERS].sort(), [
-      "ClientRuntime",
-      "ModelMap",
-    ]);
+  it("lists every helper in write order, with the runtime and request builder base always emitted", () => {
+    deepStrictEqual(
+      [...ALL_HELPERS],
+      ["ModelMap", "ClientRuntime", "RequestBuilder", "MergePatch"],
+    );
+    deepStrictEqual(
+      [...ALWAYS_EMITTED_HELPERS],
+      ["ModelMap", "ClientRuntime", "RequestBuilder"],
+    );
   });
 
   it("puts the merge-patch builder with the models and the rest under Infrastructure", () => {
     strictEqual(helperFolder("MergePatch"), "Models");
     strictEqual(helperFolder("ModelMap"), "Infrastructure");
     strictEqual(helperFolder("ClientRuntime"), "Infrastructure");
+    strictEqual(helperFolder("RequestBuilder"), "Infrastructure");
   });
 
   it("sorts and de-duplicates the usings it writes", () => {
@@ -275,25 +275,27 @@ describe("template overrides for the Flurl templates", () => {
     return path;
   };
 
-  it("replaces the endpoint interface and client templates", async () => {
+  it("replaces the request builder templates", async () => {
     const results = await emit(SIMPLE, {
       templates: {
-        "endpoint-interface": override(
-          "iface",
-          "{{access}} interface {{interfaceName}} { /* custom interface */ }",
+        "request-builder": override(
+          "builder",
+          "{{access}} sealed class {{className}} { /* custom builder for {{groupName}} */ }",
         ),
-        "endpoint-client": override(
-          "client",
-          "internal sealed class {{className}} : {{interfaceName}} { /* custom client */ }",
+        "request-builder-base": override(
+          "builder-base",
+          "public abstract class RequestBuilder<TBuilder> { /* custom base */ }",
         ),
       },
     });
 
-    ok(fileContent(results, "IItems.g.cs").includes("/* custom interface */"));
     ok(
-      fileContent(results, "ItemsEndpoint.g.cs").includes(
-        "/* custom client */",
+      fileContent(results, "ItemsRequestBuilders.g.cs").includes(
+        "/* custom builder for Items */",
       ),
+    );
+    ok(
+      fileContent(results, "RequestBuilder.g.cs").includes("/* custom base */"),
     );
   });
 

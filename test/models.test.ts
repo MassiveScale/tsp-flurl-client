@@ -225,7 +225,7 @@ describe("models", () => {
     );
 
     const ifaceFile = Object.keys(results).find((k) =>
-      k.endsWith("IItems.g.cs"),
+      k.endsWith("ItemsRequestBuilders.g.cs"),
     );
     ok(ifaceFile);
     ok(
@@ -276,7 +276,7 @@ describe("models", () => {
     );
 
     const ifaceFile = Object.keys(results).find((k) =>
-      k.endsWith("IItems.g.cs"),
+      k.endsWith("ItemsRequestBuilders.g.cs"),
     );
     ok(ifaceFile);
     ok(
@@ -342,7 +342,7 @@ describe("models", () => {
     );
 
     const ifaceFile = Object.keys(results).find((k) =>
-      k.endsWith("IItems.g.cs"),
+      k.endsWith("ItemsRequestBuilders.g.cs"),
     );
     ok(ifaceFile);
     ok(
@@ -502,9 +502,9 @@ describe("models", () => {
     ok(!animalFile, "Animal.g.cs should not exist when clientName is Pet");
 
     const ifaceFile = Object.keys(results).find((k) =>
-      k.endsWith("IAnimals.g.cs"),
+      k.endsWith("AnimalsRequestBuilders.g.cs"),
     );
-    ok(ifaceFile, "Expected IAnimals.g.cs");
+    ok(ifaceFile, "Expected AnimalsRequestBuilders.g.cs");
     ok(
       results[ifaceFile].includes("Task<List<Pet>>"),
       "Expected Pet type reference in interface",

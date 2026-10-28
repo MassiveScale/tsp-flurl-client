@@ -247,7 +247,7 @@ const POSITIONS: Position[] = [
     name: "a query parameter",
     spec: (e) =>
       `@route("/x") interface X { @get read(@query ${e.decorator} v: ${e.type}): void; }`,
-    file: "Endpoints/XEndpoint.g.cs",
+    file: "Endpoints/XRequestBuilders.g.cs",
     applied: encoded,
     carries: ["default", "number-as-string", "wire", "delimited"],
   },
@@ -255,7 +255,7 @@ const POSITIONS: Position[] = [
     name: "a header parameter",
     spec: (e) =>
       `@route("/x") interface X { @get read(@header ${e.decorator} v: ${e.type}): void; }`,
-    file: "Endpoints/XEndpoint.g.cs",
+    file: "Endpoints/XRequestBuilders.g.cs",
     applied: encoded,
     carries: ["default", "number-as-string", "wire", "delimited"],
     cannotCarry: noLineBreaks,
@@ -264,7 +264,7 @@ const POSITIONS: Position[] = [
     name: "a cookie parameter",
     spec: (e) =>
       `@route("/x") interface X { @get read(@cookie ${e.decorator} v: ${e.type}): void; }`,
-    file: "Endpoints/XEndpoint.g.cs",
+    file: "Endpoints/XRequestBuilders.g.cs",
     applied: encoded,
     carries: ["default", "number-as-string", "wire", "delimited"],
     cannotCarry: noLineBreaks,
@@ -273,7 +273,7 @@ const POSITIONS: Position[] = [
     name: "a path parameter",
     spec: (e) =>
       `@route("/x") interface X { @get read(@path ${e.decorator} v: ${e.type}): void; }`,
-    file: "Endpoints/XEndpoint.g.cs",
+    file: "Endpoints/XRequestBuilders.g.cs",
     applied: encoded,
     carries: ["default", "number-as-string", "wire", "delimited"],
   },
@@ -281,7 +281,7 @@ const POSITIONS: Position[] = [
     name: "a plain-text request body",
     spec: (e) =>
       `@route("/x") interface X { @post send(@body ${e.decorator} v: ${e.type}): void; }`,
-    file: "Endpoints/XEndpoint.g.cs",
+    file: "Endpoints/XRequestBuilders.g.cs",
     applied: encoded,
     carries: ["default", "number-as-string", "wire"],
     wholeBody: true,
@@ -292,7 +292,7 @@ const POSITIONS: Position[] = [
     name: "a plain-text response body",
     spec: (e) =>
       `@route("/x") interface X { @get read(): { @body ${e.decorator} v: ${e.type} }; }`,
-    file: "Endpoints/XEndpoint.g.cs",
+    file: "Endpoints/XRequestBuilders.g.cs",
     applied: encoded,
     carries: ["default", "number-as-string", "wire"],
     wholeBody: true,
@@ -306,7 +306,7 @@ const POSITIONS: Position[] = [
     name: "a JSON request body",
     spec: (e) =>
       `@route("/x") interface X { @post send(@header contentType: "application/json", @body ${e.decorator} v: ${e.type}): void; }`,
-    file: "Endpoints/XEndpoint.g.cs",
+    file: "Endpoints/XRequestBuilders.g.cs",
     applied: encoded,
     carries: ["default"],
     wholeBody: true,
@@ -364,7 +364,7 @@ describe("every @encode in every position is applied or reported", () => {
           );
           const iface =
             Object.entries(outputs).find(([path]) =>
-              path.endsWith("Endpoints/IX.g.cs"),
+              path.endsWith("Endpoints/XRequestBuilders.g.cs"),
             )?.[1] ?? "";
           ok(
             !/Task\S* \w+Async\(/.test(iface),

@@ -23,7 +23,7 @@ describe("cookie parameters", () => {
       }
     `);
 
-    const client = fileContent(results, "CookiesEndpoint.g.cs");
+    const client = fileContent(results, "CookiesRequestBuilders.g.cs");
     ok(
       client.includes(
         'if (session is not null) flurlRequest.WithCookie("session", ClientRuntime.ToWireString(session));',
@@ -35,7 +35,7 @@ describe("cookie parameters", () => {
       ),
     );
     ok(
-      fileContent(results, "ICookies.g.cs").includes(
+      fileContent(results, "CookiesRequestBuilders.g.cs").includes(
         "string session, string? flavour = null",
       ),
     );
@@ -48,7 +48,7 @@ describe("array query parameters", () => {
       await emit(`${PREAMBLE}
         @route("/q") interface Queries { @get read(${declaration}): string; }
       `),
-      "QueriesEndpoint.g.cs",
+      "QueriesRequestBuilders.g.cs",
     );
 
   it("sends an array as one comma-separated value by default, as TypeSpec defines", async () => {
@@ -99,7 +99,7 @@ describe("array query parameters", () => {
     `);
 
     ok(
-      fileContent(results, "QueriesEndpoint.g.cs").includes(
+      fileContent(results, "QueriesRequestBuilders.g.cs").includes(
         "ToDelimitedQueryValue(colors)",
       ),
     );
@@ -141,7 +141,7 @@ describe("bodies that cannot be sent correctly", () => {
       ok(messages[0].includes(feature), messages[0]);
       ok(messages[0].includes("FlurlClient"), "It says what to do instead");
 
-      const iface = fileContent(results, "IUploads.g.cs");
+      const iface = fileContent(results, "UploadsRequestBuilders.g.cs");
       ok(!iface.includes("CreateAsync("), "The operation is not generated");
       ok(iface.includes("FineAsync("), "Other operations are");
     });
@@ -190,7 +190,7 @@ describe("error models", () => {
       @route("/items") interface Items { @get read(): Item | ApiError; }
     `);
 
-    const iface = fileContent(results, "IItems.g.cs");
+    const iface = fileContent(results, "ItemsRequestBuilders.g.cs");
     ok(iface.includes("Task<Item> ReadAsync("));
     ok(!iface.includes("where TResult : ApiError"));
   });
@@ -326,7 +326,7 @@ describe("@encode", () => {
 
     strictEqual(codes(diagnostics, "unsupported-encoding").length, 0);
     ok(
-      fileContent(results, "ThingsEndpoint.g.cs").includes(
+      fileContent(results, "ThingsRequestBuilders.g.cs").includes(
         'if (ifModifiedSince is not null) flurlRequest.WithHeader("if-modified-since", ClientRuntime.ToWireString(ClientRuntime.Encode(ifModifiedSince, ClientRuntime.WireEncoding.Rfc7231)));',
       ),
     );
@@ -355,7 +355,7 @@ describe("@encode", () => {
     `);
 
     strictEqual(codes(diagnostics, "unsupported-encoding").length, 1);
-    const iface = fileContent(results, "IThings.g.cs");
+    const iface = fileContent(results, "ThingsRequestBuilders.g.cs");
     ok(!iface.includes("ReadAsync"));
     ok(iface.includes("OtherAsync"));
   });
@@ -438,17 +438,19 @@ describe("operations declared directly in the service namespace", () => {
       0,
       "A bare operation must work with default names",
     );
-    ok(fileContent(results, "IPetstore.g.cs").includes("PingAsync("));
     ok(
-      fileContent(results, "PetstoreEndpoint.g.cs").includes(
-        "internal sealed class PetstoreEndpoint : IPetstore",
+      fileContent(results, "PetstoreRequestBuilders.g.cs").includes(
+        "PingAsync(",
       ),
     );
     ok(
-      fileContent(results, "PetstoreClientExtensions.g.cs").includes(
-        "public class PetstoreClient",
+      fileContent(results, "PetstoreRequestBuilders.g.cs").includes(
+        "public sealed class PetstoreRequestBuilder : RequestBuilder<PetstoreRequestBuilder>",
       ),
     );
+    const client = fileContent(results, "PetstoreClientExtensions.g.cs");
+    ok(client.includes("public class PetstoreClient"));
+    ok(client.includes("public PetstoreRequestBuilder Petstore() =>"));
   });
 
   it("names a child namespace's operations after the child namespace", async () => {
@@ -464,8 +466,16 @@ describe("operations declared directly in the service namespace", () => {
     `);
 
     strictEqual(diagnostics.filter((d) => d.severity === "error").length, 0);
-    ok(fileContent(results, "IPetstore.g.cs").includes("PingAsync("));
-    ok(fileContent(results, "IAdmin.g.cs").includes("ReindexAsync("));
+    ok(
+      fileContent(results, "PetstoreRequestBuilders.g.cs").includes(
+        "PingAsync(",
+      ),
+    );
+    ok(
+      fileContent(results, "AdminRequestBuilders.g.cs").includes(
+        "ReindexAsync(",
+      ),
+    );
   });
 });
 
@@ -583,7 +593,7 @@ describe("all-versions on an unversioned API", () => {
       { "all-versions": true },
     );
 
-    ok(fileContent(results, "IWidgets.g.cs"));
+    ok(fileContent(results, "WidgetsRequestBuilders.g.cs"));
     ok(fileContent(results, "Widget.g.cs"));
     ok(fileContent(results, "ModelMap.g.cs"));
     ok(fileContent(results, ".csproj"));
@@ -623,7 +633,11 @@ describe("additional-usings validation", () => {
       "additional-usings": ["Acme.Shared", "Other"],
     });
 
-    ok(fileContent(results, "IWidgets.g.cs").includes("using Acme.Shared;"));
+    ok(
+      fileContent(results, "WidgetsRequestBuilders.g.cs").includes(
+        "using Acme.Shared;",
+      ),
+    );
   });
 });
 

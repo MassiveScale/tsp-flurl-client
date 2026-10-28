@@ -20,7 +20,7 @@ describe("user models named like merge patches", () => {
     `);
 
     ok(
-      fileContent(results, "IAudits.g.cs").includes(
+      fileContent(results, "AuditsRequestBuilders.g.cs").includes(
         "CreateAsync(AuditMergePatchUpdateCreateRequest body,",
       ),
     );
@@ -43,7 +43,7 @@ describe("user models named like merge patches", () => {
       ),
     );
     ok(
-      fileContent(results, "IAudits.g.cs").includes(
+      fileContent(results, "AuditsRequestBuilders.g.cs").includes(
         "Task<AuditRecord> ReadAsync(",
       ),
     );
@@ -56,7 +56,7 @@ describe("user models named like merge patches", () => {
     `);
 
     ok(
-      fileContent(results, "IWidgets.g.cs").includes(
+      fileContent(results, "WidgetsRequestBuilders.g.cs").includes(
         "UpdateAsync(IMergePatch<Product> body,",
       ),
     );
@@ -78,7 +78,7 @@ describe("success responses with the same type in different formats", () => {
     const messages = messagesFor(diagnostics, "unsupported-feature");
     strictEqual(messages.length, 1, messages.join("; "));
     ok(messages[0].includes("different @encode formats"));
-    const iface = fileContent(results, "IDurations.g.cs");
+    const iface = fileContent(results, "DurationsRequestBuilders.g.cs");
     ok(!iface.includes("ReadAsync"));
     ok(iface.includes("OkAsync"));
   });
@@ -93,7 +93,7 @@ describe("success responses with the same type in different formats", () => {
     `);
 
     ok(
-      fileContent(results, "DurationsEndpoint.g.cs").includes(
+      fileContent(results, "DurationsRequestBuilders.g.cs").includes(
         "ClientRuntime.WireEncoding.WholeSeconds",
       ),
     );
@@ -101,7 +101,7 @@ describe("success responses with the same type in different formats", () => {
 });
 
 describe("the aggregate client's constructor", () => {
-  it("rejects a null for every endpoint, not just the Flurl client", async () => {
+  it("rejects a null Flurl client, which every request builder is created from", async () => {
     const results = await emit(`${PREAMBLE}
       @route("/a") interface Alphas { @get read(): string; }
       @route("/b") interface Betas { @get read(): string; }
@@ -113,15 +113,14 @@ describe("the aggregate client's constructor", () => {
         "FlurlClient = flurlClient ?? throw new ArgumentNullException(nameof(flurlClient));",
       ),
     );
+    ok(client.includes("public TestApiClient(IFlurlClient flurlClient)"));
     ok(
-      client.includes(
-        "Alphas = alphas ?? throw new ArgumentNullException(nameof(alphas));",
-      ),
+      client.includes("new AlphasRequestBuilder(this.FlurlClient);"),
+      "Expected the builder created from the checked Flurl client",
     );
     ok(
-      client.includes(
-        "Betas = betas ?? throw new ArgumentNullException(nameof(betas));",
-      ),
+      client.includes("new BetasRequestBuilder(this.FlurlClient);"),
+      "Expected the builder created from the checked Flurl client",
     );
   });
 });

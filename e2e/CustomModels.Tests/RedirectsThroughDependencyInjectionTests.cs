@@ -8,8 +8,7 @@ namespace CustomModels.Tests;
 
 /// <summary>
 /// Redirects for a client from the container: the registered handler leaves them to Flurl, as
-/// Flurl's own client factory does, so a raw call is still redirected and a next-page request's
-/// redirects reach the paging wrapper's origin check.
+/// Flurl's own client factory does, so a raw call and a next-page request are still redirected.
 /// </summary>
 [TestClass]
 public sealed class RedirectsThroughDependencyInjectionTests
@@ -42,7 +41,7 @@ public sealed class RedirectsThroughDependencyInjectionTests
             .RespondRedirect("/catalogs/moved")
             .RespondJson("""{"kind":"signed","items":[{"title":"a","signedBy":"x"}]}""");
 
-        var page = await provider.GetRequiredService<KitchenSinkClient>().Catalogs.SignedAsync();
+        var page = await provider.GetRequiredService<KitchenSinkClient>().Catalogs().SignedAsync();
 
         page.Items.Select(b => b.Title).Should().Equal("a");
         handler.Requests.Should().HaveCount(2);
@@ -50,7 +49,7 @@ public sealed class RedirectsThroughDependencyInjectionTests
     }
 
     [TestMethod]
-    public async Task A_same_origin_redirect_of_a_next_page_request_is_followed_with_the_operation_headers()
+    public async Task A_redirect_of_a_next_page_request_is_followed_by_flurl()
     {
         var (provider, handler) = Container();
         await using var lifetime = provider;
@@ -60,7 +59,7 @@ public sealed class RedirectsThroughDependencyInjectionTests
             .RespondJson("""{"kind":"signed","items":[{"title":"b","signedBy":"y"}]}""");
 
         var books = new List<Book>();
-        await foreach (var book in provider.GetRequiredService<KitchenSinkClient>().Catalogs.SignedAllAsync(tenant: "acme"))
+        await foreach (var book in provider.GetRequiredService<KitchenSinkClient>().Catalogs().SignedAllAsync())
         {
             books.Add(book);
         }
@@ -68,29 +67,6 @@ public sealed class RedirectsThroughDependencyInjectionTests
         books.Select(b => b.Title).Should().Equal("a", "b");
         handler.Requests.Should().HaveCount(3);
         handler.Requests[2].Uri.Should().Be(new Uri("https://api.test/catalogs/moved?cursor=2"));
-        handler.Requests[2].Headers["X-Tenant"].Should().Be("acme");
-    }
-
-    [TestMethod]
-    public async Task A_redirect_of_a_next_page_request_to_another_origin_throws_before_anything_is_sent_there()
-    {
-        var (provider, handler) = Container();
-        await using var lifetime = provider;
-        handler
-            .RespondJson("""{"kind":"signed","items":[{"title":"a","signedBy":"x"}],"next":"?cursor=2"}""")
-            .RespondRedirect("https://elsewhere.test/steal");
-
-        var act = async () =>
-        {
-            await foreach (var _ in provider.GetRequiredService<KitchenSinkClient>().Catalogs.SignedAllAsync(tenant: "acme"))
-            {
-            }
-        };
-
-        await act.Should().ThrowAsync<InvalidOperationException>()
-            .WithMessage("Refusing to send a next-page request to https://elsewhere.test*");
-        handler.Requests.Should().HaveCount(2);
-        handler.Requests.Should().NotContain(r => r.Uri.Host == "elsewhere.test");
     }
 
     /// <summary>

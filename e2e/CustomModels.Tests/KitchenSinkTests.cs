@@ -30,7 +30,7 @@ public sealed class KitchenSinkTests
             .RespondJson("""{"kind":"signed","items":[{"title":"b","signedBy":"y"}]}""");
 
         var books = new List<Book>();
-        await foreach (var book in client.Catalogs.SignedAllAsync())
+        await foreach (var book in client.Catalogs().SignedAllAsync())
         {
             books.Add(book);
         }
@@ -41,90 +41,80 @@ public sealed class KitchenSinkTests
     }
 
     [TestMethod]
-    public async Task A_query_only_next_link_resolves_against_the_page_that_returned_it()
+    public async Task A_relative_next_link_is_appended_to_the_base_url_with_or_without_a_leading_slash()
     {
-        var (client, handler) = Create();
+        var handler = new StubHandler();
+        var client = KitchenSinkClient.Create(new FlurlClient(new HttpClient(handler)) { BaseUrl = "https://api.test/v1" });
         handler
-            .RespondJson("""{"kind":"signed","items":[{"title":"a","signedBy":"x"}],"next":"?cursor=2"}""")
-            .RespondJson("""{"kind":"signed","items":[{"title":"b","signedBy":"y"}],"next":"?cursor=3"}""")
+            .RespondJson("""{"kind":"signed","items":[{"title":"a","signedBy":"x"}],"next":"catalogs?cursor=2"}""")
+            .RespondJson("""{"kind":"signed","items":[{"title":"b","signedBy":"y"}],"next":"/catalogs?cursor=3"}""")
             .RespondJson("""{"kind":"signed","items":[{"title":"c","signedBy":"z"}]}""");
 
         var books = new List<Book>();
-        await foreach (var book in client.Catalogs.SignedAllAsync())
+        await foreach (var book in client.Catalogs().SignedAllAsync())
         {
             books.Add(book);
         }
 
         books.Select(b => b.Title).Should().Equal("a", "b", "c");
         handler.Requests.Should().HaveCount(3);
-        var first = handler.Requests[0].Uri;
-        first.AbsolutePath.Should().NotBe("/", "the operation's own path, not the service root");
-        handler.Requests[1].Uri.Should().Be(new Uri(first, "?cursor=2"));
-        handler.Requests[2].Uri.Should().Be(new Uri(first, "?cursor=3"));
+        handler.Requests[1].Uri.Should().Be(new Uri("https://api.test/v1/catalogs?cursor=2"));
+        handler.Requests[2].Uri.Should().Be(new Uri("https://api.test/v1/catalogs?cursor=3"));
     }
 
     [TestMethod]
-    public async Task A_same_origin_redirect_of_a_next_page_request_is_followed_with_the_operation_headers()
+    public async Task A_query_only_next_link_is_appended_to_the_base_url()
     {
         var (client, handler) = Create();
         handler
             .RespondJson("""{"kind":"signed","items":[{"title":"a","signedBy":"x"}],"next":"?cursor=2"}""")
-            .RespondRedirect("/catalogs/moved?cursor=2", System.Net.HttpStatusCode.TemporaryRedirect)
+            .RespondJson("""{"kind":"signed","items":[{"title":"b","signedBy":"y"}]}""");
+
+        await foreach (var _ in client.Catalogs().SignedAllAsync())
+        {
+        }
+
+        handler.Requests.Should().HaveCount(2);
+        handler.Requests[1].Uri.Should().Be(new Uri("https://api.test/?cursor=2"));
+    }
+
+    [TestMethod]
+    public async Task An_absolute_next_link_is_followed_as_is_even_on_another_host()
+    {
+        var (client, handler) = Create();
+        handler
+            .RespondJson("""{"kind":"signed","items":[{"title":"a","signedBy":"x"}],"next":"https://elsewhere.test/pages/2?sig=a%2Fb"}""")
             .RespondJson("""{"kind":"signed","items":[{"title":"b","signedBy":"y"}]}""");
 
         var books = new List<Book>();
-        await foreach (var book in client.Catalogs.SignedAllAsync(tenant: "acme"))
+        await foreach (var book in client.Catalogs().SignedAllAsync(tenant: "acme"))
+        {
+            books.Add(book);
+        }
+
+        books.Select(b => b.Title).Should().Equal("a", "b");
+        handler.Requests[1].Uri.OriginalString.Should().Be("https://elsewhere.test/pages/2?sig=a%2Fb");
+        handler.Requests[1].Headers["X-Tenant"].Should().Be("acme", "the operation's declared header is replayed");
+    }
+
+    [TestMethod]
+    public async Task A_redirect_of_a_next_page_request_is_followed_by_flurl()
+    {
+        var (client, handler) = Create();
+        handler
+            .RespondJson("""{"kind":"signed","items":[{"title":"a","signedBy":"x"}],"next":"/catalogs?cursor=2"}""")
+            .RespondRedirect("https://elsewhere.test/catalogs?cursor=2", System.Net.HttpStatusCode.TemporaryRedirect)
+            .RespondJson("""{"kind":"signed","items":[{"title":"b","signedBy":"y"}]}""");
+
+        var books = new List<Book>();
+        await foreach (var book in client.Catalogs().SignedAllAsync())
         {
             books.Add(book);
         }
 
         books.Select(b => b.Title).Should().Equal("a", "b");
         handler.Requests.Should().HaveCount(3);
-        handler.Requests[2].Uri.Should().Be(new Uri("https://api.test/catalogs/moved?cursor=2"));
-        handler.Requests[2].Headers["X-Tenant"].Should().Be("acme");
-    }
-
-    [TestMethod]
-    public async Task A_redirect_of_a_next_page_request_to_another_origin_throws_before_anything_is_sent_there()
-    {
-        var (client, handler) = Create();
-        handler
-            .RespondJson("""{"kind":"signed","items":[{"title":"a","signedBy":"x"}],"next":"?cursor=2"}""")
-            .RespondRedirect("https://elsewhere.test/steal");
-
-        var act = async () =>
-        {
-            await foreach (var _ in client.Catalogs.SignedAllAsync(tenant: "acme"))
-            {
-            }
-        };
-
-        await act.Should().ThrowAsync<InvalidOperationException>()
-            .WithMessage("Refusing to send a next-page request to https://elsewhere.test*");
-        handler.Requests.Should().HaveCount(2);
-        handler.Requests.Should().NotContain(r => r.Uri.Host == "elsewhere.test");
-    }
-
-    [TestMethod]
-    public async Task Redirects_of_a_next_page_request_stop_after_fifty()
-    {
-        var (client, handler) = Create();
-        handler.RespondJson("""{"kind":"signed","items":[{"title":"a","signedBy":"x"}],"next":"?cursor=2"}""");
-        for (var i = 0; i <= 50; i++)
-        {
-            handler.RespondRedirect($"/catalogs?hop={i}");
-        }
-
-        var act = async () =>
-        {
-            await foreach (var _ in client.Catalogs.SignedAllAsync())
-            {
-            }
-        };
-
-        await act.Should().ThrowAsync<InvalidOperationException>()
-            .WithMessage("Stopped following a next-page link after 50 redirects.");
-        handler.Requests.Should().HaveCount(52);
+        handler.Requests[2].Uri.Should().Be(new Uri("https://elsewhere.test/catalogs?cursor=2"));
     }
 
     [TestMethod]
@@ -138,7 +128,7 @@ public sealed class KitchenSinkTests
              {"kind":"cat","name":"tom"}]
             """);
 
-        var animals = await client.Animals.ListAsync();
+        var animals = await client.Animals().ListAsync();
 
         animals[0].Should().BeOfType<Labrador>().Which.Guide.Should().BeTrue();
         animals[1].Should().BeOfType<Poodle>();
@@ -151,7 +141,7 @@ public sealed class KitchenSinkTests
         var (client, handler) = Create();
         handler.RespondJson("""{"kind":"labrador","name":"rex"}""");
 
-        await client.Animals.CreateAsync(new Labrador { Name = "rex", Guide = true });
+        await client.Animals().CreateAsync(new Labrador { Name = "rex", Guide = true });
 
         using var sent = JsonDocument.Parse(handler.Last.Body!);
         sent.RootElement.GetProperty("kind").GetString().Should().Be("labrador");
@@ -164,7 +154,7 @@ public sealed class KitchenSinkTests
         var (client, handler) = Create();
         handler.RespondJson("""{"kind":"labrador","name":"rex"}""");
 
-        await client.Animals.CreateLabradorAsync(new Labrador { Name = "rex", Guide = true });
+        await client.Animals().CreateLabradorAsync(new Labrador { Name = "rex", Guide = true });
 
         using var sent = JsonDocument.Parse(handler.Last.Body!);
         sent.RootElement.GetProperty("kind").GetString().Should().Be("labrador");
@@ -178,7 +168,7 @@ public sealed class KitchenSinkTests
         var (client, handler) = Create();
         handler.RespondJson("""{"type":"car","id":"1","vin":"v","wheels":4,"seats":2}""");
 
-        var car = await client.Vehicles.CreateCarAsync(new CarCreateRequest { Wheels = 4, Seats = 2 });
+        var car = await client.Vehicles().CreateCarAsync(new CarCreateRequest { Wheels = 4, Seats = 2 });
 
         using var sent = JsonDocument.Parse(handler.Last.Body!);
         sent.RootElement.GetProperty("type").GetString().Should().Be("car");
@@ -193,7 +183,7 @@ public sealed class KitchenSinkTests
         var (client, handler) = Create();
         handler.RespondJson("""{"resident":{"kind":"labrador","name":"rex"},"group":null,"pets":[]}""");
 
-        await client.Animals.CreateKennelAsync(new Kennel
+        await client.Animals().CreateKennelAsync(new Kennel
         {
             Resident = new Labrador { Name = "rex", Guide = true },
             Group = new Poodle { Name = "fifi" },
@@ -221,7 +211,7 @@ public sealed class KitchenSinkTests
              "pets":[{"kind":"labrador","name":"a","guide":true},{"kind":"poodle","name":"b"}]}
             """);
 
-        var kennel = await client.Animals.CreateKennelAsync(new Kennel { Resident = new Labrador { Name = "rex" }, Group = new Poodle { Name = "fifi" } });
+        var kennel = await client.Animals().CreateKennelAsync(new Kennel { Resident = new Labrador { Name = "rex" }, Group = new Poodle { Name = "fifi" } });
 
         kennel.Resident.Name.Should().Be("rex");
         kennel.Group.Should().BeOfType<Poodle>().Which.Name.Should().Be("fifi");
@@ -242,7 +232,7 @@ public sealed class KitchenSinkTests
              "pets":[{"kind":"labrador","name":"a"},{"kind":"poodle","name":"b"}]}
             """);
 
-        var kennel = await client.Animals.CreateKennelAsync(new Kennel
+        var kennel = await client.Animals().CreateKennelAsync(new Kennel
         {
             Resident = new CollaredLabrador { Name = "rex", Collar = "blue" },
             Group = new Poodle { Name = "fifi" },
@@ -259,10 +249,10 @@ public sealed class KitchenSinkTests
         kennel.Pets[1].Should().BeOfType<Poodle>();
 
         handler.RespondJson("""{"kind":"labrador","name":"rex","collar":"red"}""");
-        (await client.Animals.CreateLabradorAsync(new Labrador { Name = "rex" }))
+        (await client.Animals().CreateLabradorAsync(new Labrador { Name = "rex" }))
             .Should().BeOfType<CollaredLabrador>("a response declared as the subtype is mapped when it carries the discriminator");
         handler.RespondJson("""{"name":"rex","collar":"red"}""");
-        (await client.Animals.CreateLabradorAsync(new Labrador { Name = "rex" }))
+        (await client.Animals().CreateLabradorAsync(new Labrador { Name = "rex" }))
             .Should().BeOfType<Labrador>("without a discriminator there is nothing to map by");
     }
 
@@ -286,7 +276,7 @@ public sealed class KitchenSinkTests
         handler.RespondJson(
             """{"big":"9007199254740993","ratio":"1.5","took":"PT1H30M","at":"2024-01-02T03:04:05Z","blob":"AQID","whole":123}""");
 
-        var encoded = await client.Misc.EncodedAsync();
+        var encoded = await client.Misc().EncodedAsync();
 
         encoded.Big.Should().Be(9007199254740993L, "a double cannot hold this exactly");
         encoded.Ratio.Should().Be(1.5);
@@ -299,11 +289,11 @@ public sealed class KitchenSinkTests
         var (client, handler) = Create();
         handler.RespondJson("""{"big":"1","ratio":"1","took":"P1DT2H30M","at":"2024-01-02T03:04:05Z","blob":"","whole":1}""");
 
-        var encoded = await client.Misc.EncodedAsync();
+        var encoded = await client.Misc().EncodedAsync();
         encoded.Took.Should().Be(new TimeSpan(1, 2, 30, 0));
 
         handler.RespondJson("""{"big":"1","ratio":"1","took":"PT0S","at":"2024-01-02T03:04:05Z","blob":"","whole":1}""");
-        await client.Misc.SendEncodedAsync(encoded with { Took = new TimeSpan(1, 30, 0) });
+        await client.Misc().SendEncodedAsync(encoded with { Took = new TimeSpan(1, 30, 0) });
 
         using var sent = JsonDocument.Parse(handler.Last.Body!);
         sent.RootElement.GetProperty("took").GetString().Should().Be("PT1H30M");
@@ -315,7 +305,7 @@ public sealed class KitchenSinkTests
         var (client, handler) = Create();
         handler.RespondJson("""{"big":"1","ratio":"1","took":"PT0S","at":"2024-01-02T03:04:05Z","blob":"","whole":1}""");
 
-        await client.Misc.SendEncodedAsync(new Encoded
+        await client.Misc().SendEncodedAsync(new Encoded
         {
             Big = 9007199254740993L,
             Ratio = 1.5,
@@ -345,7 +335,7 @@ public sealed class KitchenSinkTests
         var (client, handler) = Create();
         handler.RespondJson("\"ok\"");
 
-        await client.Misc.CookiesAsync("abc", "chocolate");
+        await client.Misc().CookiesAsync("abc", "chocolate");
 
         var cookie = handler.Last.Headers["Cookie"];
         cookie.Should().Contain("session=abc");
@@ -358,7 +348,7 @@ public sealed class KitchenSinkTests
         var (client, handler) = Create();
         handler.RespondJson("\"ok\"");
 
-        await client.Misc.CookiesAsync("abc");
+        await client.Misc().CookiesAsync("abc");
 
         handler.Last.Headers["Cookie"].Should().NotContain("flavour");
     }
@@ -369,7 +359,7 @@ public sealed class KitchenSinkTests
         var (client, handler) = Create();
         handler.RespondJson("\"ok\"");
 
-        await client.Misc.ListsAsync(["a", "b"], ["x", "y"], ["p", "q"]);
+        await client.Misc().ListsAsync(["a", "b"], ["x", "y"], ["p", "q"]);
 
         var query = Uri.UnescapeDataString(handler.Last.Uri.Query);
         query.Should().Contain("tags=a,b", "an array is comma-separated unless it is exploded");
@@ -383,7 +373,7 @@ public sealed class KitchenSinkTests
         var (client, handler) = Create();
         handler.RespondJson("""{"code":7,"message":"nope"}""", System.Net.HttpStatusCode.BadRequest);
 
-        var act = () => client.Misc.FailAsync();
+        var act = () => client.Misc().FailAsync();
 
         var failure = (await act.Should().ThrowAsync<FlurlHttpException>()).Which;
         var error = await failure.GetResponseJsonAsync<ApiError>();
@@ -397,7 +387,7 @@ public sealed class KitchenSinkTests
         var (client, handler) = Create();
         handler.RespondJson("\"ok\"");
 
-        await client.Misc.BlobAsync([1, 2, 3, 255], [4, 5, 6]);
+        await client.Misc().BlobAsync([1, 2, 3, 255], [4, 5, 6]);
 
         Uri.UnescapeDataString(handler.Last.Uri.Query).Should().Be("?data=AQID/w==");
         handler.Last.Headers["X-Blob"].Should().Be("BAUG");
@@ -409,7 +399,7 @@ public sealed class KitchenSinkTests
         var (client, handler) = Create();
         handler.RespondJson("100000000000000000000");
 
-        var magnitude = await client.Misc.MagnitudeAsync();
+        var magnitude = await client.Misc().MagnitudeAsync();
 
         magnitude.Should().Be(Magnitude.Huge);
     }
@@ -420,7 +410,7 @@ public sealed class KitchenSinkTests
         var (client, handler) = Create();
         handler.RespondJson("""{"id":"1","name":"n"}""");
 
-        await client.Misc.VendorAsync(new Derived { Id = "1", Name = "n" });
+        await client.Misc().VendorAsync(new Derived { Id = "1", Name = "n" });
 
         handler.Last.ContentType.Should().StartWith("application/vnd.acme+json");
         using var sent = JsonDocument.Parse(handler.Last.Body!);
@@ -432,7 +422,7 @@ public sealed class KitchenSinkTests
     {
         var (client, _) = Create();
 
-        var result = await client.Misc.OptionalAsync();
+        var result = await client.Misc().OptionalAsync();
 
         result.Should().BeNull();
     }
@@ -443,7 +433,7 @@ public sealed class KitchenSinkTests
         var (client, handler) = Create();
         handler.RespondJson("""{"content":{"id":"1","name":"n"}}""");
 
-        Bundle<Derived> box = await client.Misc.BoxAsync();
+        Bundle<Derived> box = await client.Misc().BoxAsync();
 
         box.Content.Name.Should().Be("n");
     }
@@ -454,22 +444,22 @@ public sealed class KitchenSinkTests
         var (client, handler) = Create();
 
         handler.RespondText("2024-01-02T03:04:05Z");
-        (await client.Text.WhenAsync()).Should().Be(new DateTimeOffset(2024, 1, 2, 3, 4, 5, TimeSpan.Zero));
+        (await client.Text().WhenAsync()).Should().Be(new DateTimeOffset(2024, 1, 2, 3, 4, 5, TimeSpan.Zero));
 
         handler.RespondText("42");
-        (await client.Text.CountAsync()).Should().Be(42);
+        (await client.Text().CountAsync()).Should().Be(42);
 
         handler.RespondText("P1DT2H");
-        (await client.Text.TookAsync()).Should().Be(new TimeSpan(1, 2, 0, 0));
+        (await client.Text().TookAsync()).Should().Be(new TimeSpan(1, 2, 0, 0));
 
         handler.RespondText("2024-02-29");
-        (await client.Text.DayAsync()).Should().Be(new DateOnly(2024, 2, 29));
+        (await client.Text().DayAsync()).Should().Be(new DateOnly(2024, 2, 29));
 
         handler.RespondText("12.50");
-        (await client.Text.PriceAsync()).Should().Be(12.50m);
+        (await client.Text().PriceAsync()).Should().Be(12.50m);
 
         handler.RespondText("true");
-        (await client.Text.OnAsync()).Should().BeTrue();
+        (await client.Text().OnAsync()).Should().BeTrue();
     }
 
     [TestMethod]
@@ -478,10 +468,10 @@ public sealed class KitchenSinkTests
         var (client, handler) = Create();
 
         handler.RespondText("42");
-        (await client.Text.EitherAsync()).GetInt32().Should().Be(42);
+        (await client.Text().EitherAsync()).GetInt32().Should().Be(42);
 
         handler.RespondText("hello");
-        (await client.Text.EitherAsync()).GetString().Should().Be("hello");
+        (await client.Text().EitherAsync()).GetString().Should().Be("hello");
     }
 
     [TestMethod]
@@ -489,10 +479,10 @@ public sealed class KitchenSinkTests
     {
         var (client, handler) = Create();
 
-        (await client.Text.MaybeAsync()).Should().BeNull();
+        (await client.Text().MaybeAsync()).Should().BeNull();
 
         handler.RespondText("7");
-        (await client.Text.MaybeAsync()).Should().Be(7);
+        (await client.Text().MaybeAsync()).Should().Be(7);
     }
 
     [TestMethod]
@@ -501,7 +491,7 @@ public sealed class KitchenSinkTests
         var (client, handler) = Create();
         handler.RespondText("not a number");
 
-        var act = () => client.Text.CountAsync();
+        var act = () => client.Text().CountAsync();
 
         await act.Should().ThrowAsync<FormatException>();
     }
@@ -511,11 +501,11 @@ public sealed class KitchenSinkTests
     {
         var (client, handler) = Create();
 
-        await client.Text.SetCountAsync(42);
+        await client.Text().SetCountAsync(42);
         handler.Last.Body.Should().Be("42");
         handler.Last.ContentType.Should().StartWith("text/plain");
 
-        await client.Text.SetWhenAsync(new DateTimeOffset(2024, 1, 2, 3, 4, 5, TimeSpan.Zero));
+        await client.Text().SetWhenAsync(new DateTimeOffset(2024, 1, 2, 3, 4, 5, TimeSpan.Zero));
         handler.Last.Body.Should().Be("2024-01-02T03:04:05.0000000+00:00");
         handler.Last.ContentType.Should().StartWith("text/plain");
     }
@@ -526,11 +516,11 @@ public sealed class KitchenSinkTests
         var (client, handler) = Create();
 
         handler.RespondJson("""{"id":"1","name":"updated"}""");
-        var updated = await client.Misc.UpsertAsync();
+        var updated = await client.Misc().UpsertAsync();
         updated.Deserialize<Derived>(new JsonSerializerOptions(JsonSerializerDefaults.Web))!.Name.Should().Be("updated");
 
         handler.RespondJson("""{"id":"2","extra":"created"}""", System.Net.HttpStatusCode.Created);
-        var created = await client.Misc.UpsertAsync();
+        var created = await client.Misc().UpsertAsync();
         created.Deserialize<Spread>(new JsonSerializerOptions(JsonSerializerDefaults.Web))!.Extra.Should().Be("created");
     }
 
@@ -540,10 +530,10 @@ public sealed class KitchenSinkTests
         var (client, handler) = Create();
 
         handler.RespondText("plain words");
-        (await client.Misc.LabelAsync()).Should().Be("plain words");
+        (await client.Misc().LabelAsync()).Should().Be("plain words");
 
         handler.RespondJson("\"quoted\"");
-        (await client.Misc.LabelAsync()).Should().Be("quoted");
+        (await client.Misc().LabelAsync()).Should().Be("quoted");
     }
 
     [TestMethod]
@@ -551,7 +541,7 @@ public sealed class KitchenSinkTests
     {
         var (client, handler) = Create();
 
-        await client.Misc.LatinAsync("café");
+        await client.Misc().LatinAsync("café");
 
         handler.Last.BodyBytes.Should().Equal(0x63, 0x61, 0x66, 0xE9);
         handler.Last.ContentType.Should().Be("text/plain; charset=iso-8859-1");
@@ -564,9 +554,9 @@ public sealed class KitchenSinkTests
         var id = Guid.Parse("0f8fad5b-d9cb-469f-a165-70867728950e");
 
         handler.RespondText("0f8fad5b-d9cb-469f-a165-70867728950e");
-        (await client.Text.IdAsync()).Should().Be(id);
+        (await client.Text().IdAsync()).Should().Be(id);
 
-        await client.Text.SetIdAsync(id);
+        await client.Text().SetIdAsync(id);
         handler.Last.Body.Should().Be("0f8fad5b-d9cb-469f-a165-70867728950e");
     }
 
@@ -576,7 +566,7 @@ public sealed class KitchenSinkTests
         var (client, handler) = Create();
         handler.RespondJson("""{"type":"car","id":"1","wheels":4,"vin":"V","seats":5}""");
 
-        var created = await client.Vehicles.CreateAsync(new CarCreateRequest { Wheels = 4, Seats = 5 });
+        var created = await client.Vehicles().CreateAsync(new CarCreateRequest { Wheels = 4, Seats = 5 });
 
         using var sent = JsonDocument.Parse(handler.Last.Body!);
         sent.RootElement.GetProperty("type").GetString().Should().Be("car");
@@ -592,7 +582,7 @@ public sealed class KitchenSinkTests
         var (client, handler) = Create();
         handler.RespondJson("""{"type":"car","id":"1","wheels":4,"vin":"V","seats":5}""");
 
-        await client.Vehicles.CreateCarAsync(new CarCreateRequest { Wheels = 4, Seats = 5 });
+        await client.Vehicles().CreateCarAsync(new CarCreateRequest { Wheels = 4, Seats = 5 });
 
         using var sent = JsonDocument.Parse(handler.Last.Body!);
         sent.RootElement.GetProperty("type").GetString().Should().Be("car");
@@ -605,7 +595,7 @@ public sealed class KitchenSinkTests
         var (client, handler) = Create();
         handler.RespondJson("""{"type":"car","id":"1","wheels":4,"vin":"V","seats":5}""");
 
-        await client.Vehicles.CreateCarAsync(new MyCarRequest { Wheels = 4, Seats = 5, Colour = "red" });
+        await client.Vehicles().CreateCarAsync(new MyCarRequest { Wheels = 4, Seats = 5, Colour = "red" });
 
         using var sent = JsonDocument.Parse(handler.Last.Body!);
         sent.RootElement.GetProperty("type").GetString().Should().Be("car");
@@ -618,7 +608,7 @@ public sealed class KitchenSinkTests
         var (client, handler) = Create();
         handler.RespondText("ok");
 
-        await client.Misc.KeywordsAsync("a", @class: "b", var: "c");
+        await client.Misc("a").KeywordsAsync(@class: "b", var: "c");
 
         handler.Last.Uri.AbsolutePath.Should().EndWith("/keywords/a");
         handler.Last.Uri.Query.Should().Be("?class=b");
@@ -631,7 +621,7 @@ public sealed class KitchenSinkTests
         var (client, handler) = Create();
         handler.RespondJson("""{"key":"a","value":{"s":"x"}}""");
 
-        var keyed = await client.Misc.KeyedAsync();
+        var keyed = await client.Misc().KeyedAsync();
 
         keyed.Key.Should().Be("a");
         keyed.Value.S.Should().Be("x");
@@ -644,7 +634,7 @@ public sealed class KitchenSinkTests
         var (client, handler) = Create();
         handler.RespondJson("""{"items":[]}""");
 
-        await client.DerivedItems.ListAsync(color: Color.Dark_green);
+        await client.DerivedItems().ListAsync(color: Color.Dark_green);
 
         Uri.UnescapeDataString(handler.Last.Uri.Query).Should().Be("?color=dark-green");
     }
@@ -654,7 +644,7 @@ public sealed class KitchenSinkTests
     {
         var (client, handler) = Create();
 
-        var act = () => client.DerivedItems.ListAsync(color: (Color)99);
+        var act = () => client.DerivedItems().ListAsync(color: (Color)99);
 
         (await act.Should().ThrowAsync<ArgumentException>()).Which.Message.Should().Contain("99");
         handler.Requests.Should().BeEmpty("nothing is sent");
@@ -666,7 +656,7 @@ public sealed class KitchenSinkTests
         var (client, handler) = Create();
         handler.RespondJson("""{"id":"f","name":"north","vehicles":[],"depot":null}""");
 
-        await client.Vehicles.CreateFleetAsync(new FleetCreateRequest
+        await client.Vehicles().CreateFleetAsync(new FleetCreateRequest
         {
             Name = "north",
             Vehicles = [new CarCreateRequest { Wheels = 4, Seats = 5 }, new BikeCreateRequest { Wheels = 2 }],
@@ -697,14 +687,14 @@ public sealed class KitchenSinkTests
     {
         var (client, handler) = Create();
 
-        await client.Vehicles.CreateDepotAsync(new DepotCreateRequest { City = "Oslo" });
+        await client.Vehicles().CreateDepotAsync(new DepotCreateRequest { City = "Oslo" });
         using (var sent = JsonDocument.Parse(handler.Last.Body!))
         {
             sent.RootElement.GetProperty("city").GetString().Should().Be("Oslo");
             sent.RootElement.TryGetProperty("id", out _).Should().BeFalse("id is read-only");
         }
 
-        await client.Vehicles.CreateDepotAsync(null);
+        await client.Vehicles().CreateDepotAsync(null);
         handler.Last.Body.Should().Be("null");
     }
 
@@ -713,10 +703,10 @@ public sealed class KitchenSinkTests
     {
         var (client, handler) = Create();
 
-        await client.Vehicles.MaybeCreateAsync();
+        await client.Vehicles().MaybeCreateAsync();
         handler.Last.Body.Should().BeNull();
 
-        await client.Vehicles.MaybeCreateAsync(new BikeCreateRequest { Wheels = 2 });
+        await client.Vehicles().MaybeCreateAsync(new BikeCreateRequest { Wheels = 2 });
         using var sent = JsonDocument.Parse(handler.Last.Body!);
         sent.RootElement.GetProperty("type").GetString().Should().Be("bike");
     }
@@ -726,7 +716,7 @@ public sealed class KitchenSinkTests
     {
         var (client, handler) = Create();
 
-        await client.Misc.Cp1252Async("café €");
+        await client.Misc().Cp1252Async("café €");
 
         handler.Last.BodyBytes.Should().Equal(0x63, 0x61, 0x66, 0xE9, 0x20, 0x80);
         handler.Last.ContentType.Should().Be("text/plain; charset=windows-1252");
@@ -737,13 +727,13 @@ public sealed class KitchenSinkTests
     {
         var (client, handler) = Create();
 
-        (await client.Misc.MaybeBytesAsync()).Should().BeNull("the server sent 204");
+        (await client.Misc().MaybeBytesAsync()).Should().BeNull("the server sent 204");
 
         handler.RespondBytes([]);
-        (await client.Misc.MaybeBytesAsync()).Should().NotBeNull().And.BeEmpty();
+        (await client.Misc().MaybeBytesAsync()).Should().NotBeNull().And.BeEmpty();
 
         handler.RespondBytes([1, 2]);
-        (await client.Misc.MaybeBytesAsync()).Should().Equal(1, 2);
+        (await client.Misc().MaybeBytesAsync()).Should().Equal(1, 2);
     }
 
     [TestMethod]
@@ -760,7 +750,7 @@ public sealed class KitchenSinkTests
         var (client, handler) = Create();
         handler.RespondJson("""{"display_name":"Ann","count":2,"nothing":null}""");
 
-        var read = await client.Misc.WireNamesAsync(new WireNames { DisplayName = "Bob", Count = 1 });
+        var read = await client.Misc().WireNamesAsync(new WireNames { DisplayName = "Bob", Count = 1 });
 
         read.DisplayName.Should().Be("Ann");
         read.Count.Should().Be(2);
@@ -777,7 +767,7 @@ public sealed class KitchenSinkTests
         var (client, handler) = Create();
         handler.RespondText("");
 
-        var label = await client.Misc.LabelAsync();
+        var label = await client.Misc().LabelAsync();
 
         label.Should().NotBeNull().And.BeEmpty();
     }
@@ -790,7 +780,7 @@ public sealed class KitchenSinkTests
         var (client, handler) = Create();
         handler.RespondJson("""{"at":0,"httpDate":"Thu, 01 Jan 1970 00:00:00 GMT","wait":0,"precise":0,"ms":0,"token":"","tags":""}""");
 
-        await client.Misc.TimedAsync(new Timed
+        await client.Misc().TimedAsync(new Timed
         {
             At = At,
             HttpDate = At,
@@ -822,7 +812,7 @@ public sealed class KitchenSinkTests
         handler.RespondJson(
             """{"at":1704164645,"maybeAt":1704164645,"httpDate":"Tue, 02 Jan 2024 03:04:05 GMT","wait":90,"precise":1.5,"ms":250,"token":"-_8","tags":"a|b","counts":"1,2"}""");
 
-        var timed = await client.Misc.TimedAsync(new Timed { HttpDate = At, Token = [], Tags = [] });
+        var timed = await client.Misc().TimedAsync(new Timed { HttpDate = At, Token = [], Tags = [] });
 
         timed.At.Should().Be(At);
         timed.MaybeAt.Should().Be(At);
@@ -841,7 +831,7 @@ public sealed class KitchenSinkTests
         var (client, handler) = Create();
         handler.RespondJson("""{"at":"2024-01-02T03:04:05Z","httpDate":"x","wait":0,"precise":0,"ms":0,"token":"","tags":""}""");
 
-        var act = () => client.Misc.TimedAsync(new Timed { HttpDate = At, Token = [], Tags = [] });
+        var act = () => client.Misc().TimedAsync(new Timed { HttpDate = At, Token = [], Tags = [] });
 
         (await act.Should().ThrowAsync<FlurlParsingException>())
             .WithInnerException<JsonException>()
@@ -853,7 +843,7 @@ public sealed class KitchenSinkTests
     {
         var (client, handler) = Create();
 
-        await client.Misc.EncodedParamsAsync(At, At, ["a", "b"], TimeSpan.FromSeconds(90), [0xFB, 0xFF]);
+        await client.Misc(At).EncodedParamsAsync(At, ["a", "b"], TimeSpan.FromSeconds(90), [0xFB, 0xFF]);
 
         handler.Last.Uri.AbsolutePath.Should().Be("/api/misc/encoded-params/1704164645");
         var query = Uri.UnescapeDataString(handler.Last.Uri.Query);
@@ -869,7 +859,7 @@ public sealed class KitchenSinkTests
         var (client, handler) = Create();
         handler.RespondText("ok");
 
-        await client.Misc.ReservedAsync("docs/a b/c?d#e", "x/y");
+        await client.Misc("docs/a b/c?d#e", "x/y").ReservedAsync();
 
         handler.Last.Uri.AbsolutePath.Should().Be("/api/misc/reserved/docs/a%20b/c%3Fd%23e/items/x%2Fy");
         handler.Last.Uri.Query.Should().BeEmpty("a ? in the value must not start a query string");
@@ -881,7 +871,7 @@ public sealed class KitchenSinkTests
         var (client, handler) = Create();
         var seen = new DateTimeOffset(2024, 1, 2, 5, 4, 5, TimeSpan.FromHours(2));
 
-        await client.Misc.DatesAsync(ifModifiedSince: At, ifUnmodifiedSince: At, since: At, after: At, seen: seen);
+        await client.Misc().DatesAsync(ifModifiedSince: At, ifUnmodifiedSince: At, since: At, after: At, seen: seen);
 
         // .NET reports a standard header under its canonical name (If-Modified-Since).
         string Header(string name) =>
@@ -899,9 +889,9 @@ public sealed class KitchenSinkTests
         var (client, handler) = Create();
 
         handler.RespondText("1704164645");
-        (await client.Misc.UnixAsync()).Should().Be(At);
+        (await client.Misc().UnixAsync()).Should().Be(At);
 
-        await client.Misc.SetUnixAsync(At);
+        await client.Misc().SetUnixAsync(At);
         handler.Last.Body.Should().Be("1704164645");
     }
 
@@ -910,7 +900,7 @@ public sealed class KitchenSinkTests
     {
         var (client, handler) = Create();
 
-        await client.Misc.PatchTimedAsync(new MergePatch<Timed>()
+        await client.Misc().PatchTimedAsync(new MergePatch<Timed>()
             .Set(t => t.At, At)
             .Set(t => t.Tags, ["a", "b"])
             .Set("wait", TimeSpan.FromSeconds(90))
@@ -928,7 +918,7 @@ public sealed class KitchenSinkTests
     {
         var (client, handler) = Create();
 
-        await client.Misc.PatchEncodedAsync(new MergePatch<Encoded>().Set(e => e.Big, 9007199254740993L));
+        await client.Misc().PatchEncodedAsync(new MergePatch<Encoded>().Set(e => e.Big, 9007199254740993L));
 
         using var sent = JsonDocument.Parse(handler.Last.Body!);
         sent.RootElement.GetProperty("big").GetString().Should().Be("9007199254740993");

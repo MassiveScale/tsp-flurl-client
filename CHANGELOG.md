@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Flurl events and settings under dependency injection.** `Add{Client}` takes an optional `configureFlurlClient` callback, run on every Flurl client the registration creates, so `BeforeCall`, `AfterCall`, `OnError`, `OnRedirect`, and any other Flurl setting apply to every call.
+
+### Changed
+
+- **Breaking: one fluent client instead of one interface per endpoint.** The generated client starts every call from a method named after the TypeSpec interface, which takes the operation's path parameters and returns a request builder: `client.Pets().ListAsync()`, `client.Pets(id).UpdateAsync(patch)`. Operations are grouped into builders (`PetsRequestBuilder`, `PetsItemRequestBuilder`, ...) by the C# types of their path parameters, which are no longer method parameters. The endpoint interfaces (`IPets`) and their implementations (`PetsEndpoint`) are gone, `Add{Client}` registers only the client, and the client's constructor takes only the Flurl client. Each interface's builders are written to `Endpoints/{Interface}RequestBuilders.g.cs`.
+- **Breaking: per-call headers, query parameters, and cookies.** The `additionalQueryParameters` argument of every method is replaced by `AppendQueryParameter`, beside the new `AppendHeader`, `AppendCookie`, and `ConfigureRequest(Action<IFlurlRequest>)`, which every request builder inherits from the new `RequestBuilder<TBuilder>` helper. `AppendHeader` replaces a header of the same name, as Flurl's `WithHeader` does. For a next-link paging wrapper they apply to the first page only.
+- **Breaking: next links are followed as Flurl follows a URL.** A next link is requested as the server wrote it, through `Client.Request(link)`: an absolute link as it is, on any host, and a relative one appended to the client's base URL. It was resolved against the page that returned it, kept to the base URL's origin, and redirected by hand. Redirects are now Flurl's to follow, as for every other request.
+- **Breaking: template overrides.** The `endpoint-interface` and `endpoint-client` templates are replaced by `request-builder` and `request-builder-base`, and the `extensions` template takes a `builders` list instead of `interfaces`.
+- An interface named like a method every C# object has (`ToString`, `GetType`, ...) is reported as a `name-collision`, since its client method would hide that method. A parameter may now be named `additionalQueryParameters` or `_client`.
+
 ## [1.0.0] - 2026-10-24
 
 ### Changed
@@ -39,7 +51,7 @@ The first published version. `1.0.0-beta.1` was reserved on npm by an earlier st
 
 ### Added
 
-- Initial release of the emitter. It generates a C# client built on Flurl.Http and mirrors `@massivescale/tsp-refit-client`: the same options, `@clientName` / `@access` decorators, API versioning (`target-version`, `all-versions`, `version-in-namespace`, `route-prefix`), `@discriminator` polymorphism, `@encode("string")` booleans, visibility-filtered request records, merge-patch bodies, Handlebars template overrides, NuGet metadata, and the `internal-access-leak` lint rule.
+- Initial release of the emitter. It generates a C# client built on Flurl.Http, with project options, `@clientName` / `@access` decorators, API versioning (`target-version`, `all-versions`, `version-in-namespace`, `route-prefix`), `@discriminator` polymorphism, `@encode("string")` booleans, visibility-filtered request records, merge-patch bodies, Handlebars template overrides, NuGet metadata, and the `internal-access-leak` lint rule.
 - One endpoint interface (`IWidgets`) and one internal Flurl-backed implementation (`WidgetsEndpoint`) per TypeSpec interface, an aggregate client with the underlying `IFlurlClient` exposed as `FlurlClient`, `Create` factories for use without dependency injection, and an `Add{Client}` registration method built on `IHttpClientFactory`, so delegating handlers and resilience policies can be added.
 - **Extensible models.** Generated records are never sealed, so callers can derive their own types and send them to the API with their extra properties intact.
   - Every operation whose response contains a model gets a generic overload (`ReadAsync<TResult>(...) where TResult : Widget`) that deserializes the response as the caller's derived type. `Widget[]` becomes `List<TResult>` and `Record<Widget>` becomes `Dictionary<string, TResult>`.

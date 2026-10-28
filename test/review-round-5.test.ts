@@ -7,6 +7,7 @@ import {
   emit,
   emitWithDiagnostics,
   fileContent,
+  has,
   messagesFor,
 } from "./host.js";
 
@@ -40,7 +41,7 @@ describe("request records with operation-specific visibility", () => {
       }
     `);
 
-    const iface = fileContent(results, "IWidgets.g.cs");
+    const iface = fileContent(results, "WidgetsRequestBuilders.g.cs");
     ok(iface.includes("CreateAsync(WidgetCreateRequest body,"));
     ok(iface.includes("CreateDraftAsync(WidgetCreateDraftRequest body,"));
 
@@ -67,7 +68,7 @@ describe("request records with operation-specific visibility", () => {
       }
     `);
 
-    const iface = fileContent(results, "IWidgets.g.cs");
+    const iface = fileContent(results, "WidgetsRequestBuilders.g.cs");
     ok(iface.includes("CreateAsync(WidgetCreateRequest body,"));
     ok(iface.includes("CreateCopyAsync(WidgetCreateRequest body,"));
     ok(
@@ -94,7 +95,7 @@ describe("request records with operation-specific visibility", () => {
     `);
 
     ok(
-      fileContent(results, "IAdmin.g.cs").includes(
+      fileContent(results, "AdminRequestBuilders.g.cs").includes(
         "CreateAsync(WidgetAdminCreateRequest body,",
       ),
     );
@@ -146,9 +147,16 @@ describe("request records with operation-specific visibility", () => {
     ok(messages[0].includes("WidgetZXCreateRequest"));
     ok(messages[0].includes("different visible properties"));
     ok(
-      !fileContent(results, "ZXEndpoint.g.cs").includes("CreateAsync"),
-      "The operation without a record is left out",
+      !has(results, "/ZXRequestBuilders.g.cs"),
+      "The operation without a record is left out, and with it the only builder of ZX",
     );
+    ok(
+      !fileContent(results, "TestApiClientExtensions.g.cs").includes(
+        "ZXRequestBuilder",
+      ),
+      "The client has no method for a builder that is not written",
+    );
+    ok(fileContent(results, "/XRequestBuilders.g.cs").includes("CreateAsync"));
   });
 });
 
@@ -164,7 +172,7 @@ describe("JSON media types other than application/json", () => {
       }
     `);
 
-    const client = fileContent(results, "ItemsEndpoint.g.cs");
+    const client = fileContent(results, "ItemsRequestBuilders.g.cs");
     ok(
       client.includes(
         'ClientRuntime.JsonContent(flurlRequest, body, "application/vnd.acme+json")',
@@ -194,7 +202,11 @@ describe("JSON media types other than application/json", () => {
         }
       `);
 
-      ok(fileContent(results, "ItemsEndpoint.g.cs").includes("JsonContent("));
+      ok(
+        fileContent(results, "ItemsRequestBuilders.g.cs").includes(
+          "JsonContent(",
+        ),
+      );
     });
   }
 
@@ -247,7 +259,7 @@ describe("plain-text scalar payloads", () => {
       `);
 
       ok(
-        fileContent(results, "ValuesEndpoint.g.cs").includes(
+        fileContent(results, "ValuesRequestBuilders.g.cs").includes(
           `return ClientRuntime.FromText<${cs}>(await flurlResponse.GetStringAsync().ConfigureAwait(false));`,
         ),
       );
@@ -259,7 +271,7 @@ describe("plain-text scalar payloads", () => {
       `);
 
       ok(
-        fileContent(results, "ValuesEndpoint.g.cs").includes(
+        fileContent(results, "ValuesRequestBuilders.g.cs").includes(
           'ClientRuntime.TextContent(ClientRuntime.ToWireString(body), "text/plain")',
         ),
       );
@@ -272,7 +284,7 @@ describe("plain-text scalar payloads", () => {
     `);
 
     ok(
-      fileContent(results, "ValuesEndpoint.g.cs").includes(
+      fileContent(results, "ValuesRequestBuilders.g.cs").includes(
         "return await flurlResponse.GetStringAsync().ConfigureAwait(false);",
       ),
     );
@@ -284,7 +296,7 @@ describe("plain-text scalar payloads", () => {
     `);
 
     ok(
-      fileContent(results, "ValuesEndpoint.g.cs").includes(
+      fileContent(results, "ValuesRequestBuilders.g.cs").includes(
         "ClientRuntime.FromText<JsonElement>(",
       ),
     );
@@ -296,7 +308,7 @@ describe("plain-text scalar payloads", () => {
     `);
 
     ok(
-      fileContent(results, "ValuesEndpoint.g.cs").includes(
+      fileContent(results, "ValuesRequestBuilders.g.cs").includes(
         "GetJsonAsync<int?>()",
       ),
     );
@@ -310,11 +322,11 @@ describe("a success response that may have no body", () => {
       @route("/w") interface Widgets { @get read(): Widget | void; }
     `);
 
-    const iface = fileContent(results, "IWidgets.g.cs");
+    const iface = fileContent(results, "WidgetsRequestBuilders.g.cs");
     ok(iface.includes("Task<Widget?> ReadAsync("));
     ok(iface.includes("Task<TResult?> ReadAsync<TResult>("));
     ok(
-      fileContent(results, "WidgetsEndpoint.g.cs").includes(
+      fileContent(results, "WidgetsRequestBuilders.g.cs").includes(
         "GetJsonAsync<TResult?>()",
       ),
     );
@@ -328,7 +340,7 @@ describe("a success response that may have no body", () => {
       }
     `);
 
-    const client = fileContent(results, "ValuesEndpoint.g.cs");
+    const client = fileContent(results, "ValuesRequestBuilders.g.cs");
     ok(client.includes("Task<int?> CountAsync("));
     ok(client.includes("ClientRuntime.FromText<int?>("));
     ok(client.includes("Task<string?> LabelAsync("));
@@ -342,7 +354,9 @@ describe("a success response that may have no body", () => {
     `);
 
     ok(
-      fileContent(results, "IWidgets.g.cs").includes("Task<Widget> ReadAsync("),
+      fileContent(results, "WidgetsRequestBuilders.g.cs").includes(
+        "Task<Widget> ReadAsync(",
+      ),
     );
   });
 
@@ -471,7 +485,7 @@ describe("decorators on a template declaration", () => {
 
     ok(fileContent(results, "Paged.g.cs").includes("public record Paged<T>"));
     ok(
-      fileContent(results, "IValues.g.cs").includes(
+      fileContent(results, "ValuesRequestBuilders.g.cs").includes(
         "Task<Paged<string>> ListAsync(",
       ),
     );

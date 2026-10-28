@@ -21,17 +21,18 @@ describe("generic overloads", () => {
       }
     `);
 
-    const iface = fileContent(results, "IWidgets.g.cs");
+    const iface = fileContent(results, "WidgetsRequestBuilders.g.cs");
     ok(
-      iface.includes("Task<Widget> ReadAsync(string id,"),
+      iface.includes("Task<Widget> ReadAsync(CancellationToken"),
       "Expected the declared overload",
     );
     ok(
-      iface.includes("Task<TResult> ReadAsync<TResult>(string id,"),
+      iface.includes("Task<TResult> ReadAsync<TResult>(CancellationToken"),
       "Expected the generic overload",
     );
-    ok(
-      iface.includes("where TResult : Widget;"),
+    match(
+      iface,
+      /where TResult : Widget$/m,
       "Expected the constraint on the declared model",
     );
     ok(
@@ -50,11 +51,9 @@ describe("generic overloads", () => {
       }
     `);
 
-    const client = fileContent(results, "WidgetsEndpoint.g.cs");
+    const client = fileContent(results, "WidgetsRequestBuilders.g.cs");
     ok(
-      client.includes(
-        "ReadAsync<Widget>(id, additionalQueryParameters, cancellationToken);",
-      ),
+      client.includes("ReadAsync<Widget>(cancellationToken);"),
       "Expected the declared overload to forward with the declared model",
     );
     ok(
@@ -77,12 +76,12 @@ describe("generic overloads", () => {
       }
     `);
 
-    const iface = fileContent(results, "IWidgets.g.cs");
+    const iface = fileContent(results, "WidgetsRequestBuilders.g.cs");
     ok(iface.includes("Task<List<Widget>> ListAsync("));
     ok(iface.includes("Task<List<TResult>> ListAsync<TResult>("));
-    ok(iface.includes("where TResult : Widget;"));
+    match(iface, /where TResult : Widget$/m);
     ok(
-      fileContent(results, "WidgetsEndpoint.g.cs").includes(
+      fileContent(results, "WidgetsRequestBuilders.g.cs").includes(
         "GetJsonAsync<List<TResult>>()",
       ),
     );
@@ -98,7 +97,7 @@ describe("generic overloads", () => {
       }
     `);
 
-    const iface = fileContent(results, "IWidgets.g.cs");
+    const iface = fileContent(results, "WidgetsRequestBuilders.g.cs");
     ok(iface.includes("Task<Dictionary<string, Widget>> ByNameAsync("));
     ok(
       iface.includes("Task<Dictionary<string, TResult>> ByNameAsync<TResult>("),
@@ -116,7 +115,7 @@ describe("generic overloads", () => {
     `);
 
     ok(
-      fileContent(results, "IWidgets.g.cs").includes(
+      fileContent(results, "WidgetsRequestBuilders.g.cs").includes(
         "Task<List<List<TResult>>> GridAsync<TResult>(",
       ),
     );
@@ -133,10 +132,9 @@ describe("generic overloads", () => {
       }
     `);
 
-    ok(
-      fileContent(results, "IWidgets.g.cs").includes(
-        "where TResult : Page<Widget>;",
-      ),
+    match(
+      fileContent(results, "WidgetsRequestBuilders.g.cs"),
+      /where TResult : Page<Widget>$/m,
     );
   });
 
@@ -153,11 +151,14 @@ describe("generic overloads", () => {
     `);
 
     ok(
-      fileContent(results, "IPets.g.cs").includes(
+      fileContent(results, "PetsRequestBuilders.g.cs").includes(
         "Task<List<TResult>> ListAsync<TResult>(",
       ),
     );
-    ok(fileContent(results, "IPets.g.cs").includes("where TResult : Pet;"));
+    match(
+      fileContent(results, "PetsRequestBuilders.g.cs"),
+      /where TResult : Pet$/m,
+    );
   });
 
   for (const [label, returnType] of [
@@ -180,11 +181,14 @@ describe("generic overloads", () => {
       `);
 
       doesNotMatch(
-        fileContent(results, "IThings.g.cs"),
+        fileContent(results, "ThingsRequestBuilders.g.cs"),
         /<TResult>/,
         `Unexpected generic overload for ${label}`,
       );
-      doesNotMatch(fileContent(results, "ThingsEndpoint.g.cs"), /<TResult>/);
+      doesNotMatch(
+        fileContent(results, "ThingsRequestBuilders.g.cs"),
+        /<TResult>/,
+      );
     });
   }
 
@@ -198,7 +202,10 @@ describe("generic overloads", () => {
       }
     `);
 
-    doesNotMatch(fileContent(results, "IWidgets.g.cs"), /<TResult>/);
+    doesNotMatch(
+      fileContent(results, "WidgetsRequestBuilders.g.cs"),
+      /<TResult>/,
+    );
   });
 
   it("uses the same parameter list for both overloads", async () => {
@@ -211,10 +218,10 @@ describe("generic overloads", () => {
       }
     `);
 
-    const iface = fileContent(results, "IWidgets.g.cs");
+    const iface = fileContent(results, "WidgetsRequestBuilders.g.cs");
     const params =
-      "int? skip = null, string? trace = null, Dictionary<string, object>? additionalQueryParameters = null, CancellationToken cancellationToken = default";
-    ok(iface.includes(`ListAsync(${params});`));
+      "int? skip = null, string? trace = null, CancellationToken cancellationToken = default";
+    ok(iface.includes(`ListAsync(${params}) =>`));
     ok(iface.includes(`ListAsync<TResult>(${params})`));
   });
 
@@ -236,9 +243,9 @@ describe("generic overloads", () => {
       }
     `);
 
-    const iface = fileContent(results, "IWidgets.g.cs");
-    ok(iface.includes("FetchAsync(string id,"));
-    ok(iface.includes("FetchAsync<TResult>(string id,"));
+    const iface = fileContent(results, "WidgetsRequestBuilders.g.cs");
+    ok(iface.includes("FetchAsync(CancellationToken"));
+    ok(iface.includes("FetchAsync<TResult>(CancellationToken"));
   });
 });
 
@@ -254,7 +261,7 @@ describe("request body parameters", () => {
     `);
 
     ok(
-      fileContent(results, "IWidgets.g.cs").includes(
+      fileContent(results, "WidgetsRequestBuilders.g.cs").includes(
         "CreateManyAsync(IEnumerable<Widget> body,",
       ),
     );
@@ -271,7 +278,7 @@ describe("request body parameters", () => {
     `);
 
     ok(
-      fileContent(results, "IWidgets.g.cs").includes(
+      fileContent(results, "WidgetsRequestBuilders.g.cs").includes(
         "CreateManyAsync(IReadOnlyDictionary<string, Widget> body,",
       ),
     );
@@ -288,7 +295,7 @@ describe("request body parameters", () => {
     `);
 
     ok(
-      fileContent(results, "IWidgets.g.cs").includes(
+      fileContent(results, "WidgetsRequestBuilders.g.cs").includes(
         "CreateGridAsync(IEnumerable<IEnumerable<Widget>> body,",
       ),
     );
@@ -303,7 +310,7 @@ describe("request body parameters", () => {
     `);
 
     ok(
-      fileContent(results, "ITags.g.cs").includes(
+      fileContent(results, "TagsRequestBuilders.g.cs").includes(
         "AddAsync(List<string> body,",
       ),
     );
@@ -320,8 +327,8 @@ describe("request body parameters", () => {
     `);
 
     ok(
-      fileContent(results, "IWidgets.g.cs").includes(
-        "ReplaceAsync(string id, Widget body,",
+      fileContent(results, "WidgetsRequestBuilders.g.cs").includes(
+        "ReplaceAsync(Widget body,",
       ),
     );
   });
@@ -336,10 +343,10 @@ describe("request body parameters", () => {
       }
     `);
 
-    const iface = fileContent(results, "IWidgets.g.cs");
-    ok(iface.includes("UpdateAsync(string id, IMergePatch<Widget> body,"));
+    const iface = fileContent(results, "WidgetsRequestBuilders.g.cs");
+    ok(iface.includes("UpdateAsync(IMergePatch<Widget> body,"));
     ok(
-      !iface.includes("(string id, MergePatch<"),
+      !iface.includes("(MergePatch<"),
       "Expected the interface, not the class",
     );
   });
@@ -374,14 +381,14 @@ describe("derived models and records", () => {
       }
     `);
 
-    const iface = fileContent(results, "IWidgets.g.cs");
+    const iface = fileContent(results, "WidgetsRequestBuilders.g.cs");
     ok(iface.includes("CreateAsync(WidgetCreateRequest body,"));
     ok(
       iface.includes(
         "Task<TResult> CreateAsync<TResult>(WidgetCreateRequest body,",
       ),
     );
-    ok(iface.includes("where TResult : Widget;"));
+    match(iface, /where TResult : Widget$/m);
     match(
       fileContent(results, "WidgetCreateRequest.g.cs"),
       /public record WidgetCreateRequest/,

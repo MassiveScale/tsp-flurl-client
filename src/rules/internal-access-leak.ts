@@ -123,7 +123,7 @@ export const internalAccessLeakRule = createRule({
   url: "https://github.com/MassiveScale/tsp-flurl-client#internal-access-leak",
   messages: {
     default: paramMessage`"${"referencingName"}" is public but its ${"kind"} type "${"internalTypeName"}" is marked @access(Access.internal); the generated C# will fail to compile (CS0053: inconsistent accessibility). Mark "${"internalTypeName"}" @access(Access.public), or mark the ${"container"} that declares "${"referencingName"}" @access(Access.internal) as well.`,
-    standalone: paramMessage`"${"referencingName"}" is a namespace-level operation, which is emitted as a public interface method, but its ${"kind"} type "${"internalTypeName"}" is marked @access(Access.internal); the generated C# will fail to compile (CS0053: inconsistent accessibility). Mark "${"internalTypeName"}" @access(Access.public), or move the operation into an interface marked @access(Access.internal).`,
+    standalone: paramMessage`"${"referencingName"}" is a namespace-level operation, which is emitted as a public request builder method, but its ${"kind"} type "${"internalTypeName"}" is marked @access(Access.internal); the generated C# will fail to compile (CS0053: inconsistent accessibility). Mark "${"internalTypeName"}" @access(Access.public), or move the operation into an interface marked @access(Access.internal).`,
     base: paramMessage`"${"referencingName"}" is public but its base type "${"internalTypeName"}" is marked @access(Access.internal); the generated C# will fail to compile (CS0060: inconsistent accessibility of the base type). Mark "${"internalTypeName"}" @access(Access.public), or mark "${"referencingName"}" @access(Access.internal) as well.`,
   },
   create(context) {
@@ -142,8 +142,9 @@ export const internalAccessLeakRule = createRule({
             format: {
               referencingName,
               kind,
-              // An operation's access is ignored (C# interface members are always
-              // public), so the fix is on the interface, or on the model for a property.
+              // An operation's access is ignored (the emitter applies @access to an
+              // interface's request builders as a whole), so the fix is on the interface,
+              // or on the model for a property.
               container: kind === "property" ? "model" : "interface",
               internalTypeName: named.name!,
             },
@@ -158,8 +159,8 @@ export const internalAccessLeakRule = createRule({
         if (containerAccess === "internal") return;
 
         // An operation marked @access(Access.internal) is still checked: the emitter
-        // ignores operation access because C# interface methods cannot carry an
-        // access modifier, so such a method is public in the generated interface.
+        // applies @access to an interface's request builders as a whole, not to single
+        // methods, so such a method is public in a public builder.
         for (const op of iface.operations.values()) {
           for (const prop of op.parameters.properties.values()) {
             checkReferencedTypes(prop.type, op.name, "parameter", prop);
