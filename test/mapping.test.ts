@@ -144,12 +144,12 @@ describe("unions in operations", () => {
       @route("/items") interface Items { @get read(): Item | Other; }
     `);
 
-    const iface = fileContent(results, "IItems.g.cs");
+    const iface = fileContent(results, "ItemsRequestBuilders.g.cs");
     ok(iface.includes("Task<JsonElement> ReadAsync("));
     ok(iface.includes("using System.Text.Json;"));
     ok(!iface.includes("<TResult>"), "A union has no model to substitute");
     ok(
-      fileContent(results, "ItemsEndpoint.g.cs").includes(
+      fileContent(results, "ItemsRequestBuilders.g.cs").includes(
         "GetJsonAsync<JsonElement>()",
       ),
     );
@@ -163,7 +163,7 @@ describe("unions in operations", () => {
       }
     `);
 
-    const iface = fileContent(results, "IItems.g.cs");
+    const iface = fileContent(results, "ItemsRequestBuilders.g.cs");
     ok(iface.includes("string? c,"));
     ok(iface.includes("JsonElement? a = null"));
     ok(iface.includes("string? b = null"));
@@ -179,12 +179,12 @@ describe("unions in operations", () => {
     `);
 
     ok(
-      fileContent(results, "IItems.g.cs").includes(
+      fileContent(results, "ItemsRequestBuilders.g.cs").includes(
         "CreateAsync(JsonElement body,",
       ),
     );
     ok(
-      fileContent(results, "ItemsEndpoint.g.cs").includes(
+      fileContent(results, "ItemsRequestBuilders.g.cs").includes(
         "SendJsonAsync(HttpMethod.Post, body,",
       ),
     );
@@ -277,8 +277,17 @@ describe("@format on a property or parameter", () => {
       }
     `);
 
+    const builders = fileContent(results, "ItemsRequestBuilders.g.cs");
     ok(
-      fileContent(results, "IItems.g.cs").includes("Guid id, Uri? home = null"),
+      builders.includes(
+        "internal ItemsItemRequestBuilder(IFlurlClient flurlClient, Guid id)",
+      ),
+    );
+    ok(builders.includes("ReadAsync(Uri? home = null, CancellationToken"));
+    ok(
+      fileContent(results, "TestApiClientExtensions.g.cs").includes(
+        "public ItemsItemRequestBuilder Items(Guid id) =>",
+      ),
     );
   });
 

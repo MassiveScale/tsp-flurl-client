@@ -461,7 +461,7 @@ describe("internal-access-leak", () => {
       });
   });
 
-  it("still flags an operation marked @access(Access.internal), because C# interface methods are always public", async () => {
+  it("still flags an operation marked @access(Access.internal), because generated request builder methods are always public", async () => {
     await tester
       .expect(
         `

@@ -17,7 +17,7 @@ public sealed class WireFormatTests
         var (client, handler) = Harness.Create();
         handler.RespondJson("""{"items":[]}""");
 
-        await client.Widgets.ListAsync(Color.Blue, ["a", "b"], "trace-1");
+        await client.Widgets().ListAsync(Color.Blue, ["a", "b"], "trace-1");
 
         handler.Last.Method.Should().Be(HttpMethod.Get);
         // TypeSpec arrays are not exploded by default, so a list is one comma-separated value.
@@ -31,19 +31,19 @@ public sealed class WireFormatTests
         var (client, handler) = Harness.Create();
         handler.RespondJson("""{"items":[]}""");
 
-        await client.Widgets.ListAsync();
+        await client.Widgets().ListAsync();
 
         handler.Last.Uri.PathAndQuery.Should().Be("/api/widgets");
         handler.Last.Headers.Should().NotContainKey("X-Trace");
     }
 
     [TestMethod]
-    public async Task Additional_query_parameters_are_appended()
+    public async Task Appended_query_parameters_use_wire_values()
     {
         var (client, handler) = Harness.Create();
         handler.RespondJson("""{"items":[]}""");
 
-        await client.Widgets.ListAsync(additionalQueryParameters: new() { ["debug"] = true, ["when"] = Color.Red });
+        await client.Widgets().AppendQueryParameter("debug", true).AppendQueryParameter("when", Color.Red).ListAsync();
 
         handler.Last.Uri.Query.Should().Be("?debug=true&when=red");
     }
@@ -54,7 +54,7 @@ public sealed class WireFormatTests
         var (client, handler) = Harness.Create();
         handler.RespondJson("""{"id":"x","name":"n"}""");
 
-        await client.Widgets.ReadAsync("a/b c?d");
+        await client.Widgets("a/b c?d").ReadAsync();
 
         handler.Last.Uri.AbsolutePath.Should().Be("/api/widgets/a%2Fb%20c%3Fd");
     }
@@ -64,7 +64,7 @@ public sealed class WireFormatTests
     {
         var (client, handler) = Harness.Create();
 
-        await client.Widgets.DeleteAsync("1");
+        await client.Widgets("1").DeleteAsync();
 
         handler.Last.Method.Should().Be(HttpMethod.Delete);
     }
@@ -75,7 +75,7 @@ public sealed class WireFormatTests
         var (client, handler) = Harness.Create();
         byte[] payload = [1, 2, 3, 255];
 
-        await client.Files.UploadAsync(payload);
+        await client.Files().UploadAsync(payload);
 
         handler.Last.BodyBytes.Should().Equal(payload);
         handler.Last.ContentType.Should().Be("application/octet-stream");
@@ -88,7 +88,7 @@ public sealed class WireFormatTests
         byte[] payload = [9, 8, 7, 0, 255];
         handler.RespondBytes(payload);
 
-        var data = await client.Files.DownloadAsync("f1");
+        var data = await client.Files("f1").DownloadAsync();
 
         data.Should().Equal(payload);
         handler.Last.Uri.AbsolutePath.Should().Be("/api/files/f1");
@@ -105,13 +105,13 @@ public sealed class WireFormatTests
             models => models.Map<Widget, MyWidget>());
         await using var provider = services.BuildServiceProvider();
 
-        var widget = await provider.GetRequiredService<IWidgets>().ReadAsync("1");
+        var widget = await provider.GetRequiredService<CustomModelsClient>().Widgets("1").ReadAsync();
         var aggregate = provider.GetRequiredService<CustomModelsClient>();
 
         widget.Should().BeOfType<MyWidget>();
-        aggregate.Widgets.Should().NotBeNull();
-        aggregate.Pets.Should().NotBeNull();
-        aggregate.Files.Should().NotBeNull();
+        aggregate.Widgets().Should().NotBeNull();
+        aggregate.Pets().Should().NotBeNull();
+        aggregate.Files().Should().NotBeNull();
         aggregate.FlurlClient.Should().NotBeNull();
         handler.Last.Uri.Host.Should().Be("api.test");
     }
@@ -122,7 +122,7 @@ public sealed class WireFormatTests
         var client = CustomModelsClient.Create("https://api.test", m => m.Map<Widget, MyWidget>());
 
         client.FlurlClient.BaseUrl.Should().Be("https://api.test");
-        client.Widgets.Should().NotBeNull();
+        client.Widgets().Should().NotBeNull();
     }
 
     [TestMethod]

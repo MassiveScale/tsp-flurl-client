@@ -68,11 +68,12 @@ public sealed class AllVersionsTests
     [TestMethod]
     public void Operations_and_parameters_are_projected_onto_each_version()
     {
-        ParameterNames(typeof(V1.IWidgets), "ReadAsync").Should().NotContain("expand");
-        ParameterNames(typeof(V2.IWidgets), "ReadAsync").Should().Contain("expand");
+        ParameterNames(typeof(V1.WidgetsItemRequestBuilder), "ReadAsync").Should().NotContain("expand");
+        ParameterNames(typeof(V2.WidgetsItemRequestBuilder), "ReadAsync").Should().Contain("expand");
 
-        typeof(V1.IWidgets).GetMethods().Should().NotContain(m => m.Name == "LabelsAsync");
-        typeof(V2.IWidgets).GetMethods().Should().Contain(m => m.Name == "LabelsAsync");
+        typeof(V1.WidgetsRequestBuilder).GetMethods().Should().NotContain(m => m.Name == "LabelsAsync");
+        typeof(V1.WidgetsItemRequestBuilder).GetMethods().Should().NotContain(m => m.Name == "LabelsAsync");
+        typeof(V2.WidgetsRequestBuilder).GetMethods().Should().Contain(m => m.Name == "LabelsAsync");
     }
 
     [TestMethod]
@@ -80,14 +81,14 @@ public sealed class AllVersionsTests
     {
         var (v1, v1Handler) = Create(f => V1.AllVersionsClient.Create(f));
         v1Handler.RespondJson("""{"id":"1","name":"gear","legacyCode":"L-1"}""");
-        var v1Widget = await v1.Widgets.ReadAsync("1");
+        var v1Widget = await v1.Widgets("1").ReadAsync();
 
         v1Handler.Last.Uri.PathAndQuery.Should().Be("/api/v1.0/widgets/1");
         v1Widget.LegacyCode.Should().Be("L-1");
 
         var (v2, v2Handler) = Create(f => V2.AllVersionsClient.Create(f));
         v2Handler.RespondJson("""{"id":"1","name":"gear","color":"red"}""");
-        var v2Widget = await v2.Widgets.ReadAsync("1", expand: true);
+        var v2Widget = await v2.Widgets("1").ReadAsync(expand: true);
 
         v2Handler.Last.Uri.PathAndQuery.Should().Be("/api/v2.0/widgets/1?expand=true");
         v2Widget.Color.Should().Be("red");
@@ -98,13 +99,13 @@ public sealed class AllVersionsTests
     {
         var (v1, v1Handler) = Create(f => V1.AllVersionsClient.Create(f));
         v1Handler.RespondJson("""{"id":"1","name":"gear"}""");
-        await v1.Widgets.CreateAsync(new V1.WidgetCreateRequest { Name = "gear", LegacyCode = "L-1" });
+        await v1.Widgets().CreateAsync(new V1.WidgetCreateRequest { Name = "gear", LegacyCode = "L-1" });
 
         v1Handler.Last.Body.Should().Be("""{"name":"gear","legacyCode":"L-1"}""");
 
         var (v2, v2Handler) = Create(f => V2.AllVersionsClient.Create(f));
         v2Handler.RespondJson("""{"id":"1","name":"gear"}""");
-        await v2.Widgets.CreateAsync(new V2.WidgetCreateRequest { Name = "gear", Color = "red" });
+        await v2.Widgets().CreateAsync(new V2.WidgetCreateRequest { Name = "gear", Color = "red" });
 
         v2Handler.Last.Body.Should().Be("""{"name":"gear","color":"red"}""");
     }
@@ -114,18 +115,18 @@ public sealed class AllVersionsTests
     {
         var (v1, v1Handler) = Create(f => V1.AllVersionsClient.Create(f));
         v1Handler.RespondJson("""{"id":"1","name":"a","status":"legacy"}""");
-        (await v1.Widgets.ReadAsync("1")).Status.Should().Be(V1.Status.Legacy);
+        (await v1.Widgets("1").ReadAsync()).Status.Should().Be(V1.Status.Legacy);
 
         v1Handler.RespondJson("""{"id":"1","name":"a","status":"archived"}""");
-        var archivedInV1 = () => v1.Widgets.ReadAsync("1");
+        var archivedInV1 = () => v1.Widgets("1").ReadAsync();
         await archivedInV1.Should().ThrowAsync<Exception>();
 
         var (v2, v2Handler) = Create(f => V2.AllVersionsClient.Create(f));
         v2Handler.RespondJson("""{"id":"1","name":"a","status":"archived"}""");
-        (await v2.Widgets.ReadAsync("1")).Status.Should().Be(V2.Status.Archived);
+        (await v2.Widgets("1").ReadAsync()).Status.Should().Be(V2.Status.Archived);
 
         v2Handler.RespondJson("""{"id":"1","name":"a","status":"legacy"}""");
-        var legacyInV2 = () => v2.Widgets.ReadAsync("1");
+        var legacyInV2 = () => v2.Widgets("1").ReadAsync();
         await legacyInV2.Should().ThrowAsync<Exception>();
     }
 
@@ -137,15 +138,15 @@ public sealed class AllVersionsTests
 
         var (v1, v1Handler) = Create(f => V1.AllVersionsClient.Create(f));
         v1Handler.RespondJson($"[{dog}]");
-        (await v1.Pets.ListAsync()).Should().ContainSingle().Which.Should().BeOfType<V1.Dog>();
+        (await v1.Pets().ListAsync()).Should().ContainSingle().Which.Should().BeOfType<V1.Dog>();
 
         v1Handler.RespondJson($"[{cat}]");
-        var catInV1 = () => v1.Pets.ListAsync();
+        var catInV1 = () => v1.Pets().ListAsync();
         await catInV1.Should().ThrowAsync<Exception>();
 
         var (v2, v2Handler) = Create(f => V2.AllVersionsClient.Create(f));
         v2Handler.RespondJson($"[{dog},{cat}]");
-        var pets = await v2.Pets.ListAsync();
+        var pets = await v2.Pets().ListAsync();
         pets[0].Should().BeOfType<V2.Dog>();
         pets[1].Should().BeOfType<V2.Cat>();
     }
@@ -156,14 +157,14 @@ public sealed class AllVersionsTests
         var (v1, v1Handler) = Create(f => V1.AllVersionsClient.Create(f, new MassiveScale.AllVersions.Client.ModelMap().Map<V1.Widget, V1Widget>()));
         v1Handler.RespondJson("""{"id":"1","name":"gear","sku":"S-1"}""");
 
-        var v1Widget = await v1.Widgets.ReadAsync("1");
+        var v1Widget = await v1.Widgets("1").ReadAsync();
 
         v1Widget.Should().BeOfType<V1Widget>().Which.Sku.Should().Be("S-1");
 
         var (v2, v2Handler) = Create(f => V2.AllVersionsClient.Create(f));
         v2Handler.RespondJson("""{"id":"1","name":"gear","sku":"S-1"}""");
 
-        (await v2.Widgets.ReadAsync("1")).Should().BeOfType<V2.Widget>("version 2 has no map of its own");
+        (await v2.Widgets("1").ReadAsync()).Should().BeOfType<V2.Widget>("version 2 has no map of its own");
     }
 
     [TestMethod]
@@ -183,8 +184,8 @@ public sealed class AllVersionsTests
             builder => builder.ConfigurePrimaryHttpMessageHandler(() => v2Handler));
         await using var provider = services.BuildServiceProvider();
 
-        var v1Widget = await provider.GetRequiredService<V1.IWidgets>().ReadAsync("1");
-        var v2Widget = await provider.GetRequiredService<V2.IWidgets>().ReadAsync("1");
+        var v1Widget = await provider.GetRequiredService<V1.AllVersionsClient>().Widgets("1").ReadAsync();
+        var v2Widget = await provider.GetRequiredService<V2.AllVersionsClient>().Widgets("1").ReadAsync();
 
         v1Widget.Should().BeOfType<V1Widget>("the version 1 registration maps its widget");
         v2Widget.Should().BeOfType<V2.Widget>("registering version 2 must not replace version 1's map, nor inherit it");
@@ -222,23 +223,23 @@ public sealed class AllVersionsTests
     {
         var (v1, v1Handler) = Create(f => V1.AllVersionsClient.Create(f));
         v1Handler.RespondJson("""{"title":"t","size":3,"note":"n"}""");
-        var gadget = await v1.Gizmos.ReadAsync("x");
+        var gadget = await v1.Gizmos().ReadAsync("x");
         v1Handler.Last.Uri.Query.Should().Be("?q=x");
         gadget.Title.Should().Be("t");
         gadget.Size.Should().Be(3);
 
         var (v2, v2Handler) = Create(f => V2.AllVersionsClient.Create(f));
         v2Handler.RespondJson("""{"name":"n","size":"large"}""");
-        var gizmo = await v2.Gizmos.ReadAsync("x");
+        var gizmo = await v2.Gizmos().ReadAsync("x");
         v2Handler.Last.Uri.Query.Should().Be("?search=x");
         gizmo.Size.Should().Be("large");
 
         v1Handler.RespondText("42");
-        int v1Count = await v1.Gizmos.CountAsync();
+        int v1Count = await v1.Gizmos().CountAsync();
         v1Count.Should().Be(42);
 
         v2Handler.RespondText("about forty");
-        string v2Count = await v2.Gizmos.CountAsync();
+        string v2Count = await v2.Gizmos().CountAsync();
         v2Count.Should().Be("about forty");
     }
 }

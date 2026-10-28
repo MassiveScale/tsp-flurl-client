@@ -110,7 +110,9 @@ describe("names that come from the TypeSpec", () => {
       ),
     );
     ok(!Object.keys(results).some((k) => k.includes("my things")));
-    ok(Object.keys(results).some((k) => k.endsWith("IFine.g.cs")));
+    ok(
+      Object.keys(results).some((k) => k.endsWith("FineRequestBuilders.g.cs")),
+    );
   });
 
   it("rejects a property name that is not a C# identifier", async () => {
@@ -181,9 +183,13 @@ describe("names that come from the TypeSpec", () => {
     `);
 
     strictEqual(invalidNames(diagnostics).length, 0);
-    ok(fileContent(results, "IThings.g.cs").includes("int? pageSize = null"));
     ok(
-      fileContent(results, "ThingsEndpoint.g.cs").includes(
+      fileContent(results, "ThingsRequestBuilders.g.cs").includes(
+        "int? pageSize = null",
+      ),
+    );
+    ok(
+      fileContent(results, "ThingsRequestBuilders.g.cs").includes(
         'SetQueryParam("page-size", ClientRuntime.ToQueryValue(pageSize))',
       ),
     );

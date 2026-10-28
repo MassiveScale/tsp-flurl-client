@@ -68,19 +68,20 @@ describe("internal endpoints in the aggregate client", () => {
     @route("/admin") interface Admin { @post reindex(): void; }
   `;
 
-  it("makes an internal endpoint an internal property and the constructor internal", async () => {
+  it("makes an internal endpoint an internal method and keeps the constructor public", async () => {
     const content = fileContent(
       await emit(spec("@access(Access.internal)")),
       "TestApiClientExtensions.g.cs",
     );
 
-    ok(content.includes("public IPets Pets { get; }"));
-    ok(content.includes("internal IAdmin Admin { get; }"));
+    ok(content.includes("public PetsRequestBuilder Pets() =>"));
     ok(
-      content.includes(
-        "internal TestApiClient(IFlurlClient flurlClient, IPets pets, IAdmin admin)",
-      ),
-      "A public constructor cannot take an internal parameter type",
+      content.includes("internal AdminRequestBuilder Admin() =>"),
+      "A public method cannot return an internal builder",
+    );
+    ok(
+      content.includes("public TestApiClient(IFlurlClient flurlClient)"),
+      "The constructor takes only the Flurl client, so it can stay public",
     );
   });
 
@@ -90,12 +91,9 @@ describe("internal endpoints in the aggregate client", () => {
       "TestApiClientExtensions.g.cs",
     );
 
-    ok(content.includes("public IAdmin Admin { get; }"));
-    ok(
-      content.includes(
-        "public TestApiClient(IFlurlClient flurlClient, IPets pets, IAdmin admin)",
-      ),
-    );
+    ok(content.includes("public PetsRequestBuilder Pets() =>"));
+    ok(content.includes("public AdminRequestBuilder Admin() =>"));
+    ok(content.includes("public TestApiClient(IFlurlClient flurlClient)"));
   });
 });
 
@@ -290,7 +288,7 @@ describe("version namespace segments", () => {
     );
 
     ok(
-      fileContent(results, "ItemsEndpoint.g.cs").includes(
+      fileContent(results, "ItemsRequestBuilders.g.cs").includes(
         "namespace TestApi.Client.Vsprint_42;",
       ),
     );
@@ -368,7 +366,7 @@ describe("escapeCsString", () => {
     `);
 
     ok(
-      fileContent(results, "ThingsEndpoint.g.cs").includes(
+      fileContent(results, "ThingsRequestBuilders.g.cs").includes(
         'SetQueryParam("a\\"b", ',
       ),
     );

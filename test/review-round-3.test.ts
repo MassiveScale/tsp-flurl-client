@@ -42,8 +42,10 @@ describe("declarations with the same simple name in different namespaces", () =>
     const [results, diagnostics] = await emitWithDiagnostics(interfaces(""));
 
     const collisions = codes(diagnostics, "output-name-collision");
-    ok(collisions.some((m) => m.includes("Endpoints/IItems.g.cs")));
-    const iface = fileContent(results, "IItems.g.cs");
+    ok(
+      collisions.some((m) => m.includes("Endpoints/ItemsRequestBuilders.g.cs")),
+    );
+    const iface = fileContent(results, "ItemsRequestBuilders.g.cs");
     ok(iface.includes("ListAAsync("), "The first interface is emitted");
     ok(!iface.includes("ListBAsync("), "The second is not merged into it");
   });
@@ -57,9 +59,19 @@ describe("declarations with the same simple name in different namespaces", () =>
     );
 
     strictEqual(codes(diagnostics, "output-name-collision").length, 0);
-    ok(fileContent(results, "IItems.g.cs").includes("ListAAsync("));
-    ok(fileContent(results, "IThings.g.cs").includes("ListBAsync("));
-    ok(!fileContent(results, "IItems.g.cs").includes("ListBAsync("));
+    ok(
+      fileContent(results, "ItemsRequestBuilders.g.cs").includes("ListAAsync("),
+    );
+    ok(
+      fileContent(results, "ThingsRequestBuilders.g.cs").includes(
+        "ListBAsync(",
+      ),
+    );
+    ok(
+      !fileContent(results, "ItemsRequestBuilders.g.cs").includes(
+        "ListBAsync(",
+      ),
+    );
   });
 
   const sibling = (kind: "model" | "enum") => `${PREAMBLE}
@@ -108,9 +120,13 @@ describe("method names that collide once converted", () => {
     const messages = codes(diagnostics, "name-collision");
     strictEqual(messages.length, 1);
     ok(messages[0].includes('"ReadAsync"'));
-    ok(messages[0].includes("interface IItems"));
+    ok(messages[0].includes("endpoint group Items"));
     strictEqual(
-      [...fileContent(results, "IItems.g.cs").matchAll(/ ReadAsync\(/g)].length,
+      [
+        ...fileContent(results, "ItemsRequestBuilders.g.cs").matchAll(
+          / ReadAsync\(/g,
+        ),
+      ].length,
       1,
     );
   });
@@ -183,25 +199,47 @@ describe("parameter names that collide", () => {
     strictEqual(messages.length, 1);
     ok(messages[0].includes('"foo"'));
     strictEqual(
-      [...fileContent(results, "IItems.g.cs").matchAll(/string\? foo = null/g)]
-        .length,
+      [
+        ...fileContent(results, "ItemsRequestBuilders.g.cs").matchAll(
+          /string\? foo = null/g,
+        ),
+      ].length,
       1,
       "The second parameter is left out, so foo is declared once",
     );
   });
 
   for (const reserved of [
-    "additionalQueryParameters",
     "cancellationToken",
     "flurlRequest",
     "flurlResponse",
-    "_client",
   ]) {
     it(`reports a parameter named ${reserved}, which the generated method already uses`, async () => {
       const { messages } = await params(`@query ${reserved}?: string`);
 
       strictEqual(messages.length, 1, reserved);
       ok(messages[0].includes(`"${reserved}"`));
+    });
+  }
+
+  for (const formerlyReserved of ["additionalQueryParameters", "_client"]) {
+    it(`accepts a parameter named ${formerlyReserved}, which the generated method no longer uses`, async () => {
+      const { results, messages } = await params(
+        `@query ${formerlyReserved}?: string`,
+      );
+
+      strictEqual(messages.length, 0, formerlyReserved);
+      const builders = fileContent(results, "ItemsRequestBuilders.g.cs");
+      ok(
+        builders.includes(
+          `ActAsync(string? ${formerlyReserved} = null, CancellationToken cancellationToken = default)`,
+        ),
+      );
+      ok(
+        builders.includes(
+          `flurlRequest.SetQueryParam("${formerlyReserved}", ClientRuntime.ToQueryValue(${formerlyReserved}));`,
+        ),
+      );
     });
   }
 
@@ -228,7 +266,7 @@ describe("parameter names that collide", () => {
 
     strictEqual(messages.length, 0);
     ok(
-      fileContent(results, "IItems.g.cs").includes(
+      fileContent(results, "ItemsRequestBuilders.g.cs").includes(
         "string? foo = null, string? fooTwo = null",
       ),
     );
@@ -342,7 +380,10 @@ describe("endpoint names that collide with the aggregate client", () => {
 
       strictEqual(messages.length, 1);
       ok(messages[0].includes(`"${reserved}"`));
-      ok(!has(results, `I${reserved}.g.cs`), "The endpoint is not written");
+      ok(
+        !has(results, `${reserved}RequestBuilders.g.cs`),
+        "The endpoint is not written",
+      );
     });
   }
 
@@ -393,7 +434,7 @@ describe("internal-access-leak", () => {
       .toEmitDiagnostics({
         code: "@massivescale/tsp-flurl-client/internal-access-leak",
         message:
-          '"read" is a namespace-level operation, which is emitted as a public interface method, but its return type "Secret" is marked @access(Access.internal); the generated C# will fail to compile (CS0053: inconsistent accessibility). Mark "Secret" @access(Access.public), or move the operation into an interface marked @access(Access.internal).',
+          '"read" is a namespace-level operation, which is emitted as a public request builder method, but its return type "Secret" is marked @access(Access.internal); the generated C# will fail to compile (CS0053: inconsistent accessibility). Mark "Secret" @access(Access.public), or move the operation into an interface marked @access(Access.internal).',
       });
   });
 
@@ -409,7 +450,7 @@ describe("internal-access-leak", () => {
       .toEmitDiagnostics({
         code: "@massivescale/tsp-flurl-client/internal-access-leak",
         message:
-          '"write" is a namespace-level operation, which is emitted as a public interface method, but its parameter type "Secret" is marked @access(Access.internal); the generated C# will fail to compile (CS0053: inconsistent accessibility). Mark "Secret" @access(Access.public), or move the operation into an interface marked @access(Access.internal).',
+          '"write" is a namespace-level operation, which is emitted as a public request builder method, but its parameter type "Secret" is marked @access(Access.internal); the generated C# will fail to compile (CS0053: inconsistent accessibility). Mark "Secret" @access(Access.public), or move the operation into an interface marked @access(Access.internal).',
       });
   });
 
@@ -497,7 +538,7 @@ describe("generated output stays valid when names are chosen well", () => {
 
     ok(fileContent(results, "Thing.g.cs").includes("public string ThingName"));
     ok(
-      fileContent(results, "IThings.g.cs").includes(
+      fileContent(results, "ThingsRequestBuilders.g.cs").includes(
         "ReadAsync(string? body = null",
       ),
     );
@@ -510,24 +551,38 @@ describe("generated type names that collide with models", () => {
     return { results, messages: codes(diagnostics, "output-name-collision") };
   };
 
-  it("reports a model named like an endpoint client", async () => {
+  it("reports a model named like a request builder", async () => {
     const { messages } = await collisions(`${PREAMBLE}
-      model ItemsEndpoint { id: string; }
+      model ItemsRequestBuilder { id: string; }
 
-      @route("/items") interface Items { @get read(): ItemsEndpoint; }
+      @route("/items") interface Items { @get read(): ItemsRequestBuilder; }
     `);
 
-    ok(messages.some((m) => m.includes("ItemsEndpoint")));
+    ok(
+      messages.some(
+        (m) =>
+          m.includes("ItemsRequestBuilder") &&
+          m.includes("the ItemsRequestBuilder request builder"),
+      ),
+    );
   });
 
-  it("reports a model named like an endpoint interface", async () => {
+  it("reports a model named like an item request builder", async () => {
     const { messages } = await collisions(`${PREAMBLE}
-      model IItems { id: string; }
+      model ItemsItemRequestBuilder { id: string; }
 
-      @route("/items") interface Items { @get read(): IItems; }
+      @route("/items") interface Items {
+        @get read(@path id: string): ItemsItemRequestBuilder;
+      }
     `);
 
-    ok(messages.some((m) => m.includes("IItems")));
+    ok(
+      messages.some(
+        (m) =>
+          m.includes("ItemsItemRequestBuilder") &&
+          m.includes("the ItemsItemRequestBuilder request builder"),
+      ),
+    );
   });
 
   it("reports a model named like the aggregate client or its extensions class", async () => {
@@ -572,14 +627,14 @@ describe("generated type names that collide with models", () => {
 
       enum Versions { v1: "v1.0" }
 
-      model ItemsEndpoint { id: string; }
+      model ItemsRequestBuilder { id: string; }
 
-      @route("/items") interface Items { @get read(): ItemsEndpoint; }
+      @route("/items") interface Items { @get read(): ItemsRequestBuilder; }
     `,
       { "all-versions": true },
     );
 
-    ok(messages.some((m) => m.includes("ItemsEndpoint")));
+    ok(messages.some((m) => m.includes("ItemsRequestBuilder")));
   });
 
   it("accepts models whose names only resemble generated types", async () => {
@@ -618,7 +673,10 @@ describe("version values that become the same namespace", () => {
     const messages = codes(diagnostics, "name-collision");
     strictEqual(messages.length, 1);
     ok(messages[0].includes('"V1_0"'));
-    ok(has(results, "1.0/Endpoints/IItems.g.cs"));
-    ok(!has(results, "1_0/Endpoints/IItems.g.cs"), "The second is left out");
+    ok(has(results, "1.0/Endpoints/ItemsRequestBuilders.g.cs"));
+    ok(
+      !has(results, "1_0/Endpoints/ItemsRequestBuilders.g.cs"),
+      "The second is left out",
+    );
   });
 });

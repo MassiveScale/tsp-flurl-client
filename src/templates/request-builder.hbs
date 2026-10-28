@@ -1,0 +1,67 @@
+{{!--
+  request-builder.hbs — rendered once per request builder: a class that sends the
+  operations of one TypeSpec interface that share a set of path parameters. The
+  client creates it, e.g. `client.Pets()` or `client.Pets(id)`, and the path
+  parameters it was created with fill the route of every operation it sends.
+
+  Every builder derives from the `RequestBuilder<TBuilder>` helper, which adds
+  `AppendHeader`, `AppendQueryParameter`, `AppendCookie`, and `ConfigureRequest`.
+
+  Override via tspconfig.yaml:
+    options:
+      "@massivescale/tsp-flurl-client":
+        templates:
+          request-builder: "./templates/request-builder.hbs"
+
+  Template variables:
+
+  {{className}}     — C# class name, e.g. "PetsItemRequestBuilder"
+
+  {{groupName}}     — the endpoint group (the TypeSpec interface), e.g. "Pets"
+
+  {{access}}        — C# access modifier: "public" or "internal"
+
+  {{doc}}           — optional XML <summary> text (pre-escaped; may be falsy)
+
+  {{clientParam}}   — the constructor's Flurl client parameter, e.g. "flurlClient"
+
+  {{fields}}        — the path parameters the builder holds, in order. Each has:
+    .type           —   C# type, e.g. "string"
+    .field          —   field name, e.g. "_storeId"
+    .param          —   constructor parameter name as written in C#, e.g. "storeId" or "@await"
+    .docParam       —   the same name in XML documentation, never escaped
+    .doc            —   the parameter's documentation (pre-escaped)
+
+  {{methodsBlock}}  — pre-rendered string containing all method implementations,
+                      each indented with 4 spaces and separated by blank lines.
+
+  The generated methods read the path parameters as `this.{field}`, and rely on
+  the `Client` property and `ApplyModifiers` method of the base class and on the
+  internal `ClientRuntime` helper emitted alongside the models.
+
+  Built-in helpers:
+
+  {{indent <text>}}  — prefixes every non-empty line of <text> with 4 spaces
+
+--}}
+/// <summary>
+{{#if doc}}/// {{docLines doc "/// "}}
+{{else}}/// Sends the requests of the <c>{{groupName}}</c> endpoint group.
+{{/if}}/// </summary>
+{{access}} sealed class {{className}} : RequestBuilder<{{className}}>
+{
+{{#each fields}}    private readonly {{type}} {{field}};
+{{/each}}{{#if fields.length}}
+{{/if}}    /// <summary>
+    /// Initializes a new instance of <see cref="{{className}}"/>.
+    /// </summary>
+    /// <param name="{{clientParam}}">The Flurl client requests are sent through.</param>
+{{#each fields}}    /// <param name="{{docParam}}">{{doc}}</param>
+{{/each}}    internal {{className}}(IFlurlClient {{clientParam}}{{#each fields}}, {{type}} {{param}}{{/each}})
+        : base({{clientParam}})
+    {
+{{#each fields}}        this.{{field}} = {{param}};
+{{/each}}    }
+
+{{{methodsBlock}}}
+}

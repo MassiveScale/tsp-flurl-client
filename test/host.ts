@@ -69,7 +69,7 @@ export async function emit(
  * failing loudly when it is missing so a test never asserts against `undefined`.
  *
  * @param outputs - The emitter outputs keyed by path.
- * @param suffix - File name (or path tail) to look for, e.g. `IWidgets.g.cs`.
+ * @param suffix - File name (or path tail) to look for, e.g. `WidgetsRequestBuilders.g.cs`.
  * @returns The file content.
  */
 export function fileContent(

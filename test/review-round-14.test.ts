@@ -40,7 +40,11 @@ describe("XML documentation", () => {
       }
     `);
 
-    for (const file of ["IWidgets.g.cs", "Widget.g.cs", "Color.g.cs"]) {
+    for (const file of [
+      "WidgetsRequestBuilders.g.cs",
+      "Widget.g.cs",
+      "Color.g.cs",
+    ]) {
       const content = fileContent(results, file);
       ok(content.includes(ESCAPED), `${file} escapes its docs`);
       ok(!content.includes("A & B"), `${file} has no raw &`);
@@ -98,7 +102,7 @@ describe("unsupported encodings anywhere in a payload", () => {
           m.includes('"M.value"'),
         ),
       );
-      const iface = fileContent(results, "IThings.g.cs");
+      const iface = fileContent(results, "ThingsRequestBuilders.g.cs");
       ok(iface.includes("OkAsync"));
       strictEqual((iface.match(/Task.*Async\(/g) ?? []).length, 1, iface);
     });
@@ -114,7 +118,9 @@ describe("unsupported encodings anywhere in a payload", () => {
       }
     `);
 
-    ok(!fileContent(results, "IThings.g.cs").includes("ReadAsync"));
+    ok(
+      !fileContent(results, "ThingsRequestBuilders.g.cs").includes("ReadAsync"),
+    );
   });
 });
 
@@ -130,7 +136,7 @@ describe("unions emitted as JsonElement", () => {
     `);
 
     ok(
-      fileContent(results, "IUnions.g.cs").includes(
+      fileContent(results, "UnionsRequestBuilders.g.cs").includes(
         "Task<JsonElement> ReadAsync(",
       ),
     );
@@ -158,7 +164,7 @@ describe("encodings on nullable properties", () => {
       ),
     );
     ok(
-      fileContent(results, "IThings.g.cs").includes(
+      fileContent(results, "ThingsRequestBuilders.g.cs").includes(
         "UpdateAsync(IMergePatch<Thing> body,",
       ),
     );

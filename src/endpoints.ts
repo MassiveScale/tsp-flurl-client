@@ -1,8 +1,9 @@
-// Endpoint generation: turns each TypeSpec operation container into a C# endpoint
-// `interface` plus a Flurl-backed implementation class, resolves route paths and
-// parameter bindings, derives the generic overloads that let callers choose a
-// custom response model, and collects the visibility-filtered request payload
-// types referenced by write operations (rendered as records by ./models.ts).
+// Endpoint generation: turns each TypeSpec operation container into Flurl-backed
+// request builders, one per set of path parameters its operations take, resolves
+// route paths and parameter bindings, derives the generic overloads that let
+// callers choose a custom response model, and collects the visibility-filtered
+// request payload types referenced by write operations (rendered as records by
+// ./models.ts).
 
 import { fx } from "./framework.js";
 import {
@@ -31,8 +32,8 @@ import { getMergePatchSource } from "@typespec/http/experimental/merge-patch";
 import type { Version } from "@typespec/versioning";
 import {
   Renderer,
-  EndpointInterfaceView,
-  EndpointClientView,
+  BuilderParamView,
+  ClientBuilderEntry,
   MethodView,
   BodyView,
   ResponseView,
@@ -86,6 +87,7 @@ import {
   reportValueTemplate,
   valueTemplateParameter,
   isCsValueType,
+  csValueTypeNames,
   hierarchyOf,
 } from "./models.js";
 
@@ -166,12 +168,41 @@ export function requestSubstitute(
       : undefined;
 }
 
-/** The two C# source files generated for one operation container. */
-export interface EndpointSources {
-  /** Source of the endpoint interface file (e.g. `IWidgets.g.cs`). */
-  interfaceSource: string;
-  /** Source of the endpoint implementation file (e.g. `WidgetsEndpoint.g.cs`). */
-  clientSource: string;
+/** What one operation container generates: its request builders, and how the client creates them. */
+export interface EndpointBuild {
+  /** Source of the file declaring every request builder of the container (e.g. `PetsRequestBuilders.g.cs`). */
+  source: string;
+  /** The client methods that create the builders, in order. */
+  builders: ClientBuilderEntry[];
+}
+
+/**
+ * A path parameter of one operation. It becomes a field of the request builder the
+ * operation is grouped into, and a parameter of the client method that creates it.
+ */
+interface PathBinding {
+  /** The parameter's name in the route template. */
+  name: string;
+  /** C# type, nullable when the parameter is optional. */
+  csType: string;
+  /** C# parameter name, verbatim-escaped when needed, e.g. `"@await"`. */
+  csParam: string;
+  /** The same name, never escaped, e.g. `"await"`. */
+  docName: string;
+  /** The format the runtime applies before the value is written, from its `@encode`. */
+  wire: WireEncoding | undefined;
+  /** The parameter's documentation (pre-escaped), if any. */
+  doc: string | undefined;
+}
+
+/** How an operation's route is filled in: its template and the path parameters that fill it. */
+interface PathShape {
+  /** The route template, with the route prefix applied. */
+  rawPath: string;
+  /** The route-template names of the path parameters declared with `allowReserved`. */
+  reserved: ReadonlySet<string>;
+  /** The path parameters, in declaration order. */
+  params: PathBinding[];
 }
 
 /**
@@ -544,15 +575,20 @@ export function buildRouteExpression(
 }
 
 /**
- * Renders the endpoint interface and its Flurl implementation for one operation
- * container, turning each operation into a method.
+ * Renders the request builders for one operation container. Its operations are
+ * grouped by the path parameters they take, and each group becomes a builder the
+ * client creates with those parameters: `client.Pets()` for the operations that
+ * take none, `client.Pets(id)` for those that take an `id`. Two groups whose
+ * parameters have the same C# types (`lookup/{kind}/{id}` and
+ * `reserved/{path}/items/{id}`) would make the client's two methods the same
+ * overload, so they share one builder, whose parameters are named after the first
+ * operation that takes them.
  *
- * @param csName - Interface name (e.g. `IPets`).
- * @param csClientName - Implementation class name (e.g. `PetsEndpoint`).
- * @param csNs - C# namespace the files are emitted into.
+ * @param groupName - The endpoint group's name, from the interface (e.g. `Pets`).
+ * @param csNs - C# namespace the file is emitted into.
  * @param ops - The HTTP operations to render as methods.
- * @param doc - Optional doc comment for the interface.
- * @param access - C# access modifier of the interface (`public` / `internal`).
+ * @param doc - Optional doc comment for the builders.
+ * @param access - C# access modifier of the builders (`public` / `internal`).
  * @param program - The compiler program.
  * @param models - Accumulator for referenced named models (see {@link mapType}).
  * @param enums - Accumulator for referenced named enums (see {@link mapType}).
@@ -565,11 +601,14 @@ export function buildRouteExpression(
  * @param additionalUsings - Extra `using` directives from the `additional-usings`
  *   option, appended to every emitted file regardless of whether this particular
  *   file references anything from them (see `EmitterOptions["additional-usings"]`).
- * @returns The C# source of the interface file and of the implementation file.
+ * @param claimTypeName - Reserves a builder's class name among the generated types,
+ *   returning `false` (after reporting) when another type already has it; that
+ *   builder and its operations are then left out.
+ * @returns The file source and the client methods, or `undefined` when no operation
+ *   could be generated.
  */
 export function buildEndpoint(
-  csName: string,
-  csClientName: string,
+  groupName: string,
   csNs: string,
   ops: HttpOperation[],
   doc: string | undefined,
@@ -583,18 +622,24 @@ export function buildEndpoint(
   renderer: Renderer,
   rawRoutePrefix: string,
   additionalUsings: Set<string>,
-): EndpointSources {
+  claimTypeName: (name: string) => boolean,
+): EndpointBuild | undefined {
   const routePrefix = resolveRoutePrefix(rawRoutePrefix, version);
   // `read` and `Read` both become `ReadAsync`, which C# would reject as a duplicate
-  // member (or an ambiguous overload), so the second is reported and left out.
-  const methodScope = new MemberScope(program, "method", `interface ${csName}`);
+  // member (or an ambiguous overload) when both land on one builder, so the second
+  // is reported and left out.
+  const methodScope = new MemberScope(
+    program,
+    "method",
+    `endpoint group ${groupName}`,
+  );
   const built = ops.flatMap((op) => {
     // An operation whose name is not a valid C# identifier is reported and left
     // out, rather than rendered as a method that cannot compile.
     const declaredName =
       getClientName(program, op.operation) ?? op.operation.name;
     if (!checkName(program, "operation", declaredName, op.operation)) return [];
-    const view = buildMethodView(
+    const result = buildMethodView(
       op,
       program,
       models,
@@ -604,17 +649,17 @@ export function buildEndpoint(
       requestTypes,
       routePrefix,
     );
-    if (!view) return [];
+    if (!result) return [];
     if (
       !methodScope.claim(
-        view.methodName,
+        result.view.methodName,
         `operation "${op.operation.name}"`,
         op.operation,
       )
     ) {
       return [];
     }
-    return [{ op, view }];
+    return [{ op, ...result }];
   });
   // Wrapper names are claimed only after every operation has its own, so adding
   // pagination to `list` can never push out a separately declared `listAll`: the
@@ -633,44 +678,50 @@ export function buildEndpoint(
     }
     memberNames.add(view.paging.methodName);
   }
-  const methods = built.map(({ view }) => view);
 
-  const pagingMethods = methods
-    .map((m) => m.paging)
-    .filter((p): p is PagingMethodView => p !== undefined);
+  // Every type a path parameter maps to has been mapped by now, so every enum it
+  // can name is known.
+  const valueTypes = csValueTypeNames();
+  for (const e of enums.values()) {
+    valueTypes.add(getClientName(program, e) ?? e.name);
+  }
+  let items = 0;
+  const builderViews = groupByPathTypes(built, valueTypes).flatMap((group) => {
+    const className = builderClassName(
+      groupName,
+      group.types.length === 0 ? 0 : ++items,
+    );
+    if (!claimTypeName(className)) return [];
+    const first = group.members[0].path.params;
+    const fields: BuilderParamView[] = first.map((p, i) => ({
+      type: group.types[i],
+      field: `_${p.docName}`,
+      param: p.csParam,
+      docParam: p.docName,
+      doc: p.doc
+        ? p.doc.split("\n").join(" ")
+        : `The <c>${p.docName}</c> path parameter.`,
+    }));
+    const methods = group.members.map(({ view, path }) => {
+      const values = new Map(
+        path.params.map((p, i) => {
+          const field = `this.${fields[i].field}`;
+          return [p.name, p.wire ? encodeExpression(field, p.wire) : field];
+        }),
+      );
+      view.route = buildRouteExpression(path.rawPath, values, path.reserved);
+      return view;
+    });
+    const taken = new Set(fields.map((f) => f.docParam));
+    let clientParam = "flurlClient";
+    for (let n = 2; taken.has(clientParam); n++)
+      clientParam = `flurlClient${n}`;
+    return [{ className, fields, methods, clientParam }];
+  });
+  if (builderViews.length === 0) return undefined;
 
-  const interfaceView: EndpointInterfaceView = {
-    interfaceName: csName,
-    doc,
-    access,
-    methods,
-    pagingMethods,
-  };
-  const interfaceFile: FileView = {
-    namespace: csNs,
-    usings: sortUsings([
-      ...new Set([
-        "System.Collections.Generic",
-        "System.Text.Json",
-        "System.Threading",
-        "System.Threading.Tasks",
-        ...(pagingMethods.length > 0
-          ? ["System.Runtime.CompilerServices"]
-          : []),
-        ...additionalUsings,
-      ]),
-    ]),
-    body: renderer.renderEndpointInterface(interfaceView),
-    fileName: `${csName}.g.cs`,
-  };
-
-  const clientView: EndpointClientView = {
-    className: csClientName,
-    interfaceName: csName,
-    methods,
-    pagingMethods,
-  };
-  const clientFile: FileView = {
+  const paging = builderViews.some((b) => b.methods.some((m) => m.paging));
+  const file: FileView = {
     namespace: csNs,
     usings: sortUsings([
       ...new Set([
@@ -682,20 +733,127 @@ export function buildEndpoint(
         "System.Text.Json",
         "System.Threading",
         "System.Threading.Tasks",
-        ...(pagingMethods.length > 0
-          ? ["System.Runtime.CompilerServices"]
-          : []),
+        ...(paging ? ["System.Runtime.CompilerServices"] : []),
         ...additionalUsings,
       ]),
     ]),
-    body: renderer.renderEndpointClient(clientView),
-    fileName: `${csClientName}.g.cs`,
+    body: builderViews
+      .map((b) =>
+        renderer.renderRequestBuilder({
+          className: b.className,
+          groupName,
+          doc,
+          access,
+          clientParam: b.clientParam,
+          fields: b.fields,
+          methods: b.methods,
+        }),
+      )
+      .join("\n"),
+    fileName: `${groupName}RequestBuilders.g.cs`,
   };
 
   return {
-    interfaceSource: renderer.renderFile(interfaceFile),
-    clientSource: renderer.renderFile(clientFile),
+    source: renderer.renderFile(file),
+    builders: builderViews.map((b) => ({
+      groupName,
+      methodName: groupName,
+      className: b.className,
+      access,
+      params: b.fields,
+    })),
   };
+}
+
+/**
+ * The class name of a request builder: `PetsRequestBuilder` for the operations that
+ * take no path parameters, then `PetsItemRequestBuilder`, `PetsItem2RequestBuilder`,
+ * ... for each further set, fewest parameters first.
+ *
+ * @param groupName - The endpoint group's name, e.g. `Pets`.
+ * @param item - 0 for the builder without path parameters, otherwise its 1-based
+ *   position among the builders that take some.
+ * @returns The class name.
+ */
+export function builderClassName(groupName: string, item: number): string {
+  const suffix = item === 0 ? "" : item === 1 ? "Item" : `Item${item}`;
+  return `${groupName}${suffix}RequestBuilder`;
+}
+
+/**
+ * Groups operations by the types of their path parameters, in order, as the CLR
+ * sees them (see {@link clrIdentity}): two client methods whose parameters differ
+ * only in reference-type nullability (`string id` and `string? id`, `List<Item>`
+ * and `List<Item?>`) would be one overload, so they share a group. The group's
+ * types carry every `?` any of its operations has. The group without path
+ * parameters comes first, then the others by how many they take, then by where
+ * their first operation is declared.
+ *
+ * @param built - The operations, in declaration order.
+ * @param valueTypes - The value types the C# can name, as written (see {@link clrIdentity}).
+ * @returns The groups, each with the types its operations share.
+ */
+function groupByPathTypes<T extends { path: PathShape }>(
+  built: T[],
+  valueTypes: ReadonlySet<string>,
+): { types: string[]; members: T[] }[] {
+  const groups = new Map<string, { types: string[]; members: T[] }>();
+  for (const item of built) {
+    const types = item.path.params.map((p) => p.csType);
+    const key = JSON.stringify(types.map((t) => clrIdentity(t, valueTypes)));
+    const group = groups.get(key);
+    if (group) {
+      group.types = group.types.map((t, i) => unionNullability(t, types[i]));
+      group.members.push(item);
+    } else {
+      groups.set(key, { types, members: [item] });
+    }
+  }
+  // Array.prototype.sort is stable, so groups of one size keep declaration order.
+  return [...groups.values()].sort((a, b) => a.types.length - b.types.length);
+}
+
+/**
+ * A C# type as the CLR sees it: the `?` of every nullable reference type removed,
+ * at any depth, since it is only an annotation. The `?` of a value type stays,
+ * since `int?` is `Nullable<int>`, a different type. A `?` after a generic type
+ * argument list or an array is a reference type's.
+ *
+ * @param csType - The C# type, as written.
+ * @param valueTypes - The value types it can name, as written: the framework's
+ *   (`int`, `global::System.Guid` when a model hides `Guid`) and the generated enums.
+ * @returns The type without its reference-type annotations.
+ */
+function clrIdentity(csType: string, valueTypes: ReadonlySet<string>): string {
+  return csType.replace(/([\w.:]+|[>\]])\?/g, (match, before: string) =>
+    valueTypes.has(before) ? match : before,
+  );
+}
+
+/**
+ * Combines two spellings of one CLR type into the one that allows null wherever
+ * either does: `List<Item>` and `List<Item?>` give `List<Item?>`.
+ *
+ * @param a - One spelling.
+ * @param b - The other, equal to `a` but for `?` annotations.
+ * @returns The spelling with every `?` of both.
+ */
+function unionNullability(a: string, b: string): string {
+  let result = "";
+  let i = 0;
+  let j = 0;
+  while (i < a.length || j < b.length) {
+    if (a[i] === b[j]) {
+      result += a[i];
+      i++;
+      j++;
+    } else if (a[i] === "?") {
+      result += a[i++];
+    } else {
+      result += b[j++];
+    }
+  }
+  return result;
 }
 
 /**
@@ -713,11 +871,12 @@ function isDateTime(type: Type): boolean {
 }
 
 /**
- * Builds the renderer view for a single endpoint method: HTTP verb, route,
- * parameter bindings, body and response handling, and the generic overload when
- * the response holds a customizable model. Parameters are ordered required first,
- * then optional, then an `additionalQueryParameters` bag and a trailing
- * `CancellationToken`. A write body whose model has hidden properties is swapped
+ * Builds the renderer view for a single endpoint method: HTTP verb, parameter
+ * bindings, body and response handling, and the generic overload when the response
+ * holds a customizable model. Parameters are ordered required first, then optional,
+ * then a trailing `CancellationToken`. Path parameters are not among them: they are
+ * returned separately, since the request builder holds them and fills in the route
+ * (see `buildEndpoint`). A write body whose model has hidden properties is swapped
  * for a synthesized request type, which is registered into `requestTypes`.
  *
  * @param op - The HTTP operation to render.
@@ -728,9 +887,10 @@ function isDateTime(type: Type): boolean {
  * @param version - The API version being emitted, or `undefined` when unversioned.
  * @param requestTypes - Accumulator for synthesized request payload types.
  * @param routePrefix - The already-resolved route prefix for this version.
- * @returns The {@link MethodView} for the operation, or `undefined` when the
- *   operation uses something this emitter cannot send or read correctly (it is
- *   reported, and left out, rather than generated with the wrong behaviour).
+ * @returns The {@link MethodView} for the operation, whose `route` is filled in once
+ *   the builder is known, with the path it takes; or `undefined` when the operation
+ *   uses something this emitter cannot send or read correctly (it is reported, and
+ *   left out, rather than generated with the wrong behaviour).
  */
 function buildMethodView(
   op: HttpOperation,
@@ -741,7 +901,7 @@ function buildMethodView(
   version: Version | undefined,
   requestTypes: Map<string, RequestType>,
   routePrefix: string,
-): MethodView | undefined {
+): { view: MethodView; path: PathShape } | undefined {
   const unsupported = findUnsupportedPayload(op, program);
   if (unsupported) {
     reportOnce(
@@ -787,24 +947,20 @@ function buildMethodView(
   const queryParams: QueryParamView[] = [];
   const headerParams: HeaderParamView[] = [];
   const cookieParams: CookieParamView[] = [];
-  const pathParams = new Map<string, string>();
+  const pathParams: PathBinding[] = [];
   const reservedPaths = new Set<string>();
 
   // Parameter names must be unique, and must not collide with the parameters every
-  // method adds or the locals and fields its generated body uses.
+  // method adds or the locals its generated body uses. The builder's fields are
+  // always read through `this.`, so a parameter cannot hide them.
   const paramScope = new MemberScope(
     program,
     "parameter",
     `operation ${baseMethodName}`,
     [
-      [
-        "additionalQueryParameters",
-        "the extra query parameters every method accepts",
-      ],
       ["cancellationToken", "the cancellation token every method accepts"],
       ["flurlRequest", "a local variable of the generated method"],
       ["flurlResponse", "a local variable of the generated method"],
-      ["_client", "the client field"],
       ...(op.parameters.body
         ? [["body", "the request body parameter"] as [string, string]]
         : []),
@@ -895,8 +1051,17 @@ function buildMethodView(
     } else if (param.type === "cookie") {
       cookieParams.push({ name: param.name, variable: csParam, value, guard });
     } else if (param.type === "path") {
-      pathParams.set(param.name, value ?? csParam);
+      // The request builder holds it, so it is not a parameter of the method.
+      pathParams.push({
+        name: param.name,
+        csType: `${csType}${nullableSuffix}`,
+        csParam,
+        docName: toCsParamName(paramName),
+        wire,
+        doc: docText(program, param.param),
+      });
       if (param.allowReserved) reservedPaths.add(param.name);
+      continue;
     }
 
     (isOptional ? optionalParams : requiredParams).push({
@@ -1032,10 +1197,6 @@ function buildMethodView(
     ...requiredParams,
     ...optionalParams,
     {
-      decl: `${fx("Dictionary", "generic")}<string, object>? additionalQueryParameters = null`,
-      name: "additionalQueryParameters",
-    },
-    {
       decl: `${fx("CancellationToken")} cancellationToken = default`,
       name: "cancellationToken",
     },
@@ -1058,7 +1219,7 @@ function buildMethodView(
     pageBodyModel(op.responses),
   );
 
-  return {
+  const view: MethodView = {
     doc,
     methodName,
     returnType: response
@@ -1077,13 +1238,17 @@ function buildMethodView(
     },
     argsText: allParams.map((p) => p.name).join(", "),
     httpMethod: capitalize(op.verb),
-    route: buildRouteExpression(rawPath, pathParams, reservedPaths),
+    route: "",
     queryParams,
     headerParams,
     cookieParams,
     body,
     response: response?.view,
     generic: response?.generic,
+  };
+  return {
+    view,
+    path: { rawPath, reserved: reservedPaths, params: pathParams },
   };
 }
 
@@ -1252,7 +1417,7 @@ function recordProperty(
  * @param pageNullable - Whether the raw method can return `null` instead of a page,
  *   as it does for a declared bodyless success (`PagedResult<Store> | void`).
  * @param headerParams - The raw method's header bindings, replayed on every
- *   `nextLink` continuation request (which goes through `_client` directly,
+ *   `nextLink` continuation request (which goes through `Client` directly,
  *   not the raw method, so none of its own bindings would otherwise apply).
  * @param cookieParams - The raw method's cookie bindings, replayed the same way.
  * @param pageModel - The model the success responses carry as their body (see {@link pageBodyModel}).
@@ -1362,12 +1527,8 @@ function buildPagingMethodView(
   const forwardParams = allParams.slice(0, -1);
   const commonDecls = forwardParams.map((p) => p.decl);
   const methodName = toCsPagingMethodName(baseMethodName);
-  // The trailing CancellationToken is deliberately left off here: the interface
-  // declaration and the client implementation need different forms of it (see
-  // renderPagingInterfaceMethod / renderPagingClientMethod) — an
-  // [EnumeratorCancellation] attribute has no effect on an interface member,
-  // since it isn't itself an iterator method, and the compiler warns (CS8424)
-  // if it's there anyway.
+  // The trailing CancellationToken is deliberately left off here: the wrapper
+  // declares its own, with [EnumeratorCancellation] (see renderPagingClientMethod).
   const paramsText = commonDecls.join(", ");
 
   // Every local identifier the generated loop body introduces must avoid
@@ -1422,8 +1583,8 @@ function buildPagingMethodView(
     const nextLinkCsType = withoutNullable(
       mapPropertyType(nextLinkProp, program, models, enums, usedHelpers),
     );
-    // The link is resolved with `new Uri(baseUri, link)`, which takes a string or a
-    // Uri; a link formatted as anything else (`@format("uuid")`) cannot be followed.
+    // The link is handed to Flurl as text, from a string or a Uri; a link formatted
+    // as anything else (`@format("uuid")`) cannot be followed.
     if (nextLinkCsType !== "string" && nextLinkCsType !== fx("Uri")) {
       reportUnsupportedPaging(
         program,
@@ -1432,32 +1593,16 @@ function buildPagingMethodView(
       );
       return undefined;
     }
-    // The builder takes everything that shapes the request but the body, which is
-    // attached when it is sent.
-    const builderParams = forwardParams.filter((p) => p.name !== "body");
-    // The wrapper sends the first page with the raw method's own local names.
-    taken.add("flurlRequest");
-    taken.add("flurlResponse");
     return {
       ...base,
       strategy: "nextLink",
-      requestBuilder: {
-        name: `${rawMethodName.replace(/Async$/, "")}Request`,
-        paramsText: builderParams.map((p) => p.decl).join(", "),
-        argsText: builderParams.map((p) => p.name).join(", "),
-      },
-      pageUriVarName: uniqueLocalName("pageUri", taken),
       argsText: [...forwardParams.map((p) => p.name), "cancellationToken"].join(
         ", ",
       ),
       nextLinkPropertyName,
       nextLinkIsString: nextLinkCsType === "string",
       nextLinkVarName: uniqueLocalName("nextLink", taken),
-      baseUriVarName: uniqueLocalName("baseUri", taken),
-      nextUriVarName: uniqueLocalName("nextUri", taken),
       nextRequestVarName: uniqueLocalName("nextRequest", taken),
-      nextResponseVarName: uniqueLocalName("nextResponse", taken),
-      redirectsVarName: uniqueLocalName("redirects", taken),
       nextPageVarName: uniqueLocalName("nextPage", taken),
       headerParams,
       cookieParams,

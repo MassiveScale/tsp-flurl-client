@@ -85,7 +85,7 @@ describe("parameter binding", () => {
       }
     `);
 
-    const client = fileContent(results, "ItemsEndpoint.g.cs");
+    const client = fileContent(results, "ItemsRequestBuilders.g.cs");
     ok(
       client.includes(
         'flurlRequest.SetQueryParam("page-size", ClientRuntime.ToQueryValue(pageSize));',
@@ -107,7 +107,7 @@ describe("parameter binding", () => {
     `);
 
     ok(
-      fileContent(results, "ItemsEndpoint.g.cs").includes(
+      fileContent(results, "ItemsRequestBuilders.g.cs").includes(
         'if (trace is not null) flurlRequest.WithHeader("X-Trace", ClientRuntime.ToWireString(trace));',
       ),
     );
@@ -127,7 +127,7 @@ describe("parameter binding", () => {
       }
     `);
 
-    const client = fileContent(results, "ItemsEndpoint.g.cs");
+    const client = fileContent(results, "ItemsRequestBuilders.g.cs");
     ok(
       client.includes(
         'flurlRequest.WithHeader("if-modified-since", ClientRuntime.ToWireString(ClientRuntime.Encode(ifModifiedSince, ClientRuntime.WireEncoding.Rfc7231)));',
@@ -161,10 +161,10 @@ describe("parameter binding", () => {
       }
     `);
 
-    const client = fileContent(results, "ItemsEndpoint.g.cs");
+    const client = fileContent(results, "ItemsRequestBuilders.g.cs");
     ok(
       client.includes(
-        'AppendPathSegment($"api/stores/{ClientRuntime.EscapePathSegment(storeId)}/items/{ClientRuntime.EscapePathSegment(itemId)}")',
+        'AppendPathSegment($"api/stores/{ClientRuntime.EscapePathSegment(this._storeId)}/items/{ClientRuntime.EscapePathSegment(this._itemId)}")',
       ),
     );
   });
@@ -179,22 +179,22 @@ describe("parameter binding", () => {
       }
     `);
 
-    const client = fileContent(results, "FilesEndpoint.g.cs");
+    const client = fileContent(results, "FilesRequestBuilders.g.cs");
     ok(
       client.includes(
-        'AppendPathSegment($"api/files/{ClientRuntime.EscapeReservedPath(path)}/{ClientRuntime.EscapePathSegment(id)}")',
+        'AppendPathSegment($"api/files/{ClientRuntime.EscapeReservedPath(this._path)}/{ClientRuntime.EscapePathSegment(this._id)}")',
       ),
       client,
     );
     ok(
       client.includes(
-        "{ClientRuntime.EscapeReservedPath(ClientRuntime.Encode(wait, ClientRuntime.WireEncoding.WholeSeconds))}",
+        "{ClientRuntime.EscapeReservedPath(ClientRuntime.Encode(this._wait, ClientRuntime.WireEncoding.WholeSeconds))}",
       ),
       "An encoded allowReserved value is encoded before its segments are escaped",
     );
     ok(
       client.includes(
-        'AppendPathSegment($"api/files/raw/{ClientRuntime.EscapeReservedPath(rest)}")',
+        'AppendPathSegment($"api/files/raw/{ClientRuntime.EscapeReservedPath(this._rest)}")',
       ),
       "The URI template's + operator asks for reserved characters too",
     );
@@ -208,11 +208,11 @@ describe("parameter binding", () => {
       }
     `);
 
-    const iface = fileContent(results, "IItems.g.cs");
+    const iface = fileContent(results, "ItemsRequestBuilders.g.cs");
     ok(iface.includes("string? @params = null"));
     ok(iface.includes("string? @event = null"));
     ok(
-      fileContent(results, "ItemsEndpoint.g.cs").includes(
+      fileContent(results, "ItemsRequestBuilders.g.cs").includes(
         "ClientRuntime.ToQueryValue(@params)",
       ),
     );
@@ -226,7 +226,7 @@ describe("parameter binding", () => {
       }
     `);
 
-    const iface = fileContent(results, "IFiles.g.cs");
+    const iface = fileContent(results, "FilesRequestBuilders.g.cs");
     ok(iface.includes("UploadAsync(byte[] body,"));
     doesNotMatch(iface, /contentType/);
   });
@@ -246,7 +246,7 @@ describe("parameter binding", () => {
       }
     `);
 
-    const client = fileContent(results, "ItemsEndpoint.g.cs");
+    const client = fileContent(results, "ItemsRequestBuilders.g.cs");
     for (const verb of ["Get", "Post", "Put", "Patch", "Delete", "Head"]) {
       ok(client.includes(`HttpMethod.${verb}`), `Expected HttpMethod.${verb}`);
     }
@@ -265,7 +265,7 @@ describe("payload kinds", () => {
     `);
 
     ok(
-      fileContent(results, "ItemsEndpoint.g.cs").includes(
+      fileContent(results, "ItemsRequestBuilders.g.cs").includes(
         "SendJsonAsync(HttpMethod.Post, body,",
       ),
     );
@@ -280,7 +280,7 @@ describe("payload kinds", () => {
     `);
 
     ok(
-      fileContent(results, "FilesEndpoint.g.cs").includes(
+      fileContent(results, "FilesRequestBuilders.g.cs").includes(
         'ClientRuntime.BytesContent(body, "application/octet-stream")',
       ),
     );
@@ -295,7 +295,7 @@ describe("payload kinds", () => {
     `);
 
     ok(
-      fileContent(results, "NotesEndpoint.g.cs").includes(
+      fileContent(results, "NotesRequestBuilders.g.cs").includes(
         'ClientRuntime.TextContent(ClientRuntime.ToWireString(body), "text/plain")',
       ),
     );
@@ -310,7 +310,7 @@ describe("payload kinds", () => {
     `);
 
     ok(
-      fileContent(results, "NotesEndpoint.g.cs").includes(
+      fileContent(results, "NotesRequestBuilders.g.cs").includes(
         'ClientRuntime.TextContent(ClientRuntime.ToWireString(body), "text/plain")',
       ),
     );
@@ -325,7 +325,7 @@ describe("payload kinds", () => {
     `);
 
     ok(
-      fileContent(results, "NotesEndpoint.g.cs").includes(
+      fileContent(results, "NotesRequestBuilders.g.cs").includes(
         "SendJsonAsync(HttpMethod.Post, body,",
       ),
     );
@@ -348,7 +348,7 @@ describe("payload kinds", () => {
     strictEqual(messages.length, 1);
     ok(messages[0].includes("application/xml"));
     ok(messages[0].includes('"create"'));
-    const client = fileContent(results, "ItemsEndpoint.g.cs");
+    const client = fileContent(results, "ItemsRequestBuilders.g.cs");
     ok(!client.includes("CreateAsync"), "The operation is left out");
     ok(client.includes("ListAsync"), "The rest of the client is generated");
   });
@@ -361,7 +361,7 @@ describe("payload kinds", () => {
       }
     `);
 
-    const client = fileContent(results, "FilesEndpoint.g.cs");
+    const client = fileContent(results, "FilesRequestBuilders.g.cs");
     ok(client.includes("public async Task<byte[]> DownloadAsync("));
     ok(client.includes("GetBytesAsync()"));
   });
@@ -374,7 +374,7 @@ describe("payload kinds", () => {
       }
     `);
 
-    const client = fileContent(results, "NotesEndpoint.g.cs");
+    const client = fileContent(results, "NotesRequestBuilders.g.cs");
     ok(client.includes("public async Task<string> ReadAsync("));
     ok(client.includes("GetStringAsync()"));
   });
@@ -387,7 +387,7 @@ describe("payload kinds", () => {
       }
     `);
 
-    const client = fileContent(results, "ItemsEndpoint.g.cs");
+    const client = fileContent(results, "ItemsRequestBuilders.g.cs");
     ok(client.includes("public async Task RemoveAsync("));
     doesNotMatch(client, /GetJsonAsync|GetBytesAsync|GetStringAsync/);
   });
@@ -405,7 +405,7 @@ describe("response selection", () => {
       }
     `);
 
-    const iface = fileContent(results, "IItems.g.cs");
+    const iface = fileContent(results, "ItemsRequestBuilders.g.cs");
     ok(iface.includes("Task<Item> ReadAsync("));
     ok(
       !iface.includes("Task<Missing>"),
@@ -423,12 +423,16 @@ describe("response selection", () => {
       }
     `);
 
-    ok(fileContent(results, "IItems.g.cs").includes("Task<Item> ReadAsync("));
+    ok(
+      fileContent(results, "ItemsRequestBuilders.g.cs").includes(
+        "Task<Item> ReadAsync(",
+      ),
+    );
   });
 });
 
 describe("access", () => {
-  it("keeps the implementation internal whatever the interface access", async () => {
+  it("keeps the builder's constructor internal whatever the builder's access", async () => {
     const results = await emit(`${PREAMBLE}
       @route("/items")
       interface Items {
@@ -436,11 +440,17 @@ describe("access", () => {
       }
     `);
 
+    const builders = fileContent(results, "ItemsRequestBuilders.g.cs");
     ok(
-      fileContent(results, "ItemsEndpoint.g.cs").includes(
-        "internal sealed class ItemsEndpoint : IItems",
+      builders.includes(
+        "public sealed class ItemsRequestBuilder : RequestBuilder<ItemsRequestBuilder>",
       ),
     );
-    ok(fileContent(results, "IItems.g.cs").includes("public interface IItems"));
+    ok(
+      builders.includes(
+        "    internal ItemsRequestBuilder(IFlurlClient flurlClient)",
+      ),
+      "Only the client creates builders",
+    );
   });
 });

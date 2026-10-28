@@ -147,21 +147,6 @@ internal static class ClientRuntime
         string.Join("/", ToWireString(value).Split('/').Select(Uri.EscapeDataString));
 
     /// <summary>
-    /// Adds caller-supplied query parameters that are not part of the API contract.
-    /// </summary>
-    /// <param name="request">The request to add them to.</param>
-    /// <param name="parameters">The extra parameters; <see langword="null"/> adds nothing.</param>
-    internal static void AddQueryParameters(IFlurlRequest request, Dictionary<string, object>? parameters)
-    {
-        if (parameters is null) return;
-
-        foreach (var (name, value) in parameters)
-        {
-            request.SetQueryParam(name, ToQueryValue(value));
-        }
-    }
-
-    /// <summary>
     /// Reads a plain-text payload (TypeSpec sends a scalar body as <c>text/plain</c>) as the value
     /// it declares. It is the reverse of <see cref="ToWireString"/>: numbers and booleans in the
     /// invariant culture, dates and times as ISO 8601, durations as ISO 8601 (<c>PT1H</c>), enums

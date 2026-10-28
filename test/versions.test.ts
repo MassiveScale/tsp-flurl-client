@@ -50,9 +50,10 @@ describe("per-version output when all versions are emitted", () => {
         );
       }
       ok(
-        fileContent(results, `${folder}/Endpoints/IWidgets.g.cs`).includes(
-          `namespace TestApi.Client.${ns};`,
-        ),
+        fileContent(
+          results,
+          `${folder}/Endpoints/WidgetsRequestBuilders.g.cs`,
+        ).includes(`namespace TestApi.Client.${ns};`),
       );
     }
     ok(
@@ -237,9 +238,10 @@ describe("per-version output when all versions are emitted", () => {
       );
     }
     ok(
-      fileContent(results, "v2.0/Endpoints/IWidgets.g.cs").includes(
-        "IMergePatch<Widget> body",
-      ),
+      fileContent(
+        results,
+        "v2.0/Endpoints/WidgetsRequestBuilders.g.cs",
+      ).includes("IMergePatch<Widget> body"),
     );
   });
 
@@ -289,14 +291,16 @@ describe("per-version output when all versions are emitted", () => {
     );
 
     ok(
-      fileContent(results, "v1.0/Endpoints/WidgetsEndpoint.g.cs").includes(
-        'AppendPathSegment($"api/v1.0/widgets")',
-      ),
+      fileContent(
+        results,
+        "v1.0/Endpoints/WidgetsRequestBuilders.g.cs",
+      ).includes('AppendPathSegment($"api/v1.0/widgets")'),
     );
     ok(
-      fileContent(results, "v3.0/Endpoints/WidgetsEndpoint.g.cs").includes(
-        'AppendPathSegment($"api/v3.0/widgets")',
-      ),
+      fileContent(
+        results,
+        "v3.0/Endpoints/WidgetsRequestBuilders.g.cs",
+      ).includes('AppendPathSegment($"api/v3.0/widgets")'),
     );
   });
 
@@ -309,10 +313,10 @@ describe("per-version output when all versions are emitted", () => {
       all,
     );
 
-    ok(has(results, "v1.0/Endpoints/IOld.g.cs"));
-    ok(!has(results, "v2.0/Endpoints/IOld.g.cs"));
-    ok(!has(results, "v1.0/Endpoints/IFresh.g.cs"));
-    ok(has(results, "v2.0/Endpoints/IFresh.g.cs"));
+    ok(has(results, "v1.0/Endpoints/OldRequestBuilders.g.cs"));
+    ok(!has(results, "v2.0/Endpoints/OldRequestBuilders.g.cs"));
+    ok(!has(results, "v1.0/Endpoints/FreshRequestBuilders.g.cs"));
+    ok(has(results, "v2.0/Endpoints/FreshRequestBuilders.g.cs"));
   });
 });
 
@@ -375,7 +379,7 @@ describe("a single emitted version", () => {
       fileContent(results, "Widget.g.cs").includes("namespace TestApi.Client;"),
     );
     ok(
-      fileContent(results, "WidgetsEndpoint.g.cs").includes(
+      fileContent(results, "WidgetsRequestBuilders.g.cs").includes(
         "namespace TestApi.Client.V2_0;",
       ),
     );

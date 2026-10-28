@@ -6,9 +6,9 @@ This file is the **single source of truth** for AI assistant guidance in this re
 
 ## Project Overview
 
-`@massivescale/tsp-flurl-client` is a [TypeSpec](https://typespec.io) emitter that generates C# API clients using [Flurl.Http](https://flurl.dev). Given a TypeSpec definition, it produces a C# project with an endpoint interface and a Flurl-backed implementation for each TypeSpec `interface`, including version-aware client generation.
+`@massivescale/tsp-flurl-client` is a [TypeSpec](https://typespec.io) emitter that generates C# API clients using [Flurl.Http](https://flurl.dev). Given a TypeSpec definition, it produces a C# project with a single fluent client (`client.Pets(id).UpdateAsync(patch)`) and Flurl-backed request builders for each TypeSpec `interface`, including version-aware client generation.
 
-It deliberately mirrors [`@massivescale/tsp-refit-client`](https://github.com/MassiveScale/tsp-refit-client): same options, decorators, versioning, model, and merge-patch behaviour. Keep the two in step unless a difference is forced by Flurl. When in doubt about how something should behave, check what the Refit emitter does first.
+It is built on Flurl and follows Flurl and fluent conventions. When in doubt about how something should behave at runtime (headers, URLs, redirects, events), do what Flurl does.
 
 What this emitter adds is **extensible models**. Users derive their own types from the generated records, send them to the API, and read responses back as them. The API may collect the extra properties as JSON extension properties; whether it accepts them is the implementor's concern, never the emitter's. See "Custom models" below before touching anything that affects serialization.
 
@@ -59,10 +59,10 @@ TypeSpec discovers this emitter via two required exports in `src/index.ts`:
 Generation logic is split by output domain, each with a matching `test/<name>.test.ts`:
 
 - **`src/emitter.ts`** — Entry point and orchestration only: `$onEmit`, the per-service pipeline (`emitService`), renderer setup, file IO, `dotnet format`, output-name reservation, and version selection. Each API version is emitted as its own unit (`emitUnit`) with its own model and enum accumulators and its own name reservations, so with `all-versions` every version gets models shaped exactly as that version declares them. Delegates all C# generation to the modules below.
-- **`src/endpoints.ts`** — Endpoint generation: for each TypeSpec interface, the C# interface and its Flurl implementation; route resolution into interpolated path strings; parameter bindings; body and response payload kinds; the generic overloads (see below); and collection of visibility-filtered request payload types.
+- **`src/endpoints.ts`** — Endpoint generation: for each TypeSpec interface, its request builders (operations grouped by path-parameter types); route resolution into interpolated path strings; parameter bindings; body and response payload kinds; the generic overloads (see below); and collection of visibility-filtered request payload types.
 - **`src/models.ts`** — C# `record` and `enum` generation, including `@discriminator` polymorphic hierarchies, request-payload records, and namespace-based emission filters.
-- **`src/helpers.ts`** — The hand-written C# the generated project depends on: `ModelMap`, `ClientRuntime`, and `MergePatch<T>`. Written once per C# namespace.
-- **`src/client.ts`** — The aggregate client class (with `Create` factories) and the DI registration extension class.
+- **`src/helpers.ts`** — The hand-written C# the generated project depends on: `ModelMap`, `ClientRuntime`, `RequestBuilder<TBuilder>`, and `MergePatch<T>`. Written once per C# namespace.
+- **`src/client.ts`** — The client class (one method per request builder, plus `Create` factories) and the DI registration extension class.
 - **`src/project.ts`** — `.csproj` generation and NuGet `<Version>` derivation.
 - **`src/utils.ts`** — Dependency-light shared helpers: C# type mapping (`mapType`), `findModelSlot`, and name/formatting utilities. A leaf module — never imports the other codegen modules.
 - **`src/framework.ts`** — The .NET types the generated C# names (`FRAMEWORK_TYPES`) and `fx`, which writes each one by its short name unless a generated type of the same name would hide it, in which case it is written in full (`global::System.Type`). Templates are routed through it when they load (`qualifyTemplate`); TypeScript that writes C# calls `fx` itself. The compile matrix fails when the generated code names a .NET type the registry is missing. A leaf module.
@@ -70,6 +70,18 @@ Generation logic is split by output domain, each with a matching `test/<name>.te
 - **`src/templates/*.hbs`** — The C# templates, copied to `dist/templates` by `scripts/copy-templates.mjs`. Each documents its variables in a header comment.
 
 Import direction is a DAG: `utils` ← `models` ← `endpoints`; `helpers`/`client`/`project` ← `emitter`; `emitter` is the only module that imports the domain modules.
+
+### Client shape
+
+One client is registered, and every call starts from it, in the style of the Microsoft Graph .NET SDK: `client.Pets().ListAsync()`, `client.Pets(id).AppendHeader("X-Trace", t).UpdateAsync(patch)`.
+
+- **Builders.** The operations of one TypeSpec interface are grouped by the C# types of their path parameters, in order, ignoring nullability. Each group is a `sealed` request builder holding those parameters as fields, which every route reads as `this._name`. The client has one method per builder, named after the interface, taking the path parameters. Path parameters are never method parameters.
+- **Shared by type.** Two groups whose parameter types match (`lookup/{kind}/{id}` and `reserved/{path}/items/{id}`) would make two client overloads with one signature, so they share a builder whose parameters are named after the first operation. Each operation fills its own route from them by position.
+- **Names.** `{Interface}RequestBuilder` for the group without path parameters, then `{Interface}ItemRequestBuilder`, `{Interface}Item2RequestBuilder`, ..., fewest parameters first, then declaration order (`builderClassName`). All of an interface's builders go in `Endpoints/{Interface}RequestBuilders.g.cs`.
+- **Modifiers.** `RequestBuilder<TBuilder>` (`src/templates/request-builder-base.hbs`) adds `AppendHeader`, `AppendQueryParameter`, `AppendCookie`, and `ConfigureRequest`. They mutate the builder and return it, and `ApplyModifiers` applies them after the operation's own parameters. `AppendHeader` replaces a header of the same name, as Flurl's `WithHeader` does. A `nextLink` paging wrapper applies them to the first page only; the continuation-token and offset strategies re-send the raw method, so every page gets them.
+- **Next links.** A next link is the next URL to request, handed to `Client.Request(link)` as the server wrote it: Flurl requests an absolute link as it is and appends a relative one to the base URL.
+- **Members.** A builder's own members must not clash with operation methods (which all end in `Async`).
+- **Flurl hooks.** `Add{Client}` takes `configureBuilder` (delegating handlers such as token refresh, a primary handler) and `configureFlurlClient` (Flurl settings and `BeforeCall`/`AfterCall`/`OnError` handlers on every Flurl client it creates). Without DI, the caller builds the `IFlurlClient` and passes it to `Create`.
 
 ### Custom models
 

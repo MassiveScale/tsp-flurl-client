@@ -10,7 +10,7 @@ import {
 
 describe("paging", () => {
   describe("nextLink strategy", () => {
-    it("declares the wrapper on the interface and implements it by following the link through _client", async () => {
+    it("declares the wrapper on the request builder and follows the link through the builder's Flurl client", async () => {
       const results = await emit(`
         import "@typespec/http";
         using Http;
@@ -32,33 +32,26 @@ describe("paging", () => {
         }
       `);
 
-      const iface = fileContent(results, "IStores.g.cs");
+      const client = fileContent(results, "StoresRequestBuilders.g.cs");
       ok(
-        iface.includes("IAsyncEnumerable<Store> ListAllAsync("),
-        "Expected ListAllAsync declared on the interface",
+        client.includes(
+          "public async IAsyncEnumerable<Store> ListAllAsync(int? skip = null, int? take = null, [EnumeratorCancellation] CancellationToken cancellationToken = default)",
+        ),
+        "Expected ListAllAsync implemented on the request builder, with EnumeratorCancellation on its cancellation token",
       );
       ok(
-        !iface.includes("[EnumeratorCancellation]"),
-        "The interface declaration isn't itself an iterator method, so EnumeratorCancellation there would only warn (CS8424)",
-      );
-
-      const client = fileContent(results, "StoresEndpoint.g.cs");
-      ok(
-        client.includes("public async IAsyncEnumerable<Store> ListAllAsync("),
-        "Expected ListAllAsync implemented on the endpoint client",
+        client.split("[EnumeratorCancellation]").length === 2,
+        "Expected the wrapper declared once, since there is no interface declaration any more",
       );
       ok(
         client.includes(
-          "[EnumeratorCancellation] CancellationToken cancellationToken = default)",
+          "var page = await ListAsync(skip, take, cancellationToken).ConfigureAwait(false);",
         ),
-        "Expected EnumeratorCancellation on the implementation's cancellation token",
+        "Expected the wrapper to send the first page through the raw method",
       );
       ok(
-        client.includes("var flurlRequest = ListRequest(") &&
-          client.includes(
-            "page = (await flurlResponse.GetJsonAsync<PagedResult<Store>>()",
-          ),
-        "Expected the wrapper to send the first page through the raw method's request builder",
+        !client.includes("BuildListRequest"),
+        "Expected no private request builder: the first page's URL is not needed",
       );
       ok(
         client.includes("page.Items"),
@@ -70,22 +63,25 @@ describe("paging", () => {
       );
       ok(
         client.includes(
-          "var nextRequest = _client.Request(nextUri.AbsoluteUri).WithAutoRedirect(false)",
+          "var nextRequest = Client.Request(nextLink.OriginalString);",
         ),
-        "Expected the continuation request built against the opaque nextLink URL through _client",
+        "Expected a url next link handed to Flurl as the server wrote it, which ToString() would unescape",
       );
       ok(
         client.includes(
-          "await nextRequest.GetAsync(cancellationToken: cancellationToken)",
-        ) &&
-          client.includes(
-            "nextPage = await nextResponse.GetJsonAsync<PagedResult<Store>>()",
-          ),
-        "Expected continuation pages fetched with cancellationToken passed by name (GetAsync's first positional parameter is HttpCompletionOption, not CancellationToken)",
+          "PagedResult<Store>? nextPage = await nextRequest.GetJsonAsync<PagedResult<Store>>(cancellationToken: cancellationToken)",
+        ),
+        "Expected continuation pages fetched with cancellationToken passed by name (GetJsonAsync's first positional parameter is HttpCompletionOption, not CancellationToken)",
+      );
+      ok(
+        !/WithAutoRedirect|AllowHttpStatus|InvalidOperationException|Uri\.Compare/.test(
+          client,
+        ),
+        "Expected Flurl to follow redirects and any host, with no origin check of its own",
       );
       ok(
         !client.includes("IHttpClientFactory"),
-        "nextLink strategy on this client needs no HttpClientFactory: _client is already configured",
+        "nextLink strategy on this builder needs no HttpClientFactory: its Flurl client is already configured",
       );
     });
   });
@@ -112,7 +108,7 @@ describe("paging", () => {
         }
       `);
 
-      const client = fileContent(results, "PetsEndpoint.g.cs");
+      const client = fileContent(results, "PetsRequestBuilders.g.cs");
       ok(
         client.includes("public async IAsyncEnumerable<Pet> ListAllAsync("),
         "Expected ListAllAsync implemented",
@@ -166,11 +162,13 @@ describe("paging", () => {
         "Expected the reason to mention the unmatched continuationToken",
       );
       ok(
-        !fileContent(results, "PetsEndpoint.g.cs").includes("ListAllAsync"),
+        !fileContent(results, "PetsRequestBuilders.g.cs").includes(
+          "ListAllAsync",
+        ),
         "Expected no wrapper to be generated",
       );
       ok(
-        fileContent(results, "PetsEndpoint.g.cs").includes(
+        fileContent(results, "PetsRequestBuilders.g.cs").includes(
           "Task<TokenPagedResult<Pet>> ListAsync(",
         ),
         "Expected the raw method to still be generated",
@@ -199,7 +197,7 @@ describe("paging", () => {
         }
       `);
 
-      const client = fileContent(results, "CustomersEndpoint.g.cs");
+      const client = fileContent(results, "CustomersRequestBuilders.g.cs");
       ok(
         client.includes(
           "public async IAsyncEnumerable<Customer> ListAllAsync(",
@@ -240,7 +238,7 @@ describe("paging", () => {
         }
       `);
 
-      const client = fileContent(results, "CustomersEndpoint.g.cs");
+      const client = fileContent(results, "CustomersRequestBuilders.g.cs");
       ok(
         client.includes("var currentPageIndex = pageIndex ?? 0;"),
         "Expected the pageIndex counter seeded from the input parameter",
@@ -275,9 +273,9 @@ describe("paging", () => {
         }
       `);
 
-      const client = fileContent(results, "WidgetsEndpoint.g.cs");
+      const client = fileContent(results, "WidgetsRequestBuilders.g.cs");
       ok(
-        client.includes("_client.Request(nextUri.AbsoluteUri)"),
+        client.includes("Client.Request(nextLink.OriginalString)"),
         "Expected the nextLink strategy to win over continuationToken",
       );
       ok(
@@ -309,7 +307,7 @@ describe("paging", () => {
         }
       `);
 
-      const client = fileContent(results, "PetsEndpoint.g.cs");
+      const client = fileContent(results, "PetsRequestBuilders.g.cs");
       ok(
         client.includes("string? token2 = token;"),
         "Expected the loop-local token variable renamed to avoid shadowing the token parameter",
@@ -342,17 +340,16 @@ describe("paging", () => {
         }
       `);
 
-      const client = fileContent(results, "StoresEndpoint.g.cs");
+      const client = fileContent(results, "StoresRequestBuilders.g.cs");
       ok(
-        client.includes("PagedResult<Store> page2;") &&
-          client.includes(
-            "page2 = (await flurlResponse.GetJsonAsync<PagedResult<Store>>()",
-          ),
+        client.includes(
+          "var page2 = await ListAsync(page, nextRequest, cancellationToken)",
+        ),
         "Expected the first-page variable renamed to avoid shadowing the page parameter",
       );
       ok(
         client.includes(
-          "var nextRequest2 = _client.Request(nextUri.AbsoluteUri)",
+          "var nextRequest2 = Client.Request(nextLink.OriginalString);",
         ),
         "Expected the Flurl request variable renamed to avoid shadowing the nextRequest parameter",
       );
@@ -378,7 +375,7 @@ describe("paging", () => {
         }
       `);
 
-      const client = fileContent(results, "CustomersEndpoint.g.cs");
+      const client = fileContent(results, "CustomersRequestBuilders.g.cs");
       ok(
         client.includes("var count2 = 0;") &&
           client.includes("count2++;") &&
@@ -411,20 +408,16 @@ describe("paging", () => {
         }
       `);
 
-      const client = fileContent(results, "StoresEndpoint.g.cs");
+      const client = fileContent(results, "StoresRequestBuilders.g.cs");
       ok(
         client.includes(
           'if (tenantId is not null) nextRequest.WithHeader("X-Tenant-Id", ClientRuntime.ToWireString(tenantId));',
         ),
         "Expected the optional header replayed, guarded against null",
       );
-      ok(
-        !client.includes("sameOrigin"),
-        "Expected the header replayed unconditionally, since a cross-origin link is refused before sending",
-      );
     });
 
-    it("refuses a next link to another origin before sending anything, even with nothing to replay", async () => {
+    it("hands the next link to Flurl as written, with no origin check of its own", async () => {
       const results = await emit(`
         import "@typespec/http";
         using Http;
@@ -445,44 +438,27 @@ describe("paging", () => {
         }
       `);
 
-      const client = fileContent(results, "StoresEndpoint.g.cs");
+      const client = fileContent(results, "StoresRequestBuilders.g.cs");
       ok(
         client.includes(
-          "var baseUri = string.IsNullOrEmpty(_client.BaseUrl)",
-        ) &&
-          client.includes(
-            '? throw new InvalidOperationException("Cannot follow a next-page link without a base URL to check its origin against.")',
-          ) &&
-          client.includes(": new Uri(_client.BaseUrl, UriKind.Absolute);"),
-        "Expected the base taken from the Flurl client's BaseUrl, which both the DI and Create(baseUrl) paths set",
-      );
-      ok(
-        client.includes("var nextUri = new Uri(pageUri, nextLink);"),
-        "Expected a relative next link resolved against the page that returned it",
-      );
-      ok(
-        client.includes(
-          "if (Uri.Compare(nextUri, baseUri, UriComponents.SchemeAndServer, UriFormat.UriEscaped, StringComparison.OrdinalIgnoreCase) != 0)",
-        ) &&
-          client.includes(
-            'throw new InvalidOperationException("Refusing to send a next-page request to " + nextUri.Scheme + "://" + nextUri.Authority + ", which is not the origin of the client\'s base address.");',
-          ),
-        "Expected a cross-origin next link refused, so the client's own credentials never reach another host",
-      );
-      const checkAt = client.indexOf("if (Uri.Compare(");
-      const requestAt = client.indexOf(
-        "var nextRequest = _client.Request(nextUri.AbsoluteUri)",
-      );
-      ok(
-        checkAt >= 0 && requestAt > checkAt,
-        "Expected the origin check before the continuation request is built",
-      );
-      const iface = fileContent(results, "IStores.g.cs");
-      ok(
-        iface.includes(
-          'else throws <see cref="InvalidOperationException"/> before any request is sent,',
+          "var nextRequest = Client.Request(nextLink.OriginalString);",
         ),
-        "Expected the cross-origin refusal documented on the interface",
+        "Expected Flurl to request an absolute link as it is and append a relative one to the base URL",
+      );
+      ok(
+        !/BaseUrl|pageUri|baseUri|InvalidOperationException|Uri\.Compare/.test(
+          client,
+        ),
+        "Expected no resolution or origin check besides Flurl's own",
+      );
+      ok(
+        client.includes(
+          "Follows each page's next link until none remains, as Flurl does: an absolute link is",
+        ) &&
+          client.includes(
+            "requested as it is, and a relative one is appended to the client's base URL.",
+          ),
+        "Expected how the link is followed documented on the wrapper",
       );
     });
 
@@ -507,18 +483,18 @@ describe("paging", () => {
         }
       `);
 
-      const client = fileContent(results, "StoresEndpoint.g.cs");
+      const client = fileContent(results, "StoresRequestBuilders.g.cs");
       ok(
         client.includes("while (!string.IsNullOrEmpty(nextLink))"),
         "Expected an empty string to end the loop too",
       );
       ok(
-        client.includes("var nextUri = new Uri(pageUri, nextLink);"),
-        "Expected the string link resolved through the same Uri constructor",
+        client.includes("var nextRequest = Client.Request(nextLink);"),
+        "Expected a string link handed to Flurl as it is",
       );
     });
 
-    it("qualifies the framework types it names when a model hides them", async () => {
+    it("names no framework type a model could hide when following the link", async () => {
       const results = await emit(`
         import "@typespec/http";
         using Http;
@@ -541,12 +517,12 @@ describe("paging", () => {
         }
       `);
 
-      const client = fileContent(results, "StoresEndpoint.g.cs");
+      const client = fileContent(results, "StoresRequestBuilders.g.cs");
       ok(
         client.includes(
-          "if (global::System.Uri.Compare(nextUri, baseUri, UriComponents.SchemeAndServer, UriFormat.UriEscaped, global::System.StringComparison.OrdinalIgnoreCase) != 0)",
-        ),
-        "Expected Uri and StringComparison written in full when generated models hide them",
+          "var nextRequest = Client.Request(nextLink.OriginalString);",
+        ) && !/\bUri\b|StringComparison/.test(client),
+        "Expected the link followed without naming Uri or StringComparison, which the models hide",
       );
     });
 
@@ -571,7 +547,7 @@ describe("paging", () => {
         }
       `);
 
-      const client = fileContent(results, "StoresEndpoint.g.cs");
+      const client = fileContent(results, "StoresRequestBuilders.g.cs");
       ok(
         client.includes(
           'if (sessionId is not null) nextRequest.WithCookie("session_id", ClientRuntime.ToWireString(sessionId));',
@@ -606,10 +582,10 @@ describe("paging", () => {
         }
       `);
 
-      const client = fileContent(results, "StoresEndpoint.g.cs");
+      const client = fileContent(results, "StoresRequestBuilders.g.cs");
       ok(
         client.includes(
-          "nextPage = await nextResponse.GetJsonAsync<StorePage>()",
+          "StorePage? nextPage = await nextRequest.GetJsonAsync<StorePage>(cancellationToken: cancellationToken)",
         ),
         "Expected continuation pages deserialized as the actual response type (StorePage), not the base model that merely declares @pageItems",
       );
@@ -638,7 +614,9 @@ describe("paging", () => {
       );
       ok(messages[0].includes("anonymous"), messages[0]);
       ok(
-        !fileContent(results, "WidgetsEndpoint.g.cs").includes("ListAllAsync"),
+        !fileContent(results, "WidgetsRequestBuilders.g.cs").includes(
+          "ListAllAsync",
+        ),
       );
     });
   });
@@ -695,7 +673,7 @@ describe("paging", () => {
         }
       `);
 
-      const client = fileContent(results, "CustomersEndpoint.g.cs");
+      const client = fileContent(results, "CustomersRequestBuilders.g.cs");
       ok(
         client.includes("var currentPageIndex = pageIndex ?? 1;"),
         "Expected the declared default (1) honored instead of a hardcoded 0",
@@ -724,7 +702,7 @@ describe("paging", () => {
         }
       `);
 
-      const client = fileContent(results, "CustomersEndpoint.g.cs");
+      const client = fileContent(results, "CustomersRequestBuilders.g.cs");
       ok(
         client.includes("checked { currentOffset += (ulong)count; }"),
         "Expected the int item-count cast to ulong before being added to the ulong counter — C# has no built-in += between them otherwise",
@@ -751,7 +729,7 @@ describe("paging", () => {
         }
       `);
 
-      const client = fileContent(results, "CustomersEndpoint.g.cs");
+      const client = fileContent(results, "CustomersRequestBuilders.g.cs");
       ok(
         client.includes("checked { currentPageIndex++; }"),
         "Expected a plain increment, which needs no cast regardless of the counter's numeric type",
@@ -759,7 +737,7 @@ describe("paging", () => {
     });
   });
 
-  describe("interface doc comment ambiguity", () => {
+  describe("wrapper doc comment ambiguity", () => {
     it("does not emit an ambiguous <see cref> for a raw method with a generic overload", async () => {
       const results = await emit(`
         import "@typespec/http";
@@ -781,7 +759,7 @@ describe("paging", () => {
         }
       `);
 
-      const iface = fileContent(results, "IStores.g.cs");
+      const iface = fileContent(results, "StoresRequestBuilders.g.cs");
       ok(
         !iface.includes('<see cref="ListAsync"'),
         "Expected plain <c> text instead of an ambiguous bare-name cref (ListAsync has a generic overload here, so a bare cref is CS0419 once XML docs are enabled)",
@@ -813,7 +791,7 @@ describe("paging", () => {
         }
       `);
 
-      const iface = fileContent(results, "IStores.g.cs");
+      const iface = fileContent(results, "StoresRequestBuilders.g.cs");
       ok(
         iface.includes("Task<List<Store>> ListAllAsync("),
         "Expected the declared listAll operation kept",
@@ -865,7 +843,11 @@ describe("paging", () => {
         messages.length === 1 && messages[0].includes("non-string"),
         "Expected one unsupported-paging-style warning for the non-string token",
       );
-      ok(!fileContent(results, "PetsEndpoint.g.cs").includes("ListAllAsync"));
+      ok(
+        !fileContent(results, "PetsRequestBuilders.g.cs").includes(
+          "ListAllAsync",
+        ),
+      );
     });
   });
 
@@ -911,9 +893,9 @@ describe("paging", () => {
       `);
 
       for (const file of [
-        "LinksEndpoint.g.cs",
-        "TokensEndpoint.g.cs",
-        "OffsetsEndpoint.g.cs",
+        "LinksRequestBuilders.g.cs",
+        "TokensRequestBuilders.g.cs",
+        "OffsetsRequestBuilders.g.cs",
       ]) {
         const client = fileContent(results, file);
         ok(client.includes("ListAllAsync("), `Expected a wrapper in ${file}`);
@@ -945,18 +927,18 @@ describe("paging", () => {
       `);
 
       ok(
-        !fileContent(results, "OffsetsEndpoint.g.cs").includes(
+        !fileContent(results, "OffsetsRequestBuilders.g.cs").includes(
           "if (page is null)",
         ),
       );
     });
   });
 
-  describe("relative next links", () => {
+  describe("following next links", () => {
     /**
      * Emits a nextLink-paged `Stores.list` with a header and a query parameter.
      *
-     * @returns The generated `StoresEndpoint.g.cs`.
+     * @returns The generated `StoresRequestBuilders.g.cs`.
      */
     const storesEndpoint = async (): Promise<string> =>
       fileContent(
@@ -975,123 +957,47 @@ describe("paging", () => {
             @list @get list(@query skip?: int32, @header("X-Tenant") tenant?: string): StorePage;
           }
         `),
-        "StoresEndpoint.g.cs",
+        "StoresRequestBuilders.g.cs",
       );
 
-    it("builds the raw method's request in one private method both callers use", async () => {
+    it("sends the first page through the raw method, so its request is built in one place", async () => {
       const client = await storesEndpoint();
       ok(
         client.includes(
-          "private IFlurlRequest ListRequest(int? skip = null, string? tenant = null, Dictionary<string, object>? additionalQueryParameters = null)",
+          "var page = await ListAsync(skip, tenant, cancellationToken).ConfigureAwait(false);",
         ),
-        "Expected the builder to take everything but the body and the cancellation token",
-      );
-      ok(
-        client.split(
-          "var flurlRequest = ListRequest(skip, tenant, additionalQueryParameters);",
-        ).length === 3,
-        "Expected the raw method and the wrapper to build the request the same way",
       );
       ok(
         client.split('flurlRequest.SetQueryParam("skip"').length === 2,
-        "Expected the request built in one place only",
+        "Expected the request built in the raw method only",
       );
+      ok(!client.includes("BuildListRequest"));
     });
 
-    it("resolves the first page's link against the URL the first page was fetched from", async () => {
+    it("replays the header on each continuation request and leaves redirects to Flurl", async () => {
       const client = await storesEndpoint();
-      const fetched = client.indexOf("pageUri = flurlRequest.Url.ToUri();");
-      const sent = client.indexOf(
-        "using var flurlResponse = await flurlRequest.SendAsync(HttpMethod.Get",
-        fetched,
+      const request = client.indexOf(
+        "var nextRequest = Client.Request(nextLink.OriginalString);",
       );
-      ok(fetched >= 0 && sent > fetched, "Expected the first page's URL kept");
+      const header = client.indexOf(
+        'if (tenant is not null) nextRequest.WithHeader("X-Tenant", ClientRuntime.ToWireString(tenant));',
+        request,
+      );
+      const send = client.indexOf("await nextRequest.GetJsonAsync<", header);
       ok(
-        client.includes("var nextUri = new Uri(pageUri, nextLink);"),
-        "Expected a query-only (?skip=25) or path-relative (page2) link resolved against that page",
+        request >= 0 && header > request && send > header,
+        "Expected the request, then the header, then the send",
+      );
+      ok(
+        !/WithAutoRedirect|AllowHttpStatus|redirects|Location/.test(client),
+        "Expected Flurl to follow redirects as it does for every request",
       );
     });
 
-    it("resolves a later page's link against the URL that later page was fetched from", async () => {
+    it("reads each later page's link from that page", async () => {
       const client = await storesEndpoint();
       const read = client.indexOf("if (nextPage is null) yield break;");
-      ok(
-        read >= 0 && client.indexOf("pageUri = nextUri;", read) > read,
-        "Expected each later page to become the base for the link it returns",
-      );
-      ok(
-        client.includes(
-          "if (Uri.Compare(nextUri, baseUri, UriComponents.SchemeAndServer",
-        ),
-        "Expected the origin still checked against the client's base URL",
-      );
-    });
-  });
-
-  describe("redirects of next-page requests", () => {
-    /**
-     * Emits a nextLink-paged `Stores.list` with a header parameter.
-     *
-     * @returns The generated `StoresEndpoint.g.cs`.
-     */
-    const storesEndpoint = async (): Promise<string> =>
-      fileContent(
-        await emit(`
-          import "@typespec/http";
-          using Http;
-
-          @service(#{ title: "Test API" })
-          namespace TestApi;
-
-          model Store { name: string; }
-          model StorePage { @pageItems items: Store[]; @nextLink next?: url; }
-
-          @route("/stores")
-          interface Stores {
-            @list @get list(@header("X-Tenant") tenant?: string): StorePage;
-          }
-        `),
-        "StoresEndpoint.g.cs",
-      );
-
-    it("turns off Flurl's automatic redirects and lets the redirect statuses through", async () => {
-      const client = await storesEndpoint();
-      ok(
-        client.includes(
-          '.WithAutoRedirect(false).AllowHttpStatus("301,302,303,307,308");',
-        ),
-      );
-    });
-
-    it("checks every hop's origin before sending and replays the headers on it", async () => {
-      const client = await storesEndpoint();
-      const loop = client.indexOf("for (var redirects = 0; ; redirects++)");
-      const check = client.indexOf("if (Uri.Compare(nextUri, baseUri", loop);
-      const header = client.indexOf('nextRequest.WithHeader("X-Tenant"', loop);
-      const send = client.indexOf("await nextRequest.GetAsync(", loop);
-      ok(
-        loop >= 0 && check > loop && header > check && send > header,
-        "Expected the check, then the headers, then the send, inside the loop every hop goes through",
-      );
-    });
-
-    it("resolves a redirect against the URL it came from and caps the hops at 50", async () => {
-      const client = await storesEndpoint();
-      ok(
-        client.includes(
-          "if (nextResponse.StatusCode is 301 or 302 or 303 or 307 or 308)",
-        ),
-      );
-      ok(
-        client.includes(
-          'if (redirects == 50) throw new InvalidOperationException("Stopped following a next-page link after 50 redirects.");',
-        ),
-      );
-      ok(
-        client.includes(
-          "nextUri = new Uri(nextUri, nextResponse.ResponseMessage.Headers.Location ?? throw new InvalidOperationException(",
-        ),
-      );
+      ok(read >= 0 && client.indexOf("nextLink = nextPage.Next;", read) > read);
     });
   });
 
@@ -1117,7 +1023,7 @@ describe("paging", () => {
           m.includes("neither a string nor a URL (it maps to Guid)"),
         ),
       );
-      const client = fileContent(results, "StoresEndpoint.g.cs");
+      const client = fileContent(results, "StoresRequestBuilders.g.cs");
       ok(client.includes("ListAsync("), "Expected the raw method kept");
       ok(!client.includes("ListAllAsync"), "Expected no wrapper");
     });
@@ -1158,7 +1064,7 @@ describe("paging", () => {
         "Expected the derived record to keep the inherited List<Book> Items",
       );
       ok(
-        fileContent(results, "CatalogsEndpoint.g.cs").includes(
+        fileContent(results, "CatalogsRequestBuilders.g.cs").includes(
           "IAsyncEnumerable<Book> SignedAllAsync(",
         ),
         "Expected the wrapper to yield what the inherited Items property holds",
@@ -1199,7 +1105,11 @@ describe("paging", () => {
         ),
         "Expected the shape reported instead of aborting emission",
       );
-      ok(!fileContent(results, "StoresEndpoint.g.cs").includes("ListAllAsync"));
+      ok(
+        !fileContent(results, "StoresRequestBuilders.g.cs").includes(
+          "ListAllAsync",
+        ),
+      );
     });
 
     it("names the next link by the declaration a flattened page redeclares", async () => {
@@ -1221,7 +1131,7 @@ describe("paging", () => {
           @list @get list(): StorePage;
         }
       `);
-      const client = fileContent(results, "StoresEndpoint.g.cs");
+      const client = fileContent(results, "StoresRequestBuilders.g.cs");
       ok(
         client.includes("page.Continue") && !client.includes("page.Next"),
         "Expected the member the record actually has",
@@ -1253,7 +1163,7 @@ describe("paging", () => {
         ),
       );
       ok(
-        fileContent(results, "CatalogsEndpoint.g.cs").includes(
+        fileContent(results, "CatalogsRequestBuilders.g.cs").includes(
           "IAsyncEnumerable<SignedBook> SignedAllAsync(",
         ),
         "Expected the wrapper to yield the narrowed item type the record holds",
@@ -1294,7 +1204,9 @@ describe("paging", () => {
       );
       ok(messages[0].includes("nested"), messages[0]);
       ok(
-        !fileContent(results, "WidgetsEndpoint.g.cs").includes("ListAllAsync"),
+        !fileContent(results, "WidgetsRequestBuilders.g.cs").includes(
+          "ListAllAsync",
+        ),
       );
     });
 
@@ -1327,7 +1239,7 @@ describe("paging", () => {
         "Expected one unsupported-paging-style warning",
       );
 
-      const client = fileContent(results, "WidgetsEndpoint.g.cs");
+      const client = fileContent(results, "WidgetsRequestBuilders.g.cs");
       ok(!client.includes("ListAllAsync"));
       ok(
         client.includes("Task<LinkOnlyPagedResult<Widget>> ListAsync("),

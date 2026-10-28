@@ -7,6 +7,7 @@ import {
   CLIENT_RUNTIME_HELPER_NAME,
   MERGE_PATCH_HELPER_NAME,
   MODEL_MAP_HELPER_NAME,
+  REQUEST_BUILDER_HELPER_NAME,
   sortUsings,
 } from "./utils.js";
 
@@ -14,12 +15,14 @@ import {
 export type HelperName =
   | typeof MERGE_PATCH_HELPER_NAME
   | typeof MODEL_MAP_HELPER_NAME
-  | typeof CLIENT_RUNTIME_HELPER_NAME;
+  | typeof CLIENT_RUNTIME_HELPER_NAME
+  | typeof REQUEST_BUILDER_HELPER_NAME;
 
 /** Every helper, in the order they are written. */
 export const ALL_HELPERS: readonly HelperName[] = [
   MODEL_MAP_HELPER_NAME,
   CLIENT_RUNTIME_HELPER_NAME,
+  REQUEST_BUILDER_HELPER_NAME,
   MERGE_PATCH_HELPER_NAME,
 ];
 
@@ -27,6 +30,7 @@ export const ALL_HELPERS: readonly HelperName[] = [
 export const ALWAYS_EMITTED_HELPERS: readonly HelperName[] = [
   MODEL_MAP_HELPER_NAME,
   CLIENT_RUNTIME_HELPER_NAME,
+  REQUEST_BUILDER_HELPER_NAME,
 ];
 
 /** `using` directives each helper's body requires. */
@@ -65,6 +69,11 @@ const HELPER_USINGS: Record<HelperName, string[]> = {
     "System.Threading.Tasks",
     "System.Xml",
   ],
+  [REQUEST_BUILDER_HELPER_NAME]: [
+    "Flurl.Http",
+    "System",
+    "System.Collections.Generic",
+  ],
 };
 
 /**
@@ -92,6 +101,8 @@ function renderHelperBody(name: HelperName, renderer: Renderer): string {
       return renderer.renderModelMap();
     case CLIENT_RUNTIME_HELPER_NAME:
       return renderer.renderClientRuntime();
+    case REQUEST_BUILDER_HELPER_NAME:
+      return renderer.renderRequestBuilderBase();
   }
 }
 

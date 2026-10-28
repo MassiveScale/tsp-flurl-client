@@ -35,7 +35,7 @@ describe("line breaks in C# string literals", () => {
       "route-prefix": `api${String.fromCharCode(0x0a)}v1${String.fromCharCode(0x2028)}x`,
     });
 
-    const line = fileContent(results, "WidgetsEndpoint.g.cs")
+    const line = fileContent(results, "WidgetsRequestBuilders.g.cs")
       .split("\n")
       .find((l) => l.includes("AppendPathSegment"));
     ok(line, "the route is on one line");
@@ -46,7 +46,7 @@ describe("line breaks in C# string literals", () => {
     const results = await emit(SPEC, { "route-prefix": "api/{static}" });
 
     ok(
-      fileContent(results, "WidgetsEndpoint.g.cs").includes(
+      fileContent(results, "WidgetsRequestBuilders.g.cs").includes(
         '$"api/{{static}}/w"',
       ),
     );

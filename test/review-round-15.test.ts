@@ -155,7 +155,7 @@ describe("nullable request bodies", () => {
       @route("/i") interface Items { @post create(@body body: Item | null): void; }
     `);
 
-    const iface = fileContent(results, "IItems.g.cs");
+    const iface = fileContent(results, "ItemsRequestBuilders.g.cs");
     ok(iface.includes("CreateAsync(ItemCreateRequest? body,"), iface);
     ok(!fileContent(results, "ItemCreateRequest.g.cs").includes(" Id "));
   });
@@ -167,7 +167,7 @@ describe("nullable request bodies", () => {
     `);
 
     ok(
-      fileContent(results, "IItems.g.cs").includes(
+      fileContent(results, "ItemsRequestBuilders.g.cs").includes(
         "CreateAsync(IEnumerable<ItemCreateRequest?> body,",
       ),
     );
@@ -180,7 +180,7 @@ describe("nullable request bodies", () => {
     `);
 
     ok(
-      fileContent(results, "IItems.g.cs").includes(
+      fileContent(results, "ItemsRequestBuilders.g.cs").includes(
         "ItemCreateRequest? body = null",
       ),
     );
@@ -201,7 +201,7 @@ describe("request records for nested models", () => {
     `);
 
     ok(
-      fileContent(results, "IWrappers.g.cs").includes(
+      fileContent(results, "WrappersRequestBuilders.g.cs").includes(
         "CreateAsync(WrapperCreateRequest body,",
       ),
     );
@@ -266,7 +266,7 @@ describe("request records for nested models", () => {
     `);
 
     ok(
-      fileContent(results, "IWrappers.g.cs").includes(
+      fileContent(results, "WrappersRequestBuilders.g.cs").includes(
         "CreateAsync(Wrapper body,",
       ),
     );
@@ -307,7 +307,7 @@ describe("request records for nested models", () => {
     `);
 
     ok(
-      fileContent(results, "IWrappers.g.cs").includes(
+      fileContent(results, "WrappersRequestBuilders.g.cs").includes(
         "CreateAsync(Wrapper body,",
       ),
     );
@@ -329,7 +329,7 @@ describe("request records for nested models", () => {
         "public Child Child",
       ),
     );
-    const second = fileContent(results, "ISecond.g.cs");
+    const second = fileContent(results, "SecondRequestBuilders.g.cs");
     const name = /CreateAsync\((\w+) body,/.exec(second)?.[1];
     ok(name && name !== "WrapperCreateRequest", second);
     const wrapper = fileContent(results, `/${name}.g.cs`);
@@ -347,7 +347,7 @@ describe("request records for nested models", () => {
     `);
 
     ok(
-      fileContent(results, "IWrappers.g.cs").includes(
+      fileContent(results, "WrappersRequestBuilders.g.cs").includes(
         "CreateAsync(WrapperCreateRequest body,",
       ),
     );
@@ -399,7 +399,7 @@ describe("nullable response bodies", () => {
         @route("/i") interface Items { @get read(): { @body body: ${body} }; }
       `);
 
-      const iface = fileContent(results, "IItems.g.cs");
+      const iface = fileContent(results, "ItemsRequestBuilders.g.cs");
       ok(iface.includes(`${plain} ReadAsync(`), iface);
       ok(iface.includes(generic), iface);
       ok(!iface.includes("??"), iface);
@@ -414,7 +414,7 @@ describe("nullable response bodies", () => {
     `);
 
     ok(
-      fileContent(results, "IItems.g.cs").includes(
+      fileContent(results, "ItemsRequestBuilders.g.cs").includes(
         "Task<TResult> ReadAsync<TResult>(",
       ),
     );
@@ -459,11 +459,30 @@ describe("parameters named after contextual keywords", () => {
       }
     `);
 
-    const iface = fileContent(results, "IKeywords.g.cs");
-    ok(iface.includes("ReadAsync(string @await, string? var = null,"), iface);
-    const client = fileContent(results, "KeywordsEndpoint.g.cs");
-    ok(client.includes("EscapePathSegment(@await)"), client);
-    ok(!/[^@\w]await\)/.test(client), client);
+    const builders = fileContent(results, "KeywordsRequestBuilders.g.cs");
+    ok(
+      builders.includes(
+        "internal KeywordsItemRequestBuilder(IFlurlClient flurlClient, string @await)",
+      ),
+      builders,
+    );
+    ok(builders.includes("this._await = @await;"), builders);
+    ok(builders.includes("ReadAsync(string? var = null,"), builders);
+    ok(builders.includes("EscapePathSegment(this._await)"), builders);
+    ok(!/[^@\w]await\)/.test(builders), builders);
+    const client = fileContent(results, "TestApiClientExtensions.g.cs");
+    ok(
+      client.includes(
+        "public KeywordsItemRequestBuilder Keywords(string @await) =>",
+      ),
+      client,
+    );
+    ok(
+      client.includes(
+        "new KeywordsItemRequestBuilder(this.FlurlClient, @await);",
+      ),
+      client,
+    );
   });
 
   it("still accepts await as a model name, which C# allows", async () => {
@@ -507,7 +526,7 @@ describe("success responses of one type in different media types", () => {
         ),
         diagnostics.map((d) => d.message).join("; "),
       );
-      const iface = fileContent(results, "IThings.g.cs");
+      const iface = fileContent(results, "ThingsRequestBuilders.g.cs");
       ok(!iface.includes("ReadAsync"), iface);
       ok(iface.includes("OkAsync"), iface);
     });
@@ -524,7 +543,9 @@ describe("success responses of one type in different media types", () => {
       diagnostics.map((d) => d.message).join("; "),
     );
     ok(
-      fileContent(results, "IThings.g.cs").includes("Task<string> ReadAsync("),
+      fileContent(results, "ThingsRequestBuilders.g.cs").includes(
+        "Task<string> ReadAsync(",
+      ),
     );
   });
 
@@ -535,7 +556,9 @@ describe("success responses of one type in different media types", () => {
 
     strictEqual(messagesFor(diagnostics, "unsupported-feature").length, 0);
     ok(
-      fileContent(results, "IThings.g.cs").includes("Task<byte[]> ReadAsync("),
+      fileContent(results, "ThingsRequestBuilders.g.cs").includes(
+        "Task<byte[]> ReadAsync(",
+      ),
     );
   });
 });
@@ -578,7 +601,11 @@ describe("template parameter names", () => {
     ok(page.includes("record Page<@class>"), page);
     ok(page.includes("List<@class> Items"), page);
     ok(page.includes("@class First"), page);
-    ok(fileContent(results, "IPages.g.cs").includes("Task<Page<Item>>"));
+    ok(
+      fileContent(results, "PagesRequestBuilders.g.cs").includes(
+        "Task<Page<Item>>",
+      ),
+    );
   });
 
   it("replaces the characters of a quoted name that is not an identifier", async () => {
@@ -643,7 +670,9 @@ describe("template parameter names", () => {
     `);
 
     ok(
-      fileContent(results, "ITags.g.cs").includes("Task<Tagged<Item, string>>"),
+      fileContent(results, "TagsRequestBuilders.g.cs").includes(
+        "Task<Tagged<Item, string>>",
+      ),
     );
   });
 });
@@ -684,7 +713,7 @@ describe("value template parameters", () => {
           .map((d) => d.code),
         [],
       );
-      const iface = fileContent(results, "IThings.g.cs");
+      const iface = fileContent(results, "ThingsRequestBuilders.g.cs");
       strictEqual((iface.match(/Task.*Async\(/g) ?? []).length, 1, iface);
       ok(!has(results, "/Sized.g.cs"));
     });
@@ -724,7 +753,7 @@ describe("one type-walker for lists, dictionaries and nullables", () => {
       }
     `);
 
-    const iface = fileContent(results, "IThings.g.cs");
+    const iface = fileContent(results, "ThingsRequestBuilders.g.cs");
     ok(iface.includes("Task<Item> ReadAsync("), iface);
     ok(iface.includes("Task<TResult> ReadAsync<TResult>("), iface);
     ok(iface.includes("CreateAsync(ItemCreateRequest body,"), iface);
@@ -737,7 +766,7 @@ describe("one type-walker for lists, dictionaries and nullables", () => {
     `);
 
     ok(
-      fileContent(results, "IThings.g.cs").includes(
+      fileContent(results, "ThingsRequestBuilders.g.cs").includes(
         "Task<Dictionary<string, List<TResult?>>?> ReadAsync<TResult>(",
       ),
     );

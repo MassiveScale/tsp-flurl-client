@@ -21,7 +21,7 @@ describe("bulk request bodies", () => {
     `);
 
     ok(
-      fileContent(results, "IWidgets.g.cs").includes(
+      fileContent(results, "WidgetsRequestBuilders.g.cs").includes(
         "CreateManyAsync(IEnumerable<WidgetCreateRequest> body,",
       ),
     );
@@ -36,7 +36,7 @@ describe("bulk request bodies", () => {
       }
     `);
 
-    const iface = fileContent(results, "IWidgets.g.cs");
+    const iface = fileContent(results, "WidgetsRequestBuilders.g.cs");
     ok(
       iface.includes(
         "ReplaceAllAsync(IReadOnlyDictionary<string, WidgetReplaceRequest> body,",
@@ -56,7 +56,7 @@ describe("bulk request bodies", () => {
     `);
 
     ok(
-      fileContent(results, "IOwners.g.cs").includes(
+      fileContent(results, "OwnersRequestBuilders.g.cs").includes(
         "CreateManyAsync(IEnumerable<Owner> body,",
       ),
     );
@@ -72,7 +72,7 @@ describe("bulk request bodies", () => {
     `);
 
     ok(
-      fileContent(results, "IPets.g.cs").includes(
+      fileContent(results, "PetsRequestBuilders.g.cs").includes(
         "CreateManyAsync(IEnumerable<PetCreateRequest> body,",
       ),
     );

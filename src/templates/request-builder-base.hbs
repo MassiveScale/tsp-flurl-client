@@ -1,0 +1,126 @@
+{{!--
+  request-builder-base.hbs — public abstract helper emitted once per namespace.
+  Every generated request builder derives from it, and it holds what a caller
+  adds to the requests a builder sends beyond the operation's own parameters:
+
+    client.Pets(id)
+        .AppendHeader("X-Trace", traceId)
+        .AppendQueryParameter("debug", true)
+        .ConfigureRequest(r => r.WithTimeout(10))
+        .UpdateAsync(patch);
+
+  The modifiers change the builder and return it, so a builder kept in a variable
+  carries them into every later call. They are applied after the operation's own
+  parameters, in the order they were added.
+
+  Override via tspconfig.yaml:
+    options:
+      "@massivescale/tsp-flurl-client":
+        templates:
+          request-builder-base: "./templates/request-builder-base.hbs"
+
+  Template variables:
+
+  (none — this template renders a fully static class body)
+
+  Generated builders rely on the `Client` property and `ApplyModifiers` method.
+
+--}}
+/// <summary>
+/// The base of every generated request builder: the Flurl client its requests are sent through, and the
+/// headers, query parameters, cookies, and request callbacks a caller adds to them.
+/// </summary>
+/// <typeparam name="TBuilder">The derived builder, which every modifier returns so calls can be chained.</typeparam>
+public abstract class RequestBuilder<TBuilder>
+    where TBuilder : RequestBuilder<TBuilder>
+{
+    private readonly List<Action<IFlurlRequest>> _modifiers = new();
+
+    /// <summary>
+    /// Initializes a new instance of <see cref="RequestBuilder{TBuilder}"/>.
+    /// </summary>
+    /// <param name="client">The Flurl client requests are sent through.</param>
+    private protected RequestBuilder(IFlurlClient client)
+    {
+        Client = client ?? throw new ArgumentNullException(nameof(client));
+    }
+
+    /// <summary>
+    /// Gets the Flurl client requests are sent through.
+    /// </summary>
+    private protected IFlurlClient Client { get; }
+
+    /// <summary>
+    /// Sets a header on every request this builder sends, as Flurl's <c>WithHeader</c> does: it replaces
+    /// a header of the same name, including one the operation declares, and <see langword="null"/>
+    /// removes it.
+    /// </summary>
+    /// <param name="name">The header name.</param>
+    /// <param name="value">The value, written the way the operation's own headers are (enum wire names, ISO 8601 dates).</param>
+    /// <returns>This builder, so calls can be chained.</returns>
+    public TBuilder AppendHeader(string name, object? value)
+    {
+        if (name is null) throw new ArgumentNullException(nameof(name));
+
+        var text = value is null ? null : ClientRuntime.ToWireString(value);
+        _modifiers.Add(request => request.WithHeader(name, text));
+        return (TBuilder)this;
+    }
+
+    /// <summary>
+    /// Adds a query parameter that is not part of the API contract to every request this builder sends.
+    /// A parameter the operation already sends keeps its value, and this one is added beside it.
+    /// </summary>
+    /// <param name="name">The query parameter name.</param>
+    /// <param name="value">The value; a sequence is repeated once per item.</param>
+    /// <returns>This builder, so calls can be chained.</returns>
+    public TBuilder AppendQueryParameter(string name, object? value)
+    {
+        if (name is null) throw new ArgumentNullException(nameof(name));
+
+        var converted = ClientRuntime.ToQueryValue(value);
+        _modifiers.Add(request => request.AppendQueryParam(name, converted));
+        return (TBuilder)this;
+    }
+
+    /// <summary>
+    /// Adds a cookie to every request this builder sends, replacing a cookie of the same name.
+    /// </summary>
+    /// <param name="name">The cookie name.</param>
+    /// <param name="value">The value, written the way the operation's own cookies are.</param>
+    /// <returns>This builder, so calls can be chained.</returns>
+    public TBuilder AppendCookie(string name, object? value)
+    {
+        if (name is null) throw new ArgumentNullException(nameof(name));
+
+        var text = ClientRuntime.ToWireString(value);
+        _modifiers.Add(request => request.WithCookie(name, text));
+        return (TBuilder)this;
+    }
+
+    /// <summary>
+    /// Runs a callback on every request this builder sends, after the operation's own parameters are
+    /// set, for anything the other modifiers do not cover (a timeout, an allowed status code).
+    /// </summary>
+    /// <param name="configure">The callback.</param>
+    /// <returns>This builder, so calls can be chained.</returns>
+    public TBuilder ConfigureRequest(Action<IFlurlRequest> configure)
+    {
+        if (configure is null) throw new ArgumentNullException(nameof(configure));
+
+        _modifiers.Add(configure);
+        return (TBuilder)this;
+    }
+
+    /// <summary>
+    /// Applies every modifier added to this builder to a request, in the order they were added.
+    /// </summary>
+    /// <param name="request">The request, with the operation's own parameters already set.</param>
+    private protected void ApplyModifiers(IFlurlRequest request)
+    {
+        foreach (var modifier in _modifiers)
+        {
+            modifier(request);
+        }
+    }
+}

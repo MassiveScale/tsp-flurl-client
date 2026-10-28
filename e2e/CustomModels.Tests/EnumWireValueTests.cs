@@ -14,7 +14,7 @@ public sealed class EnumWireValueTests
         var (client, handler) = Harness.Create();
         handler.RespondJson("""{"id":"1","name":"gear"}""");
 
-        await client.Widgets.CreateAsync(new WidgetCreateRequest { Name = "gear", Color = Color.Blue });
+        await client.Widgets().CreateAsync(new WidgetCreateRequest { Name = "gear", Color = Color.Blue });
 
         using var sent = JsonDocument.Parse(handler.Last.Body!);
         sent.RootElement.GetProperty("color").GetString().Should().Be("blue");
@@ -26,7 +26,7 @@ public sealed class EnumWireValueTests
         var (client, handler) = Harness.Create();
         handler.RespondJson("""{"id":"1","name":"gear","color":"red"}""");
 
-        var widget = await client.Widgets.ReadAsync("1");
+        var widget = await client.Widgets("1").ReadAsync();
 
         widget.Color.Should().Be(Color.Red);
     }
@@ -37,7 +37,7 @@ public sealed class EnumWireValueTests
         var (client, handler) = Harness.Create();
         handler.RespondJson("""{"id":"1","name":"gear","color":"purple"}""");
 
-        var act = () => client.Widgets.ReadAsync("1");
+        var act = () => client.Widgets("1").ReadAsync();
 
         (await act.Should().ThrowAsync<Exception>()).Which.ToString().Should().Contain("purple");
     }
@@ -48,7 +48,7 @@ public sealed class EnumWireValueTests
         var (client, handler) = Harness.Create();
         handler.RespondJson("""{"id":"1","name":"gear","color":3}""");
 
-        var act = () => client.Widgets.ReadAsync("1");
+        var act = () => client.Widgets("1").ReadAsync();
 
         await act.Should().ThrowAsync<Exception>();
     }
@@ -59,8 +59,8 @@ public sealed class EnumWireValueTests
         var (client, handler) = Harness.Create();
         handler.RespondJson("""{"id":"1","name":"gear"}""").RespondJson("""{"id":"1","name":"gear"}""");
 
-        await client.Widgets.CreateAsync(new WidgetCreateRequest { Name = "gear" });
-        var widget = await client.Widgets.ReadAsync("1");
+        await client.Widgets().CreateAsync(new WidgetCreateRequest { Name = "gear" });
+        var widget = await client.Widgets("1").ReadAsync();
 
         handler.Requests[0].Body.Should().Be("""{"name":"gear"}""");
         widget.Color.Should().BeNull();
@@ -72,7 +72,7 @@ public sealed class EnumWireValueTests
         var (client, handler) = Harness.Create();
         handler.RespondJson("""{"id":"1","name":"gear"}""");
 
-        await client.Widgets.CreateAsync(new WidgetCreateRequest { Name = "gear", Priority = Priority.High });
+        await client.Widgets().CreateAsync(new WidgetCreateRequest { Name = "gear", Priority = Priority.High });
 
         using var sent = JsonDocument.Parse(handler.Last.Body!);
         sent.RootElement.GetProperty("priority").ValueKind.Should().Be(JsonValueKind.Number);
@@ -85,7 +85,7 @@ public sealed class EnumWireValueTests
         var (client, handler) = Harness.Create();
         handler.RespondJson("""{"id":"1","name":"gear","priority":1}""");
 
-        var widget = await client.Widgets.ReadAsync("1");
+        var widget = await client.Widgets("1").ReadAsync();
 
         widget.Priority.Should().Be(Priority.Low);
     }
@@ -96,7 +96,7 @@ public sealed class EnumWireValueTests
         var (client, handler) = Harness.Create();
         handler.RespondJson("""{"id":"1","name":"gear","priority":7}""");
 
-        var act = () => client.Widgets.ReadAsync("1");
+        var act = () => client.Widgets("1").ReadAsync();
 
         (await act.Should().ThrowAsync<Exception>()).Which.ToString().Should().Contain("7");
     }
@@ -107,7 +107,7 @@ public sealed class EnumWireValueTests
         var (client, handler) = Harness.Create();
         handler.RespondJson("""{"id":"1","name":"gear","priority":"low"}""");
 
-        var act = () => client.Widgets.ReadAsync("1");
+        var act = () => client.Widgets("1").ReadAsync();
 
         (await act.Should().ThrowAsync<Exception>()).Which.ToString().Should().Contain("a number");
     }

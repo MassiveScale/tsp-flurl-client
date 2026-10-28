@@ -215,16 +215,33 @@ describe("checkName", () => {
     ));
 });
 
-describe("aggregate client for an interface that is not prefixed with I", () => {
-  it("uses the interface name as the property name", () => {
+describe("client methods for a request builder", () => {
+  it("names the method after the endpoint group and passes the path parameters on", () => {
     const source = buildExtensions(
       "Api",
       "Acme",
-      [{ interfaceName: "Pets", clientName: "PetsEndpoint", access: "public" }],
+      [
+        {
+          groupName: "Pets",
+          methodName: "Pets",
+          className: "PetsItemRequestBuilder",
+          access: "public",
+          params: [
+            {
+              type: "string",
+              field: "_id",
+              param: "id",
+              docParam: "id",
+              doc: "The pet id.",
+            },
+          ],
+        },
+      ],
       createRenderer(),
     );
 
-    ok(source.includes("public Pets Pets { get; }"));
-    ok(source.includes("Pets pets"));
+    ok(source.includes("public PetsItemRequestBuilder Pets(string id) =>"));
+    ok(source.includes("new PetsItemRequestBuilder(this.FlurlClient, id);"));
+    ok(source.includes('<param name="id">The pet id.</param>'));
   });
 });

@@ -4,13 +4,14 @@
 
 ## Summary
 
-This emitter produces a C# project with an endpoint interface and a Flurl-backed implementation for each TypeSpec `interface`, covering every `GET`, `POST`, `PUT`, `PATCH`, and `DELETE` operation. The generated client contains everything needed to call your API — simply provide the base URI at runtime.
+This emitter produces a C# project with a single client and a fluent, Flurl-backed request builder for each TypeSpec `interface`, covering every `GET`, `POST`, `PUT`, `PATCH`, and `DELETE` operation. Calls read like the Microsoft Graph .NET SDK: `client.Pets().ListAsync()`, `client.Pets(id).AppendHeader("X-Trace", trace).UpdateAsync(patch)`. The generated client contains everything needed to call your API — simply provide the base URI at runtime.
 
-It mirrors [`@massivescale/tsp-refit-client`](https://github.com/MassiveScale/tsp-refit-client) (same options, decorators, versioning, models, and merge-patch support) but builds on Flurl.Http, and adds one thing Refit cannot offer: **models you can extend**.
+It is built on Flurl.Http and follows Flurl's conventions, so anything Flurl can do to a request (events, handlers, settings) works here too.
 
 - **Extensible models.** Derive your own types from the generated models, send them to the API, and read responses back as them. If the API accepts extension properties, your extra properties travel with the request and come back in the response. See [Custom models](#custom-models).
+- **One client, fluent calls.** Register one client and start every call from it. Path parameters go to the endpoint group (`client.Pets(id)`), and headers, query parameters, cookies and any Flurl setting can be added to a single call. See [Inject and call](#3-inject-and-call).
 - **Version-aware.** Call any endpoint version from a single client.
-- **A Flurl client you can drop down to.** The aggregate client exposes its configured `IFlurlClient`, so anything the generated methods do not cover is one Flurl call away.
+- **A Flurl client you can drop down to.** The client exposes its configured `IFlurlClient`, so anything the generated methods do not cover is one Flurl call away.
 
 ## Usage
 
@@ -35,7 +36,7 @@ options:
 | Option                        | Type       | Default                                       | Description                                                                                                                                                                                                                                                                                                                                                                                                      |
 | ----------------------------- | ---------- | --------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `project-name`                | `string`   | TypeSpec namespace + `Client`                 | Full project name for the `.csproj` filename (e.g. `PetStoreClient` → `PetStoreClient.csproj`). Dots are valid; C# identifiers use only the final segment.                                                                                                                                                                                                                                                       |
-| `client-name`                 | `string`   | Derived from `project-name`                   | Display name for the client. Controls the aggregate client class and the DI extension class/method prefix (e.g. `PetStore` → `PetStoreExtensions.g.cs`, `AddPetStore(...)`). Also used as the default NuGet `<Title>` unless `nuget-title` is set.                                                                                                                                                               |
+| `client-name`                 | `string`   | Derived from `project-name`                   | Display name for the client. Controls the client class and the DI extension class/method prefix (e.g. `PetStore` → `PetStoreExtensions.g.cs`, `AddPetStore(...)`). Also used as the default NuGet `<Title>` unless `nuget-title` is set.                                                                                                                                                                         |
 | `root-namespace`              | `string`   | TypeSpec namespace + `.Client`                | Overrides the root C# namespace for all generated files.                                                                                                                                                                                                                                                                                                                                                         |
 | `additional-usings`           | `string[]` | —                                             | Extra `using` directives appended to every emitted C# file. Use this when the service references types declared outside its own TypeSpec namespace but emitted elsewhere — for example a sibling emitter's shared namespace — so the generated code still compiles. Each entry must be a dotted C# namespace such as `Acme.Shared.Models`; anything else is reported as `invalid-option` and nothing is emitted. |
 | `net-version`                 | `string`   | `net8.0`                                      | Target .NET version(s) written into the `.csproj`. Use a single TFM (e.g. `net8.0`) or a semicolon-separated list for multi-targeting (e.g. `net8.0;net9.0`). **.NET 8 or later is required** (see [Requirements](#requirements)): `net7.0`, `netstandard2.0` and the like are reported as `invalid-option`. A suffix such as `net8.0-windows` is allowed.                                                       |
@@ -54,7 +55,7 @@ options:
 | `nuget-description`           | `string`   | `Flurl client for the {namespace} API`        | NuGet `<Description>`.                                                                                                                                                                                                                                                                                                                                                                                           |
 | `nuget-title`                 | `string`   | Value of `client-name` (if set), else omitted | NuGet `<Title>`.                                                                                                                                                                                                                                                                                                                                                                                                 |
 | `nuget-tags`                  | `string`   | —                                             | NuGet `<PackageTags>` (space-separated).                                                                                                                                                                                                                                                                                                                                                                         |
-| `templates`                   | `object`   | —                                             | Override individual built-in Handlebars templates. Keys: `file`, `record`, `enum`, `endpoint-interface`, `endpoint-client`, `csproj`, `extensions`, `merge-patch`, `model-map`, `client-runtime`.                                                                                                                                                                                                                |
+| `templates`                   | `object`   | —                                             | Override individual built-in Handlebars templates. Keys: `file`, `record`, `enum`, `request-builder`, `request-builder-base`, `csproj`, `extensions`, `merge-patch`, `model-map`, `client-runtime`.                                                                                                                                                                                                              |
 
 `project-name`, `client-name` and `root-namespace` become file paths and C# identifiers, so they are validated before anything is written. A project name must be dot-separated C# identifiers (no path separators), a client name must be a valid class name that is not a C# keyword, and a root namespace must be a valid dotted C# namespace. A bad value is reported as `invalid-option` and nothing is emitted.
 
@@ -96,8 +97,8 @@ TypeSpec lets an identifier contain almost anything once it is backtick-quoted, 
 Different source names can also become the same C# name, which C# rejects, so collisions are reported as `name-collision` (the later declaration is left out) or, for whole types and files, `output-name-collision`:
 
 - Properties: `foo` and `Foo`, or two `@clientName` values that differ only in the case of the first letter, and a property that shares its record's name (`model Owner { owner: string }`, which C# rejects as `CS0542`) or the name of a member every record has (`EqualityContract`, `Equals`, `ToString`, ...). In a `@discriminator` hierarchy, a derived property whose C# name is that of an inherited one (`Label` under `label`) is reported too, since C# would hide the inherited member; a derived property that redeclares an inherited one to narrow its type (`wheels: 4` under `wheels: int32`) is left to the inherited member.
-- Operations: `read` and `Read` both become `ReadAsync`. Parameters: `foo` and `Foo` both become `foo`, and a parameter cannot be named `body` (when there is a request body), `cancellationToken`, `additionalQueryParameters`, `flurlRequest`, `flurlResponse` or `_client`, which the generated method already uses.
-- Types: two models or enums with the same name in different child namespaces (they are flattened into one C# namespace), two interfaces with the same name, and a model named like a generated type (`IItems`, `ItemsEndpoint`, the aggregate client, its `...Extensions` class, or an enum's `...JsonConverter`). An interface cannot be named like the aggregate client, `FlurlClient` or `Create`, which are members of it.
+- Operations: `read` and `Read` both become `ReadAsync`. Parameters: `foo` and `Foo` both become `foo`, and a parameter cannot be named `body` (when there is a request body), `cancellationToken`, `flurlRequest` or `flurlResponse`, which the generated method already uses.
+- Types: two models or enums with the same name in different child namespaces (they are flattened into one C# namespace), two interfaces with the same name, and a model named like a generated type (a request builder such as `ItemsRequestBuilder` or `ItemsItemRequestBuilder`, the client, its `...Extensions` class, or an enum's `...JsonConverter`). The generated type keeps the name and the model is reported. An interface cannot be named like the client, `FlurlClient`, `Create`, or a method every C# object has (`ToString`, `Equals`, `GetHashCode`, `GetType`, `MemberwiseClone`, `Finalize`), which are members of the client.
 - File names that differ only in case (`Widget` and `widget`), which are the same file on Windows and macOS.
 - With `all-versions`, two version values that sanitize to the same namespace segment (`1.0` and `1_0`).
 
@@ -107,7 +108,7 @@ Enum members have no `@clientName`, and their wire value travels separately, so 
 
 Some names are fine in C# but need care, and the emitter takes it, so none of these needs `@clientName`:
 
-- A model or enum may share its name with a .NET type the generated code uses (`Task`, `Type`, `Uri`, `CancellationToken`, `JsonElement`, ...). The generated code then writes that .NET type in full (`global::System.Threading.CancellationToken`), in that client only; everywhere else it keeps the short name. Only the emitter's own types (`ModelMap`, `ClientRuntime`, `MergePatch`, `IMergePatch`) and the aggregate client keep their names to themselves, and a model that takes one is reported.
+- A model or enum may share its name with a .NET type the generated code uses (`Task`, `Type`, `Uri`, `CancellationToken`, `JsonElement`, ...). The generated code then writes that .NET type in full (`global::System.Threading.CancellationToken`), in that client only; everywhere else it keeps the short name. Only the emitter's own types (`ModelMap`, `ClientRuntime`, `RequestBuilder`, `MergePatch`, `IMergePatch`), the request builders and the client keep their names to themselves, and a model that takes one is reported.
 - A model or enum named with only lower-case letters (`thing`) is declared verbatim (`record @thing`), since C# warns about the plain name (`CS8981`).
 - A template parameter that is a C# keyword or all lower-case is written verbatim (`@class`, `@value`), one that is not an identifier has its other characters replaced (`my-T` is `my_T`), and one that would share a name with its record, one of its properties, or a member every record has is prefixed with `T` (`TEquals`). A caller never writes these names, only the type arguments.
 - A parameter named after a keyword, or `await` (which every generated method reserves, being `async`), is written verbatim (`@class`, `@await`).
@@ -126,7 +127,7 @@ interface SecretEndpoints {
 }
 ```
 
-An internal interface is an internal property of the aggregate client, and the aggregate client's constructor becomes internal whenever any endpoint is internal (a public constructor cannot take an internal type).
+An internal interface's request builders are internal classes, and the client methods that create them are internal too. The client itself stays public.
 
 `@access` and `@clientName` also work on a generic model (`@access(Access.internal) model Page<T>`). TypeSpec runs a decorator only on each use of a template (`Page<string>`), never on the declaration, so the emitter reads the declaration's own decorators when it generates the generic `Page<T>` record.
 
@@ -140,7 +141,7 @@ linter:
     - "@massivescale/tsp-flurl-client/recommended"
 ```
 
-It also checks operations declared directly in a namespace, which are emitted as public interface methods, and a public `@discriminator` subtype of an internal base type (the emitter keeps C# inheritance there, which C# rejects as `CS0060`). The fix is either to mark the referenced type `@access(Access.public)` or to mark the interface (or, for a property, its model) `@access(Access.internal)` as well. Marking an _operation_ internal does not help: C# interface methods cannot carry an access modifier, so the rule still reports it.
+It also checks operations declared directly in a namespace, which are emitted as public request builder methods, and a public `@discriminator` subtype of an internal base type (the emitter keeps C# inheritance there, which C# rejects as `CS0060`). The fix is either to mark the referenced type `@access(Access.public)` or to mark the interface (or, for a property, its model) `@access(Access.internal)` as well. Marking an _operation_ internal does not help: `@access` applies to an interface's request builders as a whole, not to single methods, so the rule still reports it.
 
 Then compile your TypeSpec definition:
 
@@ -155,17 +156,17 @@ After running `tsp compile`, the emitter writes a self-contained C# project to y
 ```
 <output-dir>/
   Endpoints/
-    ICustomers.g.cs          # Endpoint interface per TypeSpec interface
-    CustomersEndpoint.g.cs     # Its Flurl implementation (internal)
+    CustomersRequestBuilders.g.cs  # The request builders of one TypeSpec interface
   Models/
-    Customer.g.cs            # C# records for every model
+    Customer.g.cs                  # C# records for every model
     CustomerCreateRequest.g.cs
-    MergePatch.g.cs          # Only when a merge-patch body is used
+    MergePatch.g.cs                # Only when a merge-patch body is used
   Infrastructure/
-    ModelMap.g.cs            # Registry for custom models
-    ClientRuntime.g.cs       # Serializer setup and wire-format helpers (internal)
-  ApiClientExtensions.g.cs   # Aggregate client + DI registration helper
-  ApiClient.csproj           # Project file (Flurl.Http + Microsoft.Extensions.Http)
+    ModelMap.g.cs                  # Registry for custom models
+    ClientRuntime.g.cs             # Serializer setup and wire-format helpers (internal)
+    RequestBuilder.g.cs            # Base class of every request builder
+  ApiClientExtensions.g.cs         # The client + DI registration helper
+  ApiClient.csproj                 # Project file (Flurl.Http + Microsoft.Extensions.Http)
 ```
 
 ### 1. Reference the generated project
@@ -181,7 +182,7 @@ Add a project reference from your application to the generated `.csproj`:
 
 ### 2. Register with dependency injection
 
-Call the generated extension method in your `Program.cs`:
+Call the generated extension method in your `Program.cs`. It registers one thing, the client:
 
 ```csharp
 builder.Services.AddApiClient(client =>
@@ -190,7 +191,7 @@ builder.Services.AddApiClient(client =>
 });
 ```
 
-To add delegating handlers (e.g. auth, logging) or resilience policies, pass the optional second argument. The third argument registers [custom models](#custom-models):
+To add delegating handlers (e.g. auth, logging) or resilience policies, pass the optional second argument. The third argument registers [custom models](#custom-models), and the fourth configures each Flurl client the registration creates, for Flurl's settings and its `BeforeCall`, `AfterCall`, `OnError`, and `OnRedirect` events:
 
 ```csharp
 builder.Services.AddApiClient(
@@ -198,49 +199,124 @@ builder.Services.AddApiClient(
     builder => builder
         .AddHttpMessageHandler<AuthHeaderHandler>()
         .AddStandardResilienceHandler(),
-    models => models.Map<Widget, MyWidget>()
+    models => models.Map<Widget, MyWidget>(),
+    flurl => flurl
+        .BeforeCall(call => logger.LogInformation("Calling {Url}", call.Request.Url))
+        .AfterCall(call => logger.LogInformation("{Status} in {Elapsed}", call.Response?.StatusCode, call.Duration))
 );
 ```
+
+A delegating handler sees every request, so it is the place to fetch a token, or refresh one that has expired, before the request goes out:
+
+```csharp
+// ITokenSource stands for your own token cache, e.g. one built on MSAL or Azure.Identity.
+public sealed class AuthHeaderHandler(ITokenSource tokens) : DelegatingHandler
+{
+    protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+    {
+        request.Headers.Authorization = new("Bearer", await tokens.GetValidTokenAsync(ct));
+        return await base.SendAsync(request, ct);
+    }
+}
+
+builder.Services.AddTransient<AuthHeaderHandler>();
+```
+
+To replace the handler that sends the requests (for a proxy, client certificates, or a test stub), use `builder => builder.ConfigurePrimaryHttpMessageHandler(() => myHandler)`. The registration's own handler does not follow redirects, because Flurl follows them; turn `AllowAutoRedirect` off on yours too to keep it that way.
 
 Without dependency injection, create the client directly:
 
 ```csharp
 var api = ApiClient.Create("https://api.example.com");
 
-// or on top of a Flurl client you already configured
-var api = ApiClient.Create(myFlurlClient);
+// or on top of a Flurl client you already configured: your own handler, events, settings
+var handler = new AuthHeaderHandler(tokens) { InnerHandler = new HttpClientHandler { AllowAutoRedirect = false } };
+var flurl = new FlurlClient(new HttpClient(handler))
+{
+    BaseUrl = "https://api.example.com",
+}.BeforeCall(call => Console.WriteLine(call.Request.Url));
+var api = ApiClient.Create(flurl);
 ```
 
 > `Create(IFlurlClient)` replaces the Flurl client's JSON serializer with the one the generated models need. Do not share that client with code that expects Flurl's default serializer.
 
 ### 3. Inject and call
 
-Inject the single aggregate client and access each endpoint group as a named property:
+Inject the client (`ApiClient` by default, or the name derived from `client-name`/`project-name`) and start each call from the method named after its TypeSpec `interface`. That method takes the operation's path parameters and returns a request builder, whose methods send the operations:
 
 ```csharp
 public class ProductService(ApiClient api)
 {
-    public Task<Item> GetAsync(string id, CancellationToken ct) =>
-        api.Items.ReadAsync(id, cancellationToken: ct);
+    public Task<ItemList> ListAsync(CancellationToken ct) =>
+        api.Items().ListAsync(ct);
 
-    public Task<Item> CreateAsync(ItemCreateRequest body, CancellationToken ct) =>
-        api.Items.CreateAsync(body, cancellationToken: ct);
+    public Task<Item> GetAsync(string id, CancellationToken ct) =>
+        api.Items(id).ReadAsync(ct);
+
+    public Task<Item> UpdateAsync(string id, MergePatch<Item> patch, CancellationToken ct) =>
+        api.Items(id).UpdateAsync(patch, ct);
 }
 ```
 
-You can also inject an endpoint interface directly (`IItems`), which is the easiest thing to substitute in tests.
+The operations of one interface are grouped by the path parameters they take, and each group is one builder:
 
-The aggregate client (`ApiClient` by default, or the name derived from `client-name`/`project-name`) exposes one strongly-typed property per TypeSpec `interface` in your spec, plus `FlurlClient`, the underlying `IFlurlClient`.
+```typespec
+@route("/stores/{storeId}/pets")
+interface Pets {
+  @get list(@path storeId: string): Pet[];                              // client.Pets(storeId).ListAsync()
+  @post create(@path storeId: string, @body body: Pet): Pet;            // client.Pets(storeId).CreateAsync(pet)
+  @get read(@path storeId: string, @path petId: string): Pet;           // client.Pets(storeId, petId).ReadAsync()
+  @delete delete(@path storeId: string, @path petId: string): void;     // client.Pets(storeId, petId).DeleteAsync()
+}
+```
+
+The builders are named after the interface: `PetsRequestBuilder` for the operations without path parameters, then `PetsItemRequestBuilder`, `PetsItem2RequestBuilder`, and so on, fewest parameters first. You rarely write these names, since `var` holds them. Two groups whose path parameters have the same C# types (`lookup/{kind}/{id}` and `files/{folder}/{name}`, both `string, string`) would make two identical `client.Misc(string, string)` methods, which C# rejects, so they share one builder. Its parameters are named after the first operation that takes them, and each operation fills its own route from them in order.
 
 Optional TypeSpec parameters (`?`) are emitted as nullable C# types with `= null` defaults so callers can omit them:
 
 ```csharp
 // TypeSpec: list(@query skip?: int32, @query take?: int32): Item[];
-Task<List<Item>> ListAsync(int? skip = null, int? take = null, Dictionary<string, object>? additionalQueryParameters = null, CancellationToken cancellationToken = default);
+Task<List<Item>> ListAsync(int? skip = null, int? take = null, CancellationToken cancellationToken = default);
 
 // Call site:
-await api.Items.ListAsync(skip: 20, take: 10, cancellationToken: ct);
+await api.Items().ListAsync(skip: 20, take: 10, cancellationToken: ct);
 ```
+
+The client also exposes `FlurlClient`, the underlying `IFlurlClient`.
+
+### Adding headers, query parameters, and cookies to a call
+
+Every request builder can add to the requests it sends what the TypeSpec contract does not declare, such as a tracing header, a feature flag, or a timeout:
+
+| Method                                    | What it adds to each request                                                                         |
+| ----------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| `AppendHeader(name, value)`               | A header, replacing one of the same name, as Flurl's `WithHeader` does. `null` removes it.           |
+| `AppendQueryParameter(name, value)`       | A query parameter. One the operation already sends keeps its value, and this one is added beside it. |
+| `AppendCookie(name, value)`               | A cookie, replacing a cookie of the same name.                                                       |
+| `ConfigureRequest(Action<IFlurlRequest>)` | Anything else Flurl can do to a request: `r => r.WithTimeout(10)`, `r => r.AllowHttpStatus(404)`.    |
+
+```csharp
+await api.Items(id)
+    .AppendHeader("X-Trace", traceId)
+    .AppendQueryParameter("debug", true)
+    .UpdateAsync(patch, ct);
+// PATCH /api/items/{id}?debug=true, with X-Trace: {traceId}
+```
+
+Values are written the way the operation's own parameters are: an enum by its wire name, a date as ISO 8601, a boolean as `true` or `false`, and a list repeated once per item in the query string. The additions are applied after the operation's own parameters, in the order they were added.
+
+Each call to `api.Items()` returns a new builder, so what you add applies only to the calls you make through that builder. A builder kept in a variable applies it to every call made through it:
+
+```csharp
+var tenantItems = api.Items().AppendHeader("X-Tenant", tenantId);
+await tenantItems.ListAsync(ct);         // sends X-Tenant
+await tenantItems.CreateAsync(item, ct); // sends X-Tenant
+await api.Items().ListAsync(ct);         // a new builder: no X-Tenant
+```
+
+The modifiers change the builder they are called on and return it, so do not share one builder between threads.
+
+For paging wrappers (`ListAllAsync`), a continuation-token or offset strategy re-sends the same request for every page, so the additions reach every page. A next-link strategy fetches every page after the first from the link the server returned, so the additions reach the first page only. The operation's own declared headers and cookies are still sent with every page.
 
 ### Errors
 
@@ -249,7 +325,7 @@ A non-success response throws Flurl's `FlurlHttpException`, carrying the status 
 ```csharp
 try
 {
-    await api.Items.ReadAsync(id);
+    await api.Items(id).ReadAsync();
 }
 catch (FlurlHttpException ex) when (ex.StatusCode == 404)
 {
@@ -259,17 +335,9 @@ catch (FlurlHttpException ex) when (ex.StatusCode == 404)
 
 Models that only an error response uses (an `@error` model such as `ApiError`) are generated too, even though no method returns them, so the body of a failed call can be read as a typed model.
 
-### Adding custom query parameters
+### Testing code that uses the client
 
-Every generated method accepts an `additionalQueryParameters` dictionary, so callers can append query parameters that aren't part of the TypeSpec contract (feature flags, tracing params, etc.) to any call:
-
-```csharp
-await api.Items.ListAsync(
-    skip: 20,
-    additionalQueryParameters: new Dictionary<string, object> { ["debug"] = true },
-    cancellationToken: ct);
-// GET /api/items?skip=20&debug=true
-```
+The client and its builders are concrete classes. To test code that calls them, give the client a stubbed `HttpMessageHandler` (for example through `AddHttpMessageHandler` in the DI registration, or `ApiClient.Create(new FlurlClient(new HttpClient(handler)) { BaseUrl = "https://api.test" })`), or use Flurl's own `HttpTest`.
 
 ## Custom models
 
@@ -290,7 +358,7 @@ Whether the API accepts or rejects the extra properties is the API's business. T
 Pass your derived model wherever the generated one is accepted. It is serialized as the type you gave it, so its extra properties are included:
 
 ```csharp
-await api.Widgets.CreateAsync(new MyCreateRequest { Name = "gear", Sku = "G-1" });
+await api.Widgets().CreateAsync(new MyCreateRequest { Name = "gear", Sku = "G-1" });
 // {"name":"gear","sku":"G-1"}
 ```
 
@@ -298,7 +366,7 @@ This also works for collections of models (`IEnumerable<Widget>` accepts a `List
 
 ```csharp
 var patch = new MergePatch<MyWidget>().Set(w => w.Sku, "G-2");
-await api.Widgets.UpdateAsync(id, patch);
+await api.Widgets(id).UpdateAsync(patch);
 // {"sku":"G-2"}
 ```
 
@@ -309,9 +377,9 @@ Unset (`null`) optional properties are left out of the request body.
 Every operation whose response contains a model has a generic overload. Name your type and the response is deserialized as it:
 
 ```csharp
-Widget plain = await api.Widgets.ReadAsync(id);                 // extra properties are dropped
-MyWidget mine = await api.Widgets.ReadAsync<MyWidget>(id);      // mine.Sku is populated
-List<MyWidget> all = await api.Widgets.CreateManyAsync<MyWidget>(bodies);
+Widget plain = await api.Widgets(id).ReadAsync();               // extra properties are dropped
+MyWidget mine = await api.Widgets(id).ReadAsync<MyWidget>();    // mine.Sku is populated
+List<MyWidget> all = await api.Widgets().CreateManyAsync<MyWidget>(bodies);
 ```
 
 The type argument is constrained to the model the operation declares (`where TResult : Widget`) and sits at the core of the response: `Widget[]` becomes `List<TResult>`, `Record<Widget>` becomes `Dictionary<string, TResult>`. When the response is a wrapper around the model you care about, derive the wrapper:
@@ -319,7 +387,7 @@ The type argument is constrained to the model the operation declares (`where TRe
 ```csharp
 public record MyWidgetPage : WidgetPage { public string? Cursor { get; init; } }
 
-MyWidgetPage page = await api.Widgets.ListAsync<MyWidgetPage>();
+MyWidgetPage page = await api.Widgets().ListAsync<MyWidgetPage>();
 ```
 
 ### Reading, everywhere: the model map
@@ -331,7 +399,7 @@ builder.Services.AddApiClient(
     client => client.BaseAddress = new Uri("https://api.example.com"),
     configureModels: models => models.Map<Widget, MyWidget>());
 
-var page = await api.Widgets.ListAsync();
+var page = await api.Widgets().ListAsync();
 // page.Items[0] and page.Featured are MyWidget at runtime, though typed as Widget.
 ```
 
@@ -360,8 +428,8 @@ For `@discriminator` hierarchies, custom subtypes work in the same ways, with th
 ```csharp
 public record MyDog : Dog { public string? Breed { get; init; } }
 
-await api.Pets.CreateAsync(new MyDog { Name = "rex", Breed = "lab" });   // {"kind":"dog",...}
-List<MyDog> dogs = await api.Pets.ListAsync<MyDog>();
+await api.Pets().CreateAsync(new MyDog { Name = "rex", Breed = "lab" }); // {"kind":"dog",...}
+List<MyDog> dogs = await api.Pets().ListAsync<MyDog>();
 
 // or: models.Map<Dog, MyDog>(); then ListAsync() returns MyDog for every "dog".
 ```
@@ -429,7 +497,7 @@ public record Dog : Pet { public bool IsBarker { get; init; } }
 public record Cat : Pet { public bool IsPurrer { get; init; } }
 
 // A response typed as List<Pet> deserializes each element to its concrete Dog/Cat type.
-List<Pet> pets = await api.Pets.ListAsync();
+List<Pet> pets = await api.Pets().ListAsync();
 ```
 
 `Dog` and `Cat` are emitted even though nothing in the TypeSpec definition references them directly — they only ever appear as a polymorphic `Pet` at runtime.
@@ -473,7 +541,7 @@ Durations are written and read as ISO 8601 (`PT1H30M`), which is what a TypeSpec
 
 ### What is not supported
 
-A request or success response that cannot be sent or read correctly is reported as an error (`unsupported-feature`) and that one operation is left out of the client, rather than being generated with the wrong behaviour. The rest of the client is generated. Call such an operation through the Flurl client the aggregate client exposes (`FlurlClient`).
+A request or success response that cannot be sent or read correctly is reported as an error (`unsupported-feature`) and that one operation is left out of the client, rather than being generated with the wrong behaviour. The rest of the client is generated. Call such an operation through the Flurl client the client exposes (`FlurlClient`).
 
 - Multipart request or response bodies (`@multipartBody`).
 - File bodies (`Http.File`).
@@ -513,7 +581,7 @@ var patch = new MergePatch<Widget>()
     .Set(w => w.Name, "new name")  // send a new value
     .Clear(w => w.Description);    // send an explicit null, clearing the field
 
-await client.Widgets.UpdateAsync(id, patch, ct);
+await client.Widgets(id).UpdateAsync(patch, ct);
 // body: {"name":"new name","description":null}
 ```
 
@@ -553,7 +621,7 @@ interface Stores {
 Task<PagedResult<Store>> ListAsync(int? skip, int? take, ...);   // one page
 IAsyncEnumerable<Store> ListAllAsync(int? skip, int? take, ...); // every page
 
-await foreach (var store in client.Stores.ListAllAsync(cancellationToken: ct))
+await foreach (var store in client.Stores().ListAllAsync(cancellationToken: ct))
 {
     Console.WriteLine(store.Name);
 }
@@ -561,13 +629,13 @@ await foreach (var store in client.Stores.ListAllAsync(cancellationToken: ct))
 
 Three paging styles are supported, detected from whichever decorators the page model and operation parameters carry (priority `@nextLink` > `@continuationToken` > `@offset`/`@pageIndex`, when a page model somehow carries more than one):
 
-| Decorator                         | How `ListAllAsync` follows it                                                                                                                               |
-| --------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `@nextLink` (a `url` or `string`) | Follows the link directly through `_client`, resolved against the URL of the page that returned it, replaying the operation's header and cookie parameters. |
-| `@continuationToken` (a `string`) | Re-calls the raw method with the previous response's token in place of the matching input parameter, until the token comes back empty.                      |
-| `@offset` / `@pageIndex`          | Re-calls the raw method with the counter advanced, until a page comes back with no items (there is no total-count signal to stop on otherwise).             |
+| Decorator                         | How `ListAllAsync` follows it                                                                                                                   |
+| --------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `@nextLink` (a `url` or `string`) | Requests the link through Flurl as the server wrote it, replaying the operation's header and cookie parameters.                                 |
+| `@continuationToken` (a `string`) | Re-calls the raw method with the previous response's token in place of the matching input parameter, until the token comes back empty.          |
+| `@offset` / `@pageIndex`          | Re-calls the raw method with the counter advanced, until a page comes back with no items (there is no total-count signal to stop on otherwise). |
 
-A relative next link resolves against the page that returned it, as RFC 3986 has it: `?skip=25` keeps that page's path, and `page2` replaces its last segment. To know the first page's URL, the wrapper sends the first request itself, built by the same private method the raw method uses. A next link is server-controlled, so once resolved it must stay on the origin (scheme, host, and port) of the client's base URL. A link to any other origin throws `InvalidOperationException` before anything is sent, so neither the operation's headers and cookies nor credentials configured on the client itself reach another host. A continuation request does not follow redirects automatically: a 301, 302, 303, 307, or 308 is followed by the wrapper itself, resolving `Location` against the URL that redirected, checking the target's origin the same way before sending anything there, and replaying the same header and cookie parameters, up to 50 redirects per page. The first page goes through the client's normal redirect handling, as the raw method does. Redirects are always Flurl's to follow: `Create` uses Flurl's own handler, and the `Add...Client` registration gives its `HttpClient` a handler that does not follow them either. A primary handler you set through `configureBuilder` replaces that one, and then decides redirects for you. A response declared with a bodyless success (`PagedResult<Store> | void`) ends the enumeration when it arrives.
+A next link is the next URL to request, so it is handed to Flurl exactly as the server wrote it, as `client.FlurlClient.Request(link)` would be. An absolute link (`https://api.example.com/stores?page=2`) is requested as it is, even on another host. A relative link is appended to the client's base URL the way Flurl joins URLs: with a base of `https://api.example.com/v1`, both `stores?page=2` and `/stores?page=2` become `https://api.example.com/v1/stores?page=2`. Redirects are followed by Flurl, as for any other request. What was added to the builder (`AppendHeader`, `ConfigureRequest`, ...) reaches the first page only, while the operation's own header and cookie parameters are sent with every page. A response declared with a bodyless success (`PagedResult<Store> | void`) ends the enumeration when it arrives.
 
 `@prevLink`, `@firstLink`, `@lastLink`, and `@pageSize` are read as ordinary model and operation properties — they're backward and random-access links, not something a forward-only `IAsyncEnumerable<T>` follows.
 
@@ -654,14 +722,14 @@ Each version is emitted from TypeSpec's projection of the service onto that vers
 ```
 <output-dir>/
   v1.0/
-    Endpoints/        # IWidgets, WidgetsEndpoint, ... for v1.0
+    Endpoints/        # WidgetsRequestBuilders, ... for v1.0
     Models/           # Widget, Status, WidgetCreateRequest, ... exactly as v1.0 declares them
     ApiClientExtensions.g.cs
   v2.0/
     Endpoints/
     Models/
     ApiClientExtensions.g.cs
-  Infrastructure/     # ModelMap, ClientRuntime: shared by every version
+  Infrastructure/     # ModelMap, ClientRuntime, RequestBuilder: shared by every version
   Models/MergePatch.g.cs   # only when used; shared
   ApiClient.csproj
 ```

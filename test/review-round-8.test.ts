@@ -1,7 +1,13 @@
 import { deepStrictEqual, ok, strictEqual } from "node:assert";
 import { describe, it } from "node:test";
 import { sortUsings } from "../src/utils.js";
-import { emit, emitWithDiagnostics, fileContent, messagesFor } from "./host.js";
+import {
+  emit,
+  emitWithDiagnostics,
+  fileContent,
+  has,
+  messagesFor,
+} from "./host.js";
 
 const PREAMBLE = `
   import "@typespec/http";
@@ -99,7 +105,7 @@ describe("bodyless success responses", () => {
       }
     `);
 
-    const client = fileContent(results, "XEndpoint.g.cs");
+    const client = fileContent(results, "XRequestBuilders.g.cs");
     ok(client.includes("if (flurlResponse.StatusCode == 204) return default;"));
     ok(client.includes("Task<byte[]?> BlobAsync("));
     ok(client.includes("flurlResponse.StatusCode is >= 204 and <= 205"));
@@ -111,7 +117,11 @@ describe("bodyless success responses", () => {
       @route("/x") interface X { @get read(): Item; }
     `);
 
-    ok(!fileContent(results, "XEndpoint.g.cs").includes("return default;"));
+    ok(
+      !fileContent(results, "XRequestBuilders.g.cs").includes(
+        "return default;",
+      ),
+    );
   });
 });
 
@@ -149,7 +159,11 @@ describe("using directives", () => {
       { "additional-usings": ["München.Models"] },
     );
 
-    ok(fileContent(results, "IWidgets.g.cs").includes("using München.Models;"));
+    ok(
+      fileContent(results, "WidgetsRequestBuilders.g.cs").includes(
+        "using München.Models;",
+      ),
+    );
   });
 
   it("sorts ordinally, with System and its children first, and dedupes", () => {
@@ -182,8 +196,8 @@ describe("encodings of every success response body", () => {
     strictEqual(messages.length, 1, messages.join("; "));
     ok(messages[0].includes('The body "m"'));
     ok(
-      !fileContent(results, "INumbers.g.cs").includes("ReadAsync("),
-      "the operation is left out rather than reading the 201 wrongly",
+      !has(results, "NumbersRequestBuilders.g.cs"),
+      "the operation is left out rather than reading the 201 wrongly, and with it the only builder of Numbers",
     );
   });
 

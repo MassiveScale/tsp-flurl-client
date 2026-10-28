@@ -30,8 +30,8 @@ export type TemplateName =
   | "file"
   | "record"
   | "enum"
-  | "endpoint-interface"
-  | "endpoint-client"
+  | "request-builder"
+  | "request-builder-base"
   | "csproj"
   | "extensions"
   | "merge-patch"
@@ -263,7 +263,7 @@ export interface HeaderParamView {
   value?: string;
 }
 
-/** View model for a single endpoint method, used by both the interface and the client class. */
+/** View model for a single endpoint method of a request builder. */
 export interface MethodView {
   /** Optional XML doc text (pre-escaped). */
   doc?: string;
@@ -326,11 +326,10 @@ export type PagingStrategy =
 
 /**
  * View model for a single generated `IAsyncEnumerable<T>` auto-paginating wrapper
- * method, declared on the endpoint interface and implemented on the endpoint
- * client beside the raw single-page method it wraps. Unlike {@link MethodView},
- * this does not describe one HTTP request: it describes a loop that calls the raw
- * method (and, for `nextLink`, follows a URL directly through `_client`) until no
- * further pages remain.
+ * method, declared on the request builder beside the raw single-page method it
+ * wraps. Unlike {@link MethodView}, this does not describe one HTTP request: it
+ * describes a loop that calls the raw method (and, for `nextLink`, follows a URL
+ * directly through `Client`) until no further pages remain.
  */
 export interface PagingMethodView {
   /** Optional XML doc text (pre-escaped), carried over from the TypeSpec operation. */
@@ -343,16 +342,14 @@ export interface PagingMethodView {
   rawMethodName: string;
   /** C# type of a single page item, e.g. `"Store"`. */
   itemType: string;
-  /** C# type of the page response model, e.g. `"PagedResult<Store>"`. Used only by the `nextLink` strategy, to type the page fetched directly through `_client`. */
+  /** C# type of the page response model, e.g. `"PagedResult<Store>"`. Used only by the `nextLink` strategy, to type the page fetched directly through `Client`. */
   pageType: string;
   /** PascalCase name of the page model's items-array property, e.g. `"Items"`. */
   itemsPropertyName: string;
   /**
    * Pre-joined parameter declaration list matching the raw method's own
-   * parameters, but without a trailing `CancellationToken` — the interface
-   * declaration and the client implementation each append their own form of it
-   * (see {@link renderPagingInterfaceMethod} / {@link renderPagingClientMethod}),
-   * since only the implementation is itself an iterator method.
+   * parameters, but without the trailing `CancellationToken`, which the wrapper
+   * declares itself with `[EnumeratorCancellation]` (see {@link renderPagingClientMethod}).
    */
   paramsText: string;
   /** Pre-joined argument list to call {@link rawMethodName} with; the paging input parameter (if any) is already substituted for its loop-local variable name. */
@@ -373,41 +370,19 @@ export interface PagingMethodView {
   nextLinkIsString?: boolean;
   /** `nextLink` strategy only: collision-free local variable name for the current next-link value. */
   nextLinkVarName?: string;
-  /** `nextLink` strategy only: collision-free local variable name for the client's base URL, the origin every next link must stay on. */
-  baseUriVarName?: string;
-  /** `nextLink` strategy only: collision-free local variable name for the next link resolved against the URL of the page that returned it. */
-  nextUriVarName?: string;
-  /** `nextLink` strategy only: collision-free local variable name for the URL the current page was fetched from, which a relative next link resolves against. */
-  pageUriVarName?: string;
   /**
-   * `nextLink` strategy only: the private method that builds the raw method's request,
-   * which the raw method and the wrapper both call, so the wrapper can send the first
-   * page itself and know the URL it was fetched from.
+   * `nextLink` strategy only: collision-free local variable name for the Flurl request built from the link.
+   * What the caller added to the builder (`AppendHeader`, `ConfigureRequest`, ...) is applied to the first
+   * page only, never to this request.
    */
-  requestBuilder?: {
-    /** The method name, e.g. `"ListRequest"`. */
-    name: string;
-    /** Its parameter list: the raw method's, without the body and the cancellation token. */
-    paramsText: string;
-    /** The arguments the raw method and the wrapper call it with. */
-    argsText: string;
-  };
-  /** `nextLink` strategy only: collision-free local variable name for the Flurl request built against that URL. */
   nextRequestVarName?: string;
-  /** `nextLink` strategy only: collision-free local variable name for the response to a continuation request, which may be a redirect. */
-  nextResponseVarName?: string;
-  /** `nextLink` strategy only: collision-free local variable name for the count of redirects followed for one continuation page. */
-  redirectsVarName?: string;
   /** `nextLink` strategy only: collision-free local variable name for the deserialized continuation page. */
   nextPageVarName?: string;
   /**
    * `nextLink` strategy only: the raw method's header bindings, replayed on
-   * every continuation request — it goes through `_client` directly, not the
+   * every continuation request — it goes through `Client` directly, not the
    * raw method, so none of its own bindings would otherwise reach page two
-   * onward (a tenant or authentication header, for instance). A next link to a
-   * different origin than the client's base URL is refused before anything is
-   * sent, so neither these nor the client's own default credentials can leak
-   * to another host.
+   * onward (a tenant or authentication header, for instance).
    */
   headerParams?: HeaderParamView[];
   /** `nextLink` strategy only: the raw method's cookie bindings, replayed the same way as {@link headerParams}. */
@@ -428,30 +403,53 @@ export interface PagingMethodView {
   counterCsType?: string;
 }
 
-/** View model for an endpoint interface (`IWidgets`). */
-export interface EndpointInterfaceView {
-  /** C# interface name, e.g. `"IWidgets"`. */
-  interfaceName: string;
-  /** Optional XML doc text (pre-escaped). */
-  doc?: string;
-  /** Ordered list of method view models. */
-  methods: MethodView[];
-  /** Auto-paginating wrapper methods declared alongside the raw methods above. */
-  pagingMethods: PagingMethodView[];
-  /** C# access modifier: `"public"` (default) or `"internal"`. */
-  access: string;
+/** A path parameter a request builder holds, and the client method that creates it takes. */
+export interface BuilderParamView {
+  /** C# type, e.g. `"string"`. */
+  type: string;
+  /** Name of the builder's field, e.g. `"_storeId"`. */
+  field: string;
+  /** Parameter name as written in C#, verbatim-escaped when needed, e.g. `"storeId"` or `"@await"`. */
+  param: string;
+  /** The parameter name in XML documentation, never escaped, e.g. `"await"`. */
+  docParam: string;
+  /** The parameter's documentation (pre-escaped, single line). */
+  doc: string;
 }
 
-/** View model for an endpoint client implementation (`WidgetsEndpoint`). */
-export interface EndpointClientView {
-  /** C# class name, e.g. `"WidgetsEndpoint"`. */
+/**
+ * View model for a request builder (`PetsItemRequestBuilder`): the operations of one
+ * TypeSpec interface that take the same path parameters.
+ */
+export interface RequestBuilderView {
+  /** C# class name, e.g. `"PetsItemRequestBuilder"`. */
   className: string;
-  /** Interface the class implements, e.g. `"IWidgets"`. */
-  interfaceName: string;
-  /** Ordered list of method view models. */
+  /** The endpoint group (the TypeSpec interface), e.g. `"Pets"`. */
+  groupName: string;
+  /** Optional XML doc text (pre-escaped). */
+  doc?: string;
+  /** C# access modifier: `"public"` (default) or `"internal"`. */
+  access: string;
+  /** Name of the constructor's Flurl client parameter, distinct from every path parameter. */
+  clientParam: string;
+  /** The path parameters the builder holds, in order. */
+  fields: BuilderParamView[];
+  /** Ordered list of method view models; each may carry a paging wrapper. */
   methods: MethodView[];
-  /** Auto-paginating wrapper methods implemented alongside the raw methods above. */
-  pagingMethods: PagingMethodView[];
+}
+
+/** One client method that starts a request: it creates a request builder. */
+export interface ClientBuilderEntry {
+  /** The endpoint group (the TypeSpec interface), e.g. `"Pets"`. */
+  groupName: string;
+  /** Method name on the client, e.g. `"Pets"`. */
+  methodName: string;
+  /** The builder class it returns, e.g. `"PetsItemRequestBuilder"`. */
+  className: string;
+  /** C# access modifier of the method: the interface's own, `"public"` or `"internal"`. */
+  access: string;
+  /** The path parameters it takes, in order. */
+  params: BuilderParamView[];
 }
 
 /** View model passed to the `file` template — wraps any inner body with the file header. */
@@ -466,36 +464,18 @@ export interface FileView {
   fileName: string;
 }
 
-/** One endpoint entry used in the aggregate client and DI registration. */
-export interface InterfaceEntry {
-  /** C# interface name, e.g. `"IStores"`. */
-  name: string;
-  /** C# implementation class name, e.g. `"StoresEndpoint"`. */
-  clientName: string;
-  /** Property name on the aggregate client class, e.g. `"Stores"`. */
-  propertyName: string;
-  /** Constructor parameter name as written in C#, verbatim-escaped when needed, e.g. `"stores"` or `"@params"`. */
-  paramName: string;
-  /** The parameter name in its XML documentation, never escaped, e.g. `"params"`. */
-  docParamName: string;
-  /** C# access modifier of the property: the interface's own, `"public"` or `"internal"`. */
-  access: string;
-}
-
-/** View model for the generated aggregate client class and DI registration extension class. */
+/** View model for the generated client class and DI registration extension class. */
 export interface ExtensionsView {
   /** Name of the static extensions class, e.g. `"ApiClientExtensions"`. */
   className: string;
   /** Name of the public extension method, e.g. `"AddApiClient"`. */
   methodName: string;
-  /** Name of the aggregate client class, e.g. `"ApiClient"`. */
+  /** Name of the client class, e.g. `"ApiClient"`. */
   clientClassName: string;
   /** Name used to register the underlying named `HttpClient`; unique per namespace and client. */
   httpClientName: string;
-  /** C# access modifier of the aggregate client's constructor; `"internal"` when any endpoint is internal. */
-  constructorAccess: string;
-  /** Ordered list of endpoint entries. */
-  interfaces: InterfaceEntry[];
+  /** The client's methods that start a request, in order. */
+  builders: ClientBuilderEntry[];
 }
 
 /** View model for the generated `.csproj` project file. */
@@ -531,13 +511,11 @@ export interface Renderer {
   renderRecord(view: RecordView): string;
   /** Renders a `public enum` declaration with its members. */
   renderEnum(view: EnumView): string;
-  /** Renders an endpoint `public interface` declaration with its methods. */
-  renderEndpointInterface(view: EndpointInterfaceView): string;
-  /** Renders an endpoint client implementation class with its methods. */
-  renderEndpointClient(view: EndpointClientView): string;
+  /** Renders a request builder class with its methods. */
+  renderRequestBuilder(view: RequestBuilderView): string;
   /** Renders the `.csproj` project file content. */
   renderCsproj(view: CsprojView): string;
-  /** Renders the aggregate client and DI registration extension class bodies. */
+  /** Renders the client and DI registration extension class bodies. */
   renderExtensions(view: ExtensionsView): string;
   /** Renders the `MergePatch<T>` helper class body. Takes no view model. */
   renderMergePatch(): string;
@@ -545,6 +523,8 @@ export interface Renderer {
   renderModelMap(): string;
   /** Renders the internal `ClientRuntime` helper class body. Takes no view model. */
   renderClientRuntime(): string;
+  /** Renders the `RequestBuilder<TBuilder>` base class body. Takes no view model. */
+  renderRequestBuilderBase(): string;
 }
 
 /**
@@ -737,32 +717,8 @@ function typeParamDocs(
 }
 
 /**
- * Renders the interface members for one method: one per overload (see
- * {@link overloadsOf}).
- *
- * @param m - The method view.
- * @returns The rendered members, indented for placement inside an interface.
- */
-function renderInterfaceMethod(m: MethodView): string {
-  return overloadsOf(m)
-    .map((parameters) => {
-      const signature = overloadSignature(m, parameters, "");
-      signature[signature.length - 1] += ";";
-      return [
-        ...renderDocLines(
-          m.doc,
-          typeParamDocs(m, parameters),
-          methodSummary(m),
-        ),
-        ...signature,
-      ].join("\n");
-    })
-    .join("\n\n");
-}
-
-/**
  * Renders the statements that build the request into `flurlRequest`: its path, query,
- * header and cookie parameters, and the extra query parameters.
+ * header and cookie parameters, then whatever the caller added to the builder.
  *
  * @param m - The method view.
  * @param pad - The indentation of the statements.
@@ -770,7 +726,7 @@ function renderInterfaceMethod(m: MethodView): string {
  */
 function renderRequestBuild(m: MethodView, pad: string): string[] {
   const lines = [
-    `${pad}var flurlRequest = _client.Request().AppendPathSegment($"${m.route}");`,
+    `${pad}var flurlRequest = Client.Request().AppendPathSegment($"${m.route}");`,
   ];
   for (const q of m.queryParams) {
     const convert = q.delimited
@@ -790,9 +746,7 @@ function renderRequestBuild(m: MethodView, pad: string): string[] {
       `${pad}${c.guard ? `if (${c.variable} is not null) ` : ""}flurlRequest.WithCookie("${escapeCsString(c.name)}", ClientRuntime.ToWireString(${c.value ?? c.variable}));`,
     );
   }
-  lines.push(
-    `${pad}ClientRuntime.AddQueryParameters(flurlRequest, additionalQueryParameters);`,
-  );
+  lines.push(`${pad}ApplyModifiers(flurlRequest);`);
   return lines;
 }
 
@@ -856,8 +810,6 @@ function renderRead(m: MethodView, responseType: string): string | undefined {
 
 /**
  * Renders the statements that build and send the request, then read the response.
- * A method with a `nextLink` paging wrapper builds its request through the private
- * builder it shares with the wrapper.
  *
  * @param m - The method view.
  * @param responseType - The C# type the JSON body is read as.
@@ -865,10 +817,7 @@ function renderRead(m: MethodView, responseType: string): string | undefined {
  */
 function renderRequestBody(m: MethodView, responseType: string): string[] {
   const pad = "        ";
-  const builder = m.paging?.requestBuilder;
-  const lines = builder
-    ? [`${pad}var flurlRequest = ${builder.name}(${builder.argsText});`]
-    : renderRequestBuild(m, pad);
+  const lines = renderRequestBuild(m, pad);
   lines.push(
     `${pad}using var flurlResponse = ${renderSend(m)}.ConfigureAwait(false);`,
   );
@@ -881,28 +830,6 @@ function renderRequestBody(m: MethodView, responseType: string): string[] {
 }
 
 /**
- * Renders the private method that builds a request, shared by the raw method and its
- * `nextLink` paging wrapper.
- *
- * @param m - The method view.
- * @param builder - The builder the paging view names.
- * @returns The rendered member, indented for placement inside a class.
- */
-function renderRequestBuilder(
-  m: MethodView,
-  builder: NonNullable<PagingMethodView["requestBuilder"]>,
-): string {
-  return [
-    `    /// <summary>Builds the request <c>${m.methodName}</c> sends.</summary>`,
-    `    private ${fx("IFlurlRequest")} ${builder.name}(${builder.paramsText})`,
-    "    {",
-    ...renderRequestBuild(m, "        "),
-    "        return flurlRequest;",
-    "    }",
-  ].join("\n");
-}
-
-/**
  * Renders the class members for one method. The overload with every type parameter
  * the method has carries the implementation, and each other overload forwards to
  * it, filling in the declared types for the type parameters it does not take.
@@ -911,7 +838,8 @@ function renderRequestBuilder(
  * @returns The rendered members, indented for placement inside a class.
  */
 function renderClientMethod(m: MethodView): string {
-  const inherit = "    /// <inheritdoc />";
+  const docs = (parameters: OverloadParameter[]): string[] =>
+    renderDocLines(m.doc, typeParamDocs(m, parameters), methodSummary(m));
   const overloads = overloadsOf(m);
   const full = overloads[overloads.length - 1];
   const declared = (p: OverloadParameter): string =>
@@ -922,7 +850,7 @@ function renderClientMethod(m: MethodView): string {
       parameters.includes(p) ? p : declared(p),
     );
     return [
-      inherit,
+      ...docs(parameters),
       ...signature.slice(0, -1),
       `${signature[signature.length - 1]} =>`,
       `        ${m.methodName}<${typeArguments.join(", ")}>(${m.argsText});`,
@@ -930,7 +858,7 @@ function renderClientMethod(m: MethodView): string {
   });
   members.push(
     [
-      inherit,
+      ...docs(full),
       ...overloadSignature(m, full, "public async "),
       "    {",
       ...renderRequestBody(
@@ -942,49 +870,42 @@ function renderClientMethod(m: MethodView): string {
       "    }",
     ].join("\n"),
   );
-  if (m.paging?.requestBuilder) {
-    members.push(renderRequestBuilder(m, m.paging.requestBuilder));
-  }
   return members.join("\n\n");
 }
 
 /**
- * Renders the interface declaration of a paging wrapper method.
+ * The XML documentation of a paging wrapper method.
  *
  * @param m - The paging method view.
- * @returns The rendered member, indented for placement inside an interface.
+ * @returns The `///` lines, indented for placement inside a class.
  */
-function renderPagingInterfaceMethod(m: PagingMethodView): string {
-  const params = `${m.paramsText}, ${fx("CancellationToken")} cancellationToken = default`;
+function pagingDocLines(m: PagingMethodView): string[] {
   const remarks =
     m.strategy === "nextLink"
       ? [
           "<remarks>",
-          "Follows each page's next link until none remains. A next link must stay on the",
-          "origin (scheme, host, and port) of the client's base URL: one that points anywhere",
-          `else throws <see cref="${fx("InvalidOperationException")}"/> before any request is sent,`,
-          "so neither the operation's headers nor the client's own credentials reach another host.",
+          "Follows each page's next link until none remains, as Flurl does: an absolute link is",
+          "requested as it is, and a relative one is appended to the client's base URL.",
+          "What was added to this builder (headers, query parameters, cookies, request callbacks)",
+          "applies to the first page only, since every later page is fetched from its link.",
           "</remarks>",
         ]
       : [];
-  return [
-    ...renderDocLines(
-      m.doc,
-      remarks,
-      // Plain code text, not `<see cref="...">`: the raw method can have a
-      // second, generic overload (any response holding a named model gets
-      // one — see endpoint-interface.hbs), which makes a bare, unqualified
-      // cref to its name ambiguous (CS0419) once XML docs are generated.
-      `Retrieves every item across all pages of <c>${m.rawMethodName}</c>.`,
-    ),
-    `    ${fx("IAsyncEnumerable", "generic")}<${m.itemType}> ${m.methodName}(${params});`,
-  ].join("\n");
+  return renderDocLines(
+    m.doc,
+    remarks,
+    // Plain code text, not `<see cref="...">`: the raw method can have a
+    // second, generic overload (any response holding a named model gets one),
+    // which makes a bare, unqualified cref to its name ambiguous (CS0419) once
+    // XML docs are generated.
+    `Retrieves every item across all pages of <c>${m.rawMethodName}</c>.`,
+  );
 }
 
 /**
  * Renders the statements that replay the raw method's header and cookie
  * bindings onto a manually-built Flurl request — needed only for a `nextLink`
- * continuation request, which goes through `_client` directly rather than the
+ * continuation request, which goes through `Client` directly rather than the
  * raw method, so none of its own bindings (auth, tenant, API-version, ...)
  * would otherwise reach page two onward.
  *
@@ -1032,52 +953,25 @@ function renderNullPageGuard(
     : [];
 }
 
-/** The redirect statuses a continuation request follows: those `HttpClientHandler` follows. */
-const REDIRECT_STATUSES = [301, 302, 303, 307, 308];
-
-/** The most redirects followed for one continuation page, as `HttpClientHandler` allows by default. */
-const MAX_REDIRECTS = 50;
-
 /**
  * Renders the loop body statements for the `nextLink` strategy: reads the raw
  * method's page, then follows the response's next-page link directly through
- * `_client` (bypassing the raw method, since `nextLink` is an opaque absolute URL
- * the raw method's own route cannot express) until none remains.
+ * `Client` (bypassing the raw method, since the link is a whole URL the raw
+ * method's own route cannot express) until none remains.
  *
  * @param m - The paging method view.
- * @param raw - The raw method, whose request the first page is sent as.
  * @returns The statements, indented for placement inside the wrapper method body.
  */
-function renderNextLinkPagingBody(
-  m: PagingMethodView,
-  raw: MethodView,
-): string[] {
+function renderNextLinkPagingBody(m: PagingMethodView): string[] {
   const page = m.pageVarName;
   const item = m.itemVarName;
   const nextLink = m.nextLinkVarName!;
-  const baseUri = m.baseUriVarName!;
-  const nextUri = m.nextUriVarName!;
-  const pageUri = m.pageUriVarName!;
   const nextRequest = m.nextRequestVarName!;
   const nextPage = m.nextPageVarName!;
-  const nextResponse = m.nextResponseVarName!;
-  const redirects = m.redirectsVarName!;
-  const builder = m.requestBuilder!;
-  const uri = fx("Uri");
-  const invalidOperation = fx("InvalidOperationException");
-  const read = renderRead(raw, m.pageType)!;
+  // A `Uri` is handed over as the server wrote it; its `ToString()` would unescape it.
+  const linkText = m.nextLinkIsString ? nextLink : `${nextLink}.OriginalString`;
   return [
-    // The first page is sent here, as the raw method sends it, rather than through
-    // the raw method, so the URL it was fetched from is known: a relative next link
-    // resolves against the page that returned it (RFC 3986), not the service root.
-    `        ${m.pageType}${m.pageNullable ? "?" : ""} ${page};`,
-    `        ${uri} ${pageUri};`,
-    `        {`,
-    `            var flurlRequest = ${builder.name}(${builder.argsText});`,
-    `            ${pageUri} = flurlRequest.Url.ToUri();`,
-    `            using var flurlResponse = ${renderSend(raw)}.ConfigureAwait(false);`,
-    `            ${page} = ${raw.response?.emptyWhen ? `${raw.response.emptyWhen} ? null : ` : ""}${read};`,
-    `        }`,
+    `        var ${page} = await ${m.rawMethodName}(${m.argsText}).ConfigureAwait(false);`,
     ...renderNullPageGuard(m, page, "        "),
     `        foreach (var ${item} in ${page}.${m.itemsPropertyName})`,
     `        {`,
@@ -1088,41 +982,14 @@ function renderNextLinkPagingBody(
     `        var ${nextLink} = ${page}.${m.nextLinkPropertyName};`,
     `        while (${m.nextLinkIsString ? `!string.IsNullOrEmpty(${nextLink})` : `${nextLink} is not null`})`,
     `        {`,
-    // The next link is server-controlled, and this client carries credentials of
-    // its own (default headers, handlers) besides the operation's headers, so a
-    // link to another origin is refused before anything is sent. `BaseUrl` is
-    // the base in both the DI and the `Create(baseUrl)` paths; `HttpClient.BaseAddress`
-    // is not set by the latter.
-    `            var ${baseUri} = string.IsNullOrEmpty(_client.BaseUrl)`,
-    `                ? throw new ${invalidOperation}("Cannot follow a next-page link without a base URL to check its origin against.")`,
-    `                : new ${uri}(_client.BaseUrl, ${fx("UriKind")}.Absolute);`,
-    `            var ${nextUri} = new ${uri}(${pageUri}, ${nextLink});`,
-    `            ${m.pageType}? ${nextPage};`,
-    // Redirects are followed here rather than by Flurl, so every hop gets the same
-    // origin check as the link itself before anything is sent there. Only the
-    // statuses HttpClientHandler follows are redirects; any other 3xx fails as before.
-    `            for (var ${redirects} = 0; ; ${redirects}++)`,
-    `            {`,
-    `                if (${uri}.Compare(${nextUri}, ${baseUri}, ${fx("UriComponents")}.SchemeAndServer, ${fx("UriFormat")}.UriEscaped, ${fx("StringComparison")}.OrdinalIgnoreCase) != 0)`,
-    `                {`,
-    `                    throw new ${invalidOperation}("Refusing to send a next-page request to " + ${nextUri}.Scheme + "://" + ${nextUri}.Authority + ", which is not the origin of the client's base address.");`,
-    `                }`,
-    `                var ${nextRequest} = _client.Request(${nextUri}.AbsoluteUri).WithAutoRedirect(false).AllowHttpStatus("${REDIRECT_STATUSES.join(",")}");`,
+    // Flurl requests an absolute link as it is and appends a relative one to the
+    // client's base URL.
+    `            var ${nextRequest} = Client.Request(${linkText});`,
     // The raw method's own header/cookie bindings (auth, tenant, API-version,
     // ...) are replayed by hand, since following nextLink bypasses it entirely.
-    ...renderReplayedHeadersAndCookies(m, nextRequest, "                "),
-    `                using var ${nextResponse} = await ${nextRequest}.GetAsync(cancellationToken: cancellationToken).ConfigureAwait(false);`,
-    `                if (${nextResponse}.StatusCode is ${REDIRECT_STATUSES.join(" or ")})`,
-    `                {`,
-    `                    if (${redirects} == ${MAX_REDIRECTS}) throw new ${invalidOperation}("Stopped following a next-page link after ${MAX_REDIRECTS} redirects.");`,
-    `                    ${nextUri} = new ${uri}(${nextUri}, ${nextResponse}.ResponseMessage.Headers.Location ?? throw new ${invalidOperation}("A next-page request was redirected without a Location header."));`,
-    `                    continue;`,
-    `                }`,
-    `                ${nextPage} = await ${nextResponse}.GetJsonAsync<${m.pageType}>().ConfigureAwait(false);`,
-    `                break;`,
-    `            }`,
+    ...renderReplayedHeadersAndCookies(m, nextRequest, "            "),
+    `            ${m.pageType}? ${nextPage} = await ${nextRequest}.GetJsonAsync<${m.pageType}>(cancellationToken: cancellationToken).ConfigureAwait(false);`,
     `            if (${nextPage} is null) yield break;`,
-    `            ${pageUri} = ${nextUri};`,
     `            foreach (var ${item} in ${nextPage}.${m.itemsPropertyName})`,
     `            {`,
     `                cancellationToken.ThrowIfCancellationRequested();`,
@@ -1204,27 +1071,28 @@ function renderCounterPagingBody(m: PagingMethodView): string[] {
 }
 
 /**
- * Renders the client implementation of a paging wrapper method: its signature
- * (matching the interface declaration) and, dispatched on {@link PagingMethodView.strategy},
- * the loop body appropriate to that strategy.
+ * Renders a paging wrapper method: its documentation, its signature, and,
+ * dispatched on {@link PagingMethodView.strategy}, the loop body appropriate to
+ * that strategy.
  *
  * @param m - The paging method view.
- * @param raw - The raw method the wrapper pages through.
- * @returns The rendered member, indented for placement inside the endpoint client class.
+ * @returns The rendered member, indented for placement inside the request builder class.
  */
-function renderPagingClientMethod(
-  m: PagingMethodView,
-  raw: MethodView,
-): string {
-  const params = `${m.paramsText}, [${fx("EnumeratorCancellation", "attribute")}] ${fx("CancellationToken")} cancellationToken = default`;
+function renderPagingClientMethod(m: PagingMethodView): string {
+  const params = [
+    m.paramsText,
+    `[${fx("EnumeratorCancellation", "attribute")}] ${fx("CancellationToken")} cancellationToken = default`,
+  ]
+    .filter(Boolean)
+    .join(", ");
   const lines = [
-    "    /// <inheritdoc />",
+    ...pagingDocLines(m),
     `    public async ${fx("IAsyncEnumerable", "generic")}<${m.itemType}> ${m.methodName}(${params})`,
     "    {",
   ];
   switch (m.strategy) {
     case "nextLink":
-      lines.push(...renderNextLinkPagingBody(m, raw));
+      lines.push(...renderNextLinkPagingBody(m));
       break;
     case "continuationToken":
       lines.push(...renderContinuationTokenPagingBody(m));
@@ -1254,15 +1122,15 @@ export function createRenderer(overrides: TemplateOverrides = {}): Renderer {
   const fileTemplate = loadTemplate(env, "file", overrides.file);
   const recordTemplate = loadTemplate(env, "record", overrides.record);
   const enumTemplate = loadTemplate(env, "enum", overrides.enum);
-  const interfaceTemplate = loadTemplate(
+  const builderTemplate = loadTemplate(
     env,
-    "endpoint-interface",
-    overrides["endpoint-interface"],
+    "request-builder",
+    overrides["request-builder"],
   );
-  const clientTemplate = loadTemplate(
+  const builderBaseTemplate = loadTemplate(
     env,
-    "endpoint-client",
-    overrides["endpoint-client"],
+    "request-builder-base",
+    overrides["request-builder-base"],
   );
   const csprojTemplate = loadTemplate(env, "csproj", overrides.csproj);
   const extensionsTemplate = loadTemplate(
@@ -1299,33 +1167,22 @@ export function createRenderer(overrides: TemplateOverrides = {}): Renderer {
       return enumTemplate(view);
     },
 
-    renderEndpointInterface(view) {
-      const methodBlocks = [
-        ...view.methods.map(renderInterfaceMethod),
-        ...view.pagingMethods.map(renderPagingInterfaceMethod),
-      ];
-      const methodsBlock =
-        methodBlocks.length > 0 ? methodBlocks.join("\n\n") + "\n" : "";
-      return interfaceTemplate({
-        interfaceName: view.interfaceName,
-        doc: view.doc,
-        access: view.access,
-        methodsBlock,
-      });
-    },
-
-    renderEndpointClient(view) {
+    renderRequestBuilder(view) {
       const methodBlocks = [
         ...view.methods.map(renderClientMethod),
         ...view.methods.flatMap((m) =>
-          m.paging ? [renderPagingClientMethod(m.paging, m)] : [],
+          m.paging ? [renderPagingClientMethod(m.paging)] : [],
         ),
       ];
       const methodsBlock =
         methodBlocks.length > 0 ? methodBlocks.join("\n\n") + "\n" : "";
-      return clientTemplate({
+      return builderTemplate({
         className: view.className,
-        interfaceName: view.interfaceName,
+        groupName: view.groupName,
+        doc: view.doc,
+        access: view.access,
+        clientParam: view.clientParam,
+        fields: view.fields,
         methodsBlock,
       });
     },
@@ -1348,6 +1205,10 @@ export function createRenderer(overrides: TemplateOverrides = {}): Renderer {
 
     renderClientRuntime() {
       return clientRuntimeTemplate({});
+    },
+
+    renderRequestBuilderBase() {
+      return builderBaseTemplate({});
     },
   };
 }

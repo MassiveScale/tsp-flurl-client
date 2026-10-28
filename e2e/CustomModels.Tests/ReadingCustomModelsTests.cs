@@ -20,7 +20,7 @@ public sealed class ReadingCustomModelsTests
         var (client, handler) = Harness.Create();
         handler.RespondJson(WidgetJson);
 
-        var widget = await client.Widgets.ReadAsync("1");
+        var widget = await client.Widgets("1").ReadAsync();
 
         widget.Should().BeOfType<Widget>();
         widget.Name.Should().Be("gear");
@@ -32,7 +32,7 @@ public sealed class ReadingCustomModelsTests
         var (client, handler) = Harness.Create();
         handler.RespondJson(WidgetJson);
 
-        var widget = await client.Widgets.ReadAsync<MyWidget>("1");
+        var widget = await client.Widgets("1").ReadAsync<MyWidget>();
 
         widget.Sku.Should().Be("S-1");
         widget.Name.Should().Be("gear");
@@ -44,7 +44,7 @@ public sealed class ReadingCustomModelsTests
         var (client, handler) = Harness.Create();
         handler.RespondJson(PageJson);
 
-        var page = await client.Widgets.ListAsync<MyWidgetPage>();
+        var page = await client.Widgets().ListAsync<MyWidgetPage>();
 
         page.Cursor.Should().Be("next");
         page.Items.Should().ContainSingle().Which.Name.Should().Be("a");
@@ -56,7 +56,7 @@ public sealed class ReadingCustomModelsTests
         var (client, handler) = Harness.Create();
         handler.RespondJson($"[{WidgetJson}]");
 
-        var widgets = await client.Widgets.CreateManyAsync<MyWidget>([]);
+        var widgets = await client.Widgets().CreateManyAsync<MyWidget>([]);
 
         widgets.Should().ContainSingle().Which.Sku.Should().Be("S-1");
     }
@@ -67,7 +67,7 @@ public sealed class ReadingCustomModelsTests
         var (client, handler) = Harness.Create();
         handler.RespondJson("""[{"kind":"dog","name":"rex","isBarker":true,"breed":"lab"}]""");
 
-        var pets = await client.Pets.ListAsync<MyDog>();
+        var pets = await client.Pets().ListAsync<MyDog>();
 
         pets.Should().ContainSingle().Which.Breed.Should().Be("lab");
     }
@@ -78,7 +78,7 @@ public sealed class ReadingCustomModelsTests
         var (client, handler) = Harness.Create(m => m.Map<Widget, MyWidget>());
         handler.RespondJson(PageJson);
 
-        var page = await client.Widgets.ListAsync();
+        var page = await client.Widgets().ListAsync();
 
         page.Items[0].Should().BeOfType<MyWidget>().Which.Sku.Should().Be("S-1");
         page.Featured.Should().BeOfType<MyWidget>().Which.Sku.Should().Be("S-2");
@@ -90,7 +90,7 @@ public sealed class ReadingCustomModelsTests
         var (client, handler) = Harness.Create(m => m.Map<Widget, MyWidget>());
         handler.RespondJson(WidgetJson);
 
-        var widget = await client.Widgets.ReadAsync("1");
+        var widget = await client.Widgets("1").ReadAsync();
 
         widget.Should().BeOfType<MyWidget>().Which.Sku.Should().Be("S-1");
     }
@@ -113,7 +113,7 @@ public sealed class ReadingCustomModelsTests
         handler.RespondJson(
             """[{"kind":"dog","name":"rex","isBarker":true,"breed":"lab"},{"kind":"cat","name":"tom","isPurrer":true}]""");
 
-        var pets = await client.Pets.ListAsync();
+        var pets = await client.Pets().ListAsync();
 
         pets[0].Should().BeOfType<MyDog>().Which.Breed.Should().Be("lab");
         pets[1].Should().BeOfType<Cat>();
@@ -124,7 +124,7 @@ public sealed class ReadingCustomModelsTests
     {
         var (client, handler) = Harness.Create(m => m.Map<Owner, MyOwner>());
 
-        await client.Owners.CreateManyAsync(new List<Owner> { new MyOwner { Name = "a", Nickname = "n" } });
+        await client.Owners().CreateManyAsync(new List<Owner> { new MyOwner { Name = "a", Nickname = "n" } });
 
         handler.Last.Body.Should().Contain("\"nickname\":\"n\"");
     }
@@ -134,7 +134,7 @@ public sealed class ReadingCustomModelsTests
     {
         var (client, handler) = Harness.Create(m => m.Map<Owner, MyOwner>());
 
-        await client.Owners.CreateManyAsync(new List<Owner> { new Owner { Name = "a" } });
+        await client.Owners().CreateManyAsync(new List<Owner> { new Owner { Name = "a" } });
 
         handler.Last.Body.Should().Be("""[{"name":"a"}]""");
     }
@@ -145,7 +145,7 @@ public sealed class ReadingCustomModelsTests
         var (client, handler) = Harness.Create();
         handler.RespondJson("""{"code":7,"message":"nope"}""", System.Net.HttpStatusCode.BadRequest);
 
-        var act = () => client.Widgets.ReadAsync("1");
+        var act = () => client.Widgets("1").ReadAsync();
 
         var failure = (await act.Should().ThrowAsync<FlurlHttpException>()).Which;
         (await failure.GetResponseStringAsync()).Should().Contain("nope");
@@ -159,7 +159,7 @@ public sealed class ReadingCustomModelsTests
 
         // The gadget itself is a plain Gadget, which the map would turn into a MyGadget when reading,
         // so writing it takes a different path. Its owner is a custom MyOwner and must keep its extras.
-        await client.Gadgets.CreateAsync(new Gadget
+        await client.Gadgets().CreateAsync(new Gadget
         {
             Id = "1",
             Owner = new MyOwner { Name = "o", Nickname = "ozzy" },

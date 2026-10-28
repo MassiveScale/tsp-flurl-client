@@ -1,4 +1,4 @@
-import { ok, doesNotMatch } from "node:assert";
+import { ok, doesNotMatch, strictEqual } from "node:assert";
 import { describe, it } from "node:test";
 import { emit, fileContent } from "./host.js";
 
@@ -24,11 +24,7 @@ describe("aggregate client", () => {
     );
 
     ok(content.includes("public IFlurlClient FlurlClient { get; }"));
-    ok(
-      content.includes(
-        "public TestApiClient(IFlurlClient flurlClient, IPets pets, IStores stores)",
-      ),
-    );
+    ok(content.includes("public TestApiClient(IFlurlClient flurlClient)"));
     ok(content.includes("FlurlClient = flurlClient ?? throw"));
   });
 
@@ -44,11 +40,7 @@ describe("aggregate client", () => {
       ),
     );
     ok(content.includes("ClientRuntime.Configure(flurlClient, models);"));
-    ok(
-      content.includes(
-        "return new TestApiClient(flurlClient, new PetsEndpoint(flurlClient), new StoresEndpoint(flurlClient));",
-      ),
-    );
+    ok(content.includes("return new TestApiClient(flurlClient);"));
     ok(
       content.includes(
         "public static TestApiClient Create(string baseUrl, Action<ModelMap>? configureModels = null)",
@@ -58,7 +50,7 @@ describe("aggregate client", () => {
 });
 
 describe("dependency injection registration", () => {
-  it("registers a named HttpClient and every endpoint", async () => {
+  it("registers a named HttpClient and only the client", async () => {
     const content = fileContent(
       await emit(TWO_INTERFACES),
       "TestApiClientExtensions.g.cs",
@@ -82,13 +74,13 @@ describe("dependency injection registration", () => {
     );
     ok(
       content.includes(
-        "services.AddTransient<IPets>(sp => new PetsEndpoint(CreateFlurlClient(sp, models)));",
+        "services.AddTransient<TestApiClient>(sp => new TestApiClient(CreateFlurlClient(sp, models, configureFlurlClient)));",
       ),
     );
-    ok(
-      content.includes(
-        "services.AddTransient<IStores>(sp => new StoresEndpoint(CreateFlurlClient(sp, models)));",
-      ),
+    strictEqual(
+      (content.match(/services\.AddTransient</g) ?? []).length,
+      1,
+      "Expected the request builders, which the client creates, not to be registered",
     );
   });
 
@@ -103,12 +95,37 @@ describe("dependency injection registration", () => {
         "Func<IHttpClientBuilder, IHttpClientBuilder>? configureBuilder = null,",
       ),
     );
-    ok(content.includes("Action<ModelMap>? configureModels = null)"));
+    ok(content.includes("Action<ModelMap>? configureModels = null,"));
     ok(
       !content.includes("AddSingleton"),
       "The model map must be captured, not registered by type, or one API version's map would replace another's",
     );
     ok(content.includes("configureModels?.Invoke(models);"));
+  });
+
+  it("lets callers configure every Flurl client it creates, after its serializer is set", async () => {
+    const content = fileContent(
+      await emit(TWO_INTERFACES),
+      "TestApiClientExtensions.g.cs",
+    );
+
+    ok(
+      content.includes(
+        "Action<IFlurlClient>? configureFlurlClient = null)\n    {",
+      ),
+      "Expected an optional last parameter, so existing calls keep compiling",
+    );
+    const configured = content.indexOf(
+      "var flurlClient = ClientRuntime.Configure(new FlurlClient(httpClient), models);",
+    );
+    const invoked = content.indexOf(
+      "configureFlurlClient?.Invoke(flurlClient);",
+    );
+    ok(
+      configured >= 0 && invoked > configured,
+      "Expected the caller's callback to run after the serializer is set, so the caller has the last word",
+    );
+    ok(content.includes("return flurlClient;"));
   });
 
   it("keys the HttpClient name by client name", async () => {
@@ -120,7 +137,7 @@ describe("dependency injection registration", () => {
     ok(content.includes('"TestApi.Client.PetStore"'));
   });
 
-  it("escapes an interface whose parameter name is a C# keyword", async () => {
+  it("escapes a builder path parameter whose name is a C# keyword", async () => {
     const results = await emit(`
       import "@typespec/http";
       using Http;
@@ -129,16 +146,27 @@ describe("dependency injection registration", () => {
       namespace TestApi;
 
       @route("/params")
-      interface Params { @get list(): string[]; }
+      interface Params { @get read(@path params: string): string; }
     `);
 
     const content = fileContent(results, "TestApiClientExtensions.g.cs");
-    ok(content.includes("IParams @params"));
     ok(
       content.includes(
-        "Params = @params ?? throw new ArgumentNullException(nameof(@params));",
+        "public ParamsItemRequestBuilder Params(string @params) =>",
       ),
     );
+    ok(
+      content.includes(
+        "new ParamsItemRequestBuilder(this.FlurlClient, @params);",
+      ),
+    );
+    const builders = fileContent(results, "ParamsRequestBuilders.g.cs");
+    ok(
+      builders.includes(
+        "internal ParamsItemRequestBuilder(IFlurlClient flurlClient, string @params)",
+      ),
+    );
+    ok(builders.includes("this._params = @params;"));
   });
 });
 

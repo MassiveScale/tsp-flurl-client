@@ -58,6 +58,9 @@ export const MODEL_MAP_HELPER_NAME = "ModelMap";
 /** C# name of the internal serializer/wire-format helper emitted once per namespace. */
 export const CLIENT_RUNTIME_HELPER_NAME = "ClientRuntime";
 
+/** C# name of the generic base class every request builder derives from, emitted once per namespace. */
+export const REQUEST_BUILDER_HELPER_NAME = "RequestBuilder";
+
 /**
  * Accumulator recording which hand-written helper classes the mapped types depend
  * on, so the emitter knows which helper files it has to write. Threaded alongside

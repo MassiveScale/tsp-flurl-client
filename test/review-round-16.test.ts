@@ -1,7 +1,5 @@
 import { ok, strictEqual } from "node:assert";
 import { describe, it } from "node:test";
-import { buildExtensions } from "../src/client.js";
-import { createRenderer } from "../src/renderer.js";
 import { emit, fileContent } from "./host.js";
 
 const PREAMBLE = `
@@ -12,65 +10,30 @@ const PREAMBLE = `
   namespace TestApi;
 `;
 
-/** The constructor parameter list of the aggregate client. */
-const constructorParameters = (extensions: string): string =>
-  /public TestApiClient\(([^)]*)\)/.exec(extensions)?.[1] ??
-  /internal TestApiClient\(([^)]*)\)/.exec(extensions)?.[1] ??
-  "";
-
-describe("aggregate client constructor parameters", () => {
-  it("gives an endpoint that would become flurlClient another parameter name", async () => {
+describe("request builder constructor parameters", () => {
+  it("gives the Flurl client another name when a path parameter is called flurlClient", async () => {
     const results = await emit(`${PREAMBLE}
-      @route("/a") interface flurlClient { @get read(): void; }
+      @route("/a") interface Items { @get read(@path flurlClient: string): void; }
     `);
 
-    const parameters = constructorParameters(
-      fileContent(results, "TestApiClientExtensions.g.cs"),
-    );
-    ok(parameters.includes("IFlurlClient flurlClient"), parameters);
-    ok(parameters.includes("IflurlClient flurlClientEndpoint"), parameters);
-    // The property `flurlClient` is set through `this`, since the parameter of the
-    // same name would otherwise be the one assigned.
+    const builders = fileContent(results, "ItemsRequestBuilders.g.cs");
     ok(
-      fileContent(results, "TestApiClientExtensions.g.cs").includes(
-        "this.flurlClient = flurlClientEndpoint",
+      builders.includes(
+        "internal ItemsItemRequestBuilder(IFlurlClient flurlClient2, string flurlClient)",
       ),
+      builders,
     );
+    ok(builders.includes(": base(flurlClient2)"), builders);
+    ok(builders.includes("this._flurlClient = flurlClient;"), builders);
   });
 
-  it("gives endpoints whose names differ only in their first letter different parameter names", () => {
-    // Two such interfaces are reported as a file-name clash by the emitter, so the
-    // builder is called directly.
-    const parameters = constructorParameters(
-      buildExtensions(
-        "TestApiClient",
-        "TestApi",
-        [
-          {
-            interfaceName: "IItems",
-            clientName: "ItemsEndpoint",
-            access: "public",
-          },
-          {
-            interfaceName: "Iitems",
-            clientName: "itemsEndpoint",
-            access: "public",
-          },
-        ],
-        createRenderer(),
-      ),
-    );
-    ok(parameters.includes("IItems items"), parameters);
-    ok(parameters.includes("Iitems itemsEndpoint"), parameters);
-  });
-
-  it("documents an escaped parameter by its unescaped name", async () => {
+  it("documents an escaped path parameter by its unescaped name", async () => {
     const results = await emit(`${PREAMBLE}
-      @route("/a") interface Params { @get read(): void; }
+      @route("/a") interface Items { @get read(@path params: string): void; }
     `);
 
     const extensions = fileContent(results, "TestApiClientExtensions.g.cs");
-    ok(extensions.includes("IParams @params"), extensions);
+    ok(extensions.includes("Items(string @params)"), extensions);
     ok(extensions.includes('<param name="params">'), extensions);
     ok(!extensions.includes('<param name="@params">'), extensions);
   });
@@ -131,7 +94,7 @@ describe("dictionary request bodies", () => {
       @route("/w") interface Widgets { @post create(@body body: Record<Widget>): Record<Widget>; }
     `);
 
-    const iface = fileContent(results, "IWidgets.g.cs");
+    const iface = fileContent(results, "WidgetsRequestBuilders.g.cs");
     for (const signature of [
       "CreateAsync(IReadOnlyDictionary<string, WidgetCreateRequest> body,",
       "CreateAsync<TResult>(IReadOnlyDictionary<string, WidgetCreateRequest> body,",
@@ -143,7 +106,7 @@ describe("dictionary request bodies", () => {
     ok(iface.includes("where TBody : WidgetCreateRequest"), iface);
     ok(iface.includes('<typeparam name="TBody">'), iface);
 
-    const client = fileContent(results, "WidgetsEndpoint.g.cs");
+    const client = fileContent(results, "WidgetsRequestBuilders.g.cs");
     strictEqual((client.match(/public async /g) ?? []).length, 1, client);
     ok(
       client.includes("CreateAsync<Widget, WidgetCreateRequest>(body,"),
@@ -157,7 +120,7 @@ describe("dictionary request bodies", () => {
     `);
 
     ok(
-      fileContent(results, "IWidgets.g.cs").includes(
+      fileContent(results, "WidgetsRequestBuilders.g.cs").includes(
         "CreateAsync<TBody>(IEnumerable<IReadOnlyDictionary<string, TBody>>? body,",
       ),
     );
@@ -168,7 +131,7 @@ describe("dictionary request bodies", () => {
       @route("/w") interface Widgets { @post create(@body body?: Record<Widget>): Widget; }
     `);
 
-    const iface = fileContent(results, "IWidgets.g.cs");
+    const iface = fileContent(results, "WidgetsRequestBuilders.g.cs");
     ok(!iface.includes("CreateAsync<TBody>("), iface);
     ok(iface.includes("CreateAsync<TResult, TBody>("), iface);
   });
@@ -178,6 +141,6 @@ describe("dictionary request bodies", () => {
       @route("/w") interface Widgets { @post create(@body body: Widget[]): void; }
     `);
 
-    ok(!fileContent(results, "IWidgets.g.cs").includes("TBody"));
+    ok(!fileContent(results, "WidgetsRequestBuilders.g.cs").includes("TBody"));
   });
 });
