@@ -137,6 +137,34 @@ describe("dependency injection registration", () => {
     ok(content.includes('"TestApi.Client.PetStore"'));
   });
 
+  it("imports the namespaces of the path parameter types its builder methods take", async () => {
+    const content = fileContent(
+      await emit(`
+        import "@typespec/http";
+        using Http;
+
+        @service(#{ title: "Test API" })
+        namespace TestApi;
+
+        @route("/items/{id}")
+        interface Items { @get read(@path id: string | int32): string; }
+
+        @route("/tags/{tags}")
+        interface Tags { @get read(@path tags: string[]): string; }
+      `),
+      "TestApiClientExtensions.g.cs",
+    );
+
+    ok(
+      content.includes("public ItemsItemRequestBuilder Items(JsonElement id)"),
+    );
+    ok(content.includes("using System.Text.Json;"));
+    ok(
+      content.includes("public TagsItemRequestBuilder Tags(List<string> tags)"),
+    );
+    ok(content.includes("using System.Collections.Generic;"));
+  });
+
   it("escapes a builder path parameter whose name is a C# keyword", async () => {
     const results = await emit(`
       import "@typespec/http";

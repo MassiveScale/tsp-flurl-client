@@ -48,7 +48,10 @@ export function buildExtensions(
         "Flurl.Http",
         "Microsoft.Extensions.DependencyInjection",
         "System",
+        // A builder method takes the path parameters, which can be a List<T> or a JsonElement.
+        "System.Collections.Generic",
         "System.Net.Http",
+        "System.Text.Json",
         ...additionalUsings,
       ]),
     ]),
