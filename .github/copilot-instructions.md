@@ -59,7 +59,8 @@ TypeSpec discovers this emitter via two required exports in `src/index.ts`:
 Generation logic is split by output domain, each with a matching `test/<name>.test.ts`:
 
 - **`src/emitter.ts`** — Entry point and orchestration only: `$onEmit`, the per-service pipeline (`emitService`), renderer setup, file IO, `dotnet format`, output-name reservation, and version selection. Each API version is emitted as its own unit (`emitUnit`) with its own model and enum accumulators and its own name reservations, so with `all-versions` every version gets models shaped exactly as that version declares them. Delegates all C# generation to the modules below.
-- **`src/endpoints.ts`** — Endpoint generation: for each TypeSpec interface, its request builders (operations grouped by path-parameter types); route resolution into interpolated path strings; parameter bindings; body and response payload kinds; the generic overloads (see below); and collection of visibility-filtered request payload types.
+- **`src/endpoints.ts`** — Endpoint generation: for each TypeSpec interface, its request builders (operations grouped by path-parameter types), or the builders of a `path`/`interface` tree; route resolution into interpolated path strings; parameter bindings; body and response payload kinds; the generic overloads (see below); and collection of visibility-filtered request payload types.
+- **`src/tree.ts`** — The request-builder trees of the `path` and `interface` client shapes: route parsing, step merging, interface nesting, and builder class names. Pure; it imports only `identifiers`.
 - **`src/models.ts`** — C# `record` and `enum` generation, including `@discriminator` polymorphic hierarchies, request-payload records, and namespace-based emission filters.
 - **`src/helpers.ts`** — The hand-written C# the generated project depends on: `ModelMap`, `ClientRuntime`, `RequestBuilder<TBuilder>`, and `MergePatch<T>`. Written once per C# namespace.
 - **`src/client.ts`** — The client class (one method per request builder, plus `Create` factories) and the DI registration extension class.
@@ -69,11 +70,11 @@ Generation logic is split by output domain, each with a matching `test/<name>.te
 - **`src/renderer.ts`** — Handlebars renderer, view interfaces, and the method-block renderers. **`src/decorators.ts`** — `@clientName` / `@access` decorator implementations.
 - **`src/templates/*.hbs`** — The C# templates, copied to `dist/templates` by `scripts/copy-templates.mjs`. Each documents its variables in a header comment.
 
-Import direction is a DAG: `utils` ← `models` ← `endpoints`; `helpers`/`client`/`project` ← `emitter`; `emitter` is the only module that imports the domain modules.
+Import direction is a DAG: `utils` ← `models` ← `endpoints`; `tree` ← `endpoints`; `helpers`/`client`/`project` ← `emitter`; `emitter` is the only module that imports the domain modules.
 
 ### Client shape
 
-One client is registered, and every call starts from it, in the style of the Microsoft Graph .NET SDK: `client.Pets().ListAsync()`, `client.Pets(id).AppendHeader("X-Trace", t).UpdateAsync(patch)`.
+One client is registered, and every call starts from it: `client.Pets().ListAsync()`, `client.Pets(id).AppendHeader("X-Trace", t).UpdateAsync(patch)`. The `client-shape` option picks how calls are chained (`ClientShape` in `src/tree.ts`); the bullets below describe `flat`, the default, and its output must not change when the other shapes do.
 
 - **Builders.** The operations of one TypeSpec interface are grouped by the C# types of their path parameters, in order, ignoring nullability. Each group is a `sealed` request builder holding those parameters as fields, which every route reads as `this._name`. The client has one method per builder, named after the interface, taking the path parameters. Path parameters are never method parameters.
 - **Shared by type.** Two groups whose parameter types match (`lookup/{kind}/{id}` and `reserved/{path}/items/{id}`) would make two client overloads with one signature, so they share a builder whose parameters are named after the first operation. Each operation fills its own route from them by position.
@@ -82,6 +83,14 @@ One client is registered, and every call starts from it, in the style of the Mic
 - **Next links.** A next link is the next URL to request, handed to `Client.Request(link)` as the server wrote it: Flurl requests an absolute link as it is and appends a relative one to the base URL.
 - **Members.** A builder's own members must not clash with operation methods (which all end in `Async`).
 - **Flurl hooks.** `Add{Client}` takes `configureBuilder` (delegating handlers such as token refresh, a primary handler) and `configureFlurlClient` (Flurl settings and `BeforeCall`/`AfterCall`/`OnError` handlers on every Flurl client it creates). Without DI, the caller builds the `IFlurlClient` and passes it to `Create`.
+
+The `path` and `interface` shapes build a tree of builders instead (`src/tree.ts` arranges it, `buildTreeEndpoint` in `src/endpoints.ts` renders it, `emitTreeEndpoints` in `src/emitter.ts` drives it):
+
+- **`path`.** Every literal segment is a step, taking the parameter segments right after it; parameters before the first literal are a client indexer; steps merge across interfaces when their name and parameter CLR types match. The tree stops at a segment that mixes text and parameters or is not a C# name, and the parameters from there on are method arguments, the one exception to "path parameters are never method parameters". A route with no step at all is reached by its interface's name.
+- **`interface`.** The `flat` builders of an interface hang under the builder of another interface that sends a route the interface's routes all start with (longest wins, never `/`, shared parameters of the same types), taking only the parameters that route does not hold.
+- **Builders.** A builder holds every ancestor's path values, in route order, and is named after its chain (`CommunitiesItemConfigurationRequestBuilder`). Each root name's builders go in `Endpoints/{Step}RequestBuilders.g.cs`, the indexer's in `ItemRequestBuilders.g.cs`.
+- **Methods.** Named by HTTP verb unless two on one builder share it (then all keep their operation names); `@clientName` always wins. A method takes its interface's `@access`; a builder is `public` when anything sent or reached from it is.
+- **Modifiers.** A builder created from another starts with a copy of its modifiers (`RequestBuilder`'s inheriting constructor and `Modifiers` property, emitted only for these shapes, so `flat` output is unchanged).
 
 ### Custom models
 
@@ -116,7 +125,8 @@ On a machine whose NuGet config includes a private feed that rejects the current
 
 ### Examples
 
-- `example/simple-api/` — a small widget service.
+- `example/simple-api/` — a small widget service, emitted with `client-shape: interface`.
+- `example/path-tree/` — a store service emitted with `client-shape: path`. The subject of `PathTreeTests` in `e2e/CustomModels.Tests`.
 - `example/custom-models/` — every place a custom model can be swapped in. The subject of the end-to-end tests.
 - `example/kitchen-sink/` — most of TypeSpec at once (every scalar, unions, generics, discriminators, encodings, cookies, query styles, error models). It is compiled with warnings as errors, and its end-to-end tests cover the wire formats that are easiest to get silently wrong.
 - `example/all-versions/` — versions that genuinely differ, emitted with `all-versions`. Its tests in `e2e/CustomModels.Tests` prove each version has exactly its own shape.
@@ -181,12 +191,13 @@ After making any change to the codebase:
    cd example/custom-models && npm install && tsp compile .
    cd example/all-versions && npm install && tsp compile .
    cd example/kitchen-sink && npm install && tsp compile .
+   cd example/path-tree && npm install && tsp compile .
    cd example/versioned-api && npm install && ./build.ps1
    ```
 
    Run this for every subdirectory under `example/`, then build each generated project with warnings as errors, for example `dotnet build tsp-output -warnaserror`. A nullable, accessibility, or XML-documentation warning in the generated C# is a defect.
 
-3. **Run the end-to-end tests** (after compiling `example/custom-models`, `example/all-versions` and `example/kitchen-sink`):
+3. **Run the end-to-end tests** (after compiling `example/custom-models`, `example/all-versions`, `example/kitchen-sink` and `example/path-tree`):
 
    ```powershell
    dotnet run --project e2e/CustomModels.Tests -f net8.0
@@ -199,7 +210,7 @@ After making any change to the codebase:
    npm run matrix
    ```
 
-   When a change deliberately leaves out more or fewer operations, accept it with `npm run matrix -- --update` and review the diff of `matrix/left-out.txt`.
+   It runs once per `client-shape`; `npm run matrix -- --shape=path` runs one. When a change deliberately leaves out more or fewer operations, accept it with `npm run matrix -- --update` and review the diff of `matrix/left-out.txt` (and `left-out.path.txt`, `left-out.interface.txt` for the other shapes).
 
 All steps must pass before a change is considered complete.
 

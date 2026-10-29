@@ -10,19 +10,49 @@
  * starts being reported or left out fails the run. Pass `--update` to accept a
  * change to that list.
  *
+ * The whole run is repeated for every `client-shape`, each with its own list
+ * (`left-out.txt` for `flat`, `left-out.path.txt`, `left-out.interface.txt`).
+ * `--shape=path` runs one shape only.
+ *
  * Run from the repository root after `npm run build`: `npm run matrix`.
  */
 
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { basename, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { FRAMEWORK_TYPES } from "../dist/src/framework.js";
 import { buildCases, SHARED } from "./cases.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
+const SHAPES = ["flat", "path", "interface"];
+const shapeArg = process.argv.find((a) => a.startsWith("--shape="));
+if (shapeArg === undefined) {
+  for (const each of SHAPES) {
+    console.log(`${each === SHAPES[0] ? "" : "\n"}== client-shape: ${each}`);
+    const child = spawnSync(
+      process.execPath,
+      [
+        fileURLToPath(import.meta.url),
+        ...process.argv.slice(2),
+        `--shape=${each}`,
+      ],
+      { stdio: "inherit" },
+    );
+    if (child.status !== 0) process.exit(child.status ?? 1);
+  }
+  process.exit(0);
+}
+const shape = shapeArg.slice("--shape=".length);
+if (!SHAPES.includes(shape)) {
+  console.error(`Unknown --shape "${shape}"; use one of ${SHAPES.join(", ")}.`);
+  process.exit(1);
+}
 const MAIN = resolve(HERE, "main.tsp");
-const LEFT_OUT = resolve(HERE, "left-out.txt");
+const LEFT_OUT = resolve(
+  HERE,
+  shape === "flat" ? "left-out.txt" : `left-out.${shape}.txt`,
+);
 const PROJECT = resolve(HERE, "tsp-output", "MatrixClient.csproj");
 const SMOKE = resolve(HERE, "Smoke", "Smoke.csproj");
 const OURS = "@massivescale/tsp-flurl-client/";
@@ -209,7 +239,13 @@ const reported = new Map();
 let diagnostics = [];
 for (let pass = 1; ; pass++) {
   const owners = writeSpec(cases);
-  const emit = run("npx", ["tsp", "compile", "."]);
+  const emit = run("npx", [
+    "tsp",
+    "compile",
+    ".",
+    "--option",
+    `@massivescale/tsp-flurl-client.client-shape=${shape}`,
+  ]);
   if (/Internal compiler error|TypeError|ReferenceError/.test(emit.output)) {
     fail(`the emitter crashed:${NEWLINE}${emit.output}`);
   }
@@ -265,11 +301,11 @@ const snapshotLines = [
 const snapshot = `${snapshotLines.join(NEWLINE)}${NEWLINE}`;
 if (skipped.size > 0) {
   console.log(
-    "Groups skipped, so left-out.txt is neither checked nor updated.",
+    `Groups skipped, so ${basename(LEFT_OUT)} is neither checked nor updated.`,
   );
 } else if (update) {
   writeFileSync(LEFT_OUT, snapshot);
-  console.log("left-out.txt updated.");
+  console.log(`${basename(LEFT_OUT)} updated.`);
 } else {
   const expected = existsSync(LEFT_OUT) ? readFileSync(LEFT_OUT, "utf-8") : "";
   if (expected !== snapshot) {

@@ -142,9 +142,9 @@ export const internalAccessLeakRule = createRule({
             format: {
               referencingName,
               kind,
-              // An operation's access is ignored (the emitter applies @access to an
-              // interface's request builders as a whole), so the fix is on the interface,
-              // or on the model for a property.
+              // An operation's access is ignored (a method takes its interface's
+              // @access, in every client shape), so the fix is on the interface, or on
+              // the model for a property.
               container: kind === "property" ? "model" : "interface",
               internalTypeName: named.name!,
             },
@@ -158,9 +158,10 @@ export const internalAccessLeakRule = createRule({
         const containerAccess = getAccess(context.program, iface) ?? "public";
         if (containerAccess === "internal") return;
 
-        // An operation marked @access(Access.internal) is still checked: the emitter
-        // applies @access to an interface's request builders as a whole, not to single
-        // methods, so such a method is public in a public builder.
+        // An operation marked @access(Access.internal) is still checked: a method
+        // takes its interface's @access, never its operation's (the `flat` shape
+        // applies it to the interface's builders as a whole, `path` and `interface`
+        // to each of its methods), so such a method is public in a public interface.
         for (const op of iface.operations.values()) {
           for (const prop of op.parameters.properties.values()) {
             checkReferencedTypes(prop.type, op.name, "parameter", prop);

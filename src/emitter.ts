@@ -47,11 +47,27 @@ import { checkName, MemberScope } from "./names.js";
 import { getClientName, getAccess } from "./decorators.js";
 import {
   buildEndpoint,
+  buildOperations,
+  buildTreeEndpoint,
   builderClassName,
+  inRouteOrder,
+  interfaceBuilders,
+  pathTypeRules,
   requestRecordName,
   requestSubstitute,
+  stepParams,
+  treeOperation,
+  type BuiltOperation,
   RequestType,
 } from "./endpoints.js";
+import {
+  buildPathTree,
+  nestInterfaces,
+  parseRoute,
+  type ClientShape,
+  type ParsedRoute,
+  type TreeNode,
+} from "./tree.js";
 import {
   buildRecord,
   buildFilteredRecord,
@@ -156,6 +172,7 @@ export async function $onEmit(
     renderer,
     new Set(options["additional-usings"] ?? []),
     helperTypeNames,
+    (options["client-shape"] ?? "flat") !== "flat",
   );
 
   if (options["dotnet-format"] !== false) {
@@ -178,6 +195,8 @@ export async function $onEmit(
  * @param renderer - Handlebars renderer used to produce the file contents.
  * @param additionalUsings - Extra `using` directives from the `additional-usings` option.
  * @param typeNames - For each C# namespace, the generated types its helpers can see.
+ * @param chains - Whether request builders create one another (the `path` and
+ *   `interface` client shapes).
  */
 async function emitHelpers(
   program: Program,
@@ -186,6 +205,7 @@ async function emitHelpers(
   renderer: Renderer,
   additionalUsings: Set<string>,
   typeNames: Map<string, Set<string>>,
+  chains: boolean,
 ): Promise<void> {
   for (const name of ALL_HELPERS) {
     const sorted = [...(helperNamespaces.get(name) ?? [])].sort();
@@ -195,7 +215,7 @@ async function emitHelpers(
       await writeFile(
         program,
         resolvePath(outputDir, helperFolder(name), fileName),
-        buildHelper(name, ns, renderer, additionalUsings),
+        buildHelper(name, ns, renderer, additionalUsings, chains),
       );
     }
   }
@@ -594,6 +614,7 @@ async function emitService(
   const isMultiTarget = netVersionParts.length > 1;
 
   const rawRoutePrefix = options["route-prefix"] ?? "api/{version}";
+  const shape = options["client-shape"] ?? "flat";
   const additionalUsings = new Set(options["additional-usings"] ?? []);
   const nugetDescription =
     options["nuget-description"] ?? `Flurl client for the ${baseNs} API`;
@@ -722,7 +743,54 @@ async function emitService(
       ],
     );
 
-    for (const { name, container, ops } of byContainer.values()) {
+    // The builders live in the same C# namespace as the models, so a model with
+    // one of their names would be a duplicate type.
+    const claimBuilderName = (
+      typeName: string,
+      target: Type | typeof NoTarget = NoTarget,
+    ): boolean =>
+      tryReserveModelOutputName(
+        program,
+        modelOutputOwners,
+        typeName,
+        `the ${typeName} request builder`,
+        target,
+      );
+
+    if (shape !== "flat") {
+      clientBuilders.push(
+        ...(await emitTreeEndpoints({
+          program,
+          shape,
+          containers: [...byContainer.values()]
+            .map((c) => ({
+              ...c,
+              ops: c.ops.filter((op) =>
+                isInVersion(program, op.operation, version),
+              ),
+            }))
+            .filter((c) => c.ops.length > 0),
+          dir,
+          outputDir,
+          endpointNs,
+          version,
+          models,
+          enums,
+          usedHelpers,
+          requestTypes,
+          renderer,
+          rawRoutePrefix,
+          additionalUsings,
+          clientMembers,
+          endpointOutputOwners,
+          claimBuilderName,
+        })),
+      );
+    }
+
+    for (const { name, container, ops } of shape === "flat"
+      ? byContainer.values()
+      : []) {
       const vOps = ops.filter((op) =>
         isInVersion(program, op.operation, version),
       );
@@ -767,16 +835,7 @@ async function emitService(
         renderer,
         rawRoutePrefix,
         additionalUsings,
-        // The builders live in the same C# namespace as the models, so a model with
-        // one of their names would be a duplicate type.
-        (typeName) =>
-          tryReserveModelOutputName(
-            program,
-            modelOutputOwners,
-            typeName,
-            `the ${typeName} request builder`,
-            NoTarget,
-          ),
+        claimBuilderName,
       );
       if (!endpoint) continue;
       clientBuilders.push(...endpoint.builders);
@@ -1186,6 +1245,179 @@ function projectService(
   // The unprojected service was already validated, and its diagnostics reported.
   const [service] = getHttpService(program, namespace);
   return { namespace, operations: service.operations };
+}
+
+/** What {@link emitTreeEndpoints} works with: one emit unit's state and settings. */
+interface TreeEmit {
+  /** The compiler program. */
+  program: Program;
+  /** The client shape, `path` or `interface`. */
+  shape: Exclude<ClientShape, "flat">;
+  /** The unit's operation containers that have operations in its version, in declaration order, with those operations. */
+  containers: {
+    name: string;
+    container: Interface | Namespace;
+    ops: HttpOperation[];
+  }[];
+  /** Folder the Endpoints folder is written under. */
+  dir: string;
+  /** The root emitter output directory. */
+  outputDir: string;
+  /** C# namespace of the request builders. */
+  endpointNs: string;
+  /** The API version emitted, or `undefined` when unversioned. */
+  version: Version | undefined;
+  /** Accumulator for referenced named models. */
+  models: Map<string, Model>;
+  /** Accumulator for referenced named enums. */
+  enums: Map<string, Enum>;
+  /** Accumulator for required helper classes. */
+  usedHelpers: UsedHelpers;
+  /** Accumulator for synthesized request payload types. */
+  requestTypes: Map<string, RequestType>;
+  /** Handlebars renderer used to produce the file contents. */
+  renderer: Renderer;
+  /** The unresolved `route-prefix` option value. */
+  rawRoutePrefix: string;
+  /** Extra `using` directives from the `additional-usings` option. */
+  additionalUsings: Set<string>;
+  /** The client's members, which a client step must not clash with. */
+  clientMembers: MemberScope;
+  /** Output file reservations shared by every service. */
+  endpointOutputOwners: Map<string, OutputNameOwner>;
+  /** Reserves a builder's class name among the generated types, reporting a clash at the target. */
+  claimBuilderName: (typeName: string, target?: Type) => boolean;
+}
+
+/**
+ * Emits the request builders of a `path` or `interface` client: builds every
+ * operation, arranges them into the shape's tree, and writes one file for each
+ * name the client starts a chain with (`CommunitiesRequestBuilders.g.cs` holds
+ * `client.Communities()`, `client.Communities(key)`, and everything reached from
+ * them; `ItemRequestBuilders.g.cs` holds the client's indexers).
+ *
+ * @param unit - The emit unit's state and settings.
+ * @returns The client's methods that start a chain.
+ */
+async function emitTreeEndpoints(
+  unit: TreeEmit,
+): Promise<ClientBuilderEntry[]> {
+  const { program, shape, enums } = unit;
+  const routes = new Map<HttpOperation, ParsedRoute>();
+  const built: {
+    name: string;
+    container: Interface | Namespace;
+    ops: BuiltOperation[];
+  }[] = [];
+  for (const { name, container, ops } of unit.containers) {
+    // The name can become a client method, class names, and a file name.
+    if (!checkName(program, "interface", name, container)) continue;
+    const access = getAccess(program, container) ?? "public";
+    for (const op of ops) routes.set(op, parseRoute(op.path));
+    const containerOps = buildOperations(
+      ops,
+      access,
+      program,
+      unit.models,
+      enums,
+      unit.usedHelpers,
+      unit.version,
+      unit.requestTypes,
+      unit.rawRoutePrefix,
+      (op) => new Set(shape === "path" ? routes.get(op)!.args : []),
+    ).map((b) => ({ ...b, path: inRouteOrder(b.path) }));
+    built.push({ name, container, ops: containerOps });
+  }
+
+  const rules = pathTypeRules(program, enums);
+  const roots =
+    shape === "path"
+      ? buildPathTree(
+          built.flatMap(({ name, ops }) =>
+            ops.flatMap((b) => {
+              const params = new Map(
+                stepParams(b.path.params).map((p) => [p.name, p]),
+              );
+              const route = routes.get(b.op)!;
+              // A path parameter that was left out (and reported) cannot be held.
+              const held = [
+                ...route.leading,
+                ...route.steps.flatMap((s) => s.params),
+              ];
+              if (!held.every((n) => params.has(n))) return [];
+              return [{ value: b, route, fallback: name, params }];
+            }),
+          ),
+          rules,
+        )
+      : nestInterfaces(
+          built.flatMap(({ name, ops }) =>
+            interfaceBuilders(name, ops, program, enums),
+          ),
+          rules,
+        );
+
+  // Every overload of one name, and every indexer, goes in one file, and claims
+  // its name on the client once. An indexer is the client's `Item` member, which
+  // a step called `Item` would clash with.
+  const files = new Map<string, TreeNode<BuiltOperation>[]>();
+  const refused = new Set<string>();
+  for (const root of roots) {
+    const key = root.indexer ? "[]" : root.step;
+    if (refused.has(key)) continue;
+    if (!files.has(key)) {
+      const claimed = unit.clientMembers.claim(
+        root.indexer ? "Item" : root.step,
+        root.indexer ? "the client's indexer" : `the step to ${root.className}`,
+        treeOperation(root),
+      );
+      if (!claimed) {
+        refused.add(key);
+        continue;
+      }
+      files.set(key, []);
+    }
+    files.get(key)!.push(root);
+  }
+
+  const entries: ClientBuilderEntry[] = [];
+  for (const [key, fileRoots] of files) {
+    const fileName = `${key === "[]" ? "Item" : key}RequestBuilders`;
+    if (
+      !tryReserveModelOutputName(
+        program,
+        unit.endpointOutputOwners,
+        relativeTo(
+          unit.outputDir,
+          resolvePath(unit.dir, "Endpoints", fileName),
+        ),
+        `the request builders reached from ${key === "[]" ? "the client's indexer" : `client.${key}`}`,
+        NoTarget,
+      )
+    ) {
+      continue;
+    }
+    const endpoint = buildTreeEndpoint(
+      fileName,
+      fileRoots,
+      unit.endpointNs,
+      // Only a builder named after an interface is asked, and it sends that
+      // interface's operations.
+      (node) => docText(program, node.items[0].op.container),
+      program,
+      unit.renderer,
+      unit.additionalUsings,
+      unit.claimBuilderName,
+    );
+    if (!endpoint) continue;
+    entries.push(...endpoint.builders);
+    await writeFile(
+      program,
+      resolvePath(unit.dir, "Endpoints", `${fileName}.g.cs`),
+      endpoint.source,
+    );
+  }
+  return entries;
 }
 
 /**

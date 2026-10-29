@@ -4,6 +4,10 @@
   client creates it, e.g. `client.Pets()` or `client.Pets(id)`, and the path
   parameters it was created with fill the route of every operation it sends.
 
+  With `client-shape` set to `path` or `interface`, a builder can also create the
+  next builder of a chain, e.g. `client.Communities(key).Configuration()`, which
+  starts with what was added to this one (`inherits`).
+
   Every builder derives from the `RequestBuilder<TBuilder>` helper, which adds
   `AppendHeader`, `AppendQueryParameter`, `AppendCookie`, and `ConfigureRequest`.
 
@@ -32,12 +36,26 @@
     .docParam       —   the same name in XML documentation, never escaped
     .doc            —   the parameter's documentation (pre-escaped)
 
+  {{inherits}}      — true when the constructor takes the modifiers of the builder
+                      this one is created from (`path` and `interface` shapes)
+
+  {{modifiersParam}} — the constructor's inherited-modifiers parameter, e.g. "modifiers"
+
+  {{steps}}         — the methods that create the next builders of a chain. Each has:
+    .methodName     —   method name, e.g. "Rewards"
+    .className      —   the builder it returns
+    .access         —   "public" or "internal"
+    .summary        —   XML summary text (pre-escaped)
+    .params         —   the path parameters it takes, shaped like {{fields}}
+    .args           —   the arguments passed to the new builder after the Flurl
+                        client and the modifiers, e.g. "this._communityKey"
+
   {{methodsBlock}}  — pre-rendered string containing all method implementations,
                       each indented with 4 spaces and separated by blank lines.
 
   The generated methods read the path parameters as `this.{field}`, and rely on
-  the `Client` property and `ApplyModifiers` method of the base class and on the
-  internal `ClientRuntime` helper emitted alongside the models.
+  the `Client` and `Modifiers` properties and `ApplyModifiers` method of the base
+  class and on the internal `ClientRuntime` helper emitted alongside the models.
 
   Built-in helpers:
 
@@ -56,12 +74,24 @@
     /// Initializes a new instance of <see cref="{{className}}"/>.
     /// </summary>
     /// <param name="{{clientParam}}">The Flurl client requests are sent through.</param>
-{{#each fields}}    /// <param name="{{docParam}}">{{doc}}</param>
-{{/each}}    internal {{className}}(IFlurlClient {{clientParam}}{{#each fields}}, {{type}} {{param}}{{/each}})
-        : base({{clientParam}})
+{{#if inherits}}    /// <param name="{{modifiersParam}}">What was added to the builder this one is created from, which applies to its requests too; <see langword="null"/> for nothing.</param>
+{{/if}}{{#each fields}}    /// <param name="{{docParam}}">{{doc}}</param>
+{{/each}}    internal {{className}}(IFlurlClient {{clientParam}}{{#if inherits}}, IEnumerable<Action<IFlurlRequest>>? {{modifiersParam}}{{/if}}{{#each fields}}, {{type}} {{param}}{{/each}})
+        : base({{clientParam}}{{#if inherits}}, {{modifiersParam}}{{/if}})
     {
 {{#each fields}}        this.{{field}} = {{param}};
 {{/each}}    }
 
-{{{methodsBlock}}}
+{{#each steps}}    /// <summary>
+    /// {{summary}}
+    /// </summary>
+{{#each params}}    /// <param name="{{docParam}}">{{doc}}</param>
+{{/each}}    /// <returns>A new builder that starts with what was added to this one; what is added to it afterwards applies only to the requests it sends.</returns>
+    {{access}} {{className}} {{methodName}}({{#each params}}{{#unless @first}}, {{/unless}}{{type}} {{param}}{{/each}}) =>
+        new {{className}}(this.Client, this.Modifiers{{#each args}}, {{this}}{{/each}});
+{{#unless @last}}
+
+{{/unless}}
+{{/each}}{{#if methodsBlock}}{{#if steps.length}}
+{{/if}}{{/if}}{{{methodsBlock}}}
 }

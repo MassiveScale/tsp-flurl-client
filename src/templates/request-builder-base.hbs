@@ -13,6 +13,13 @@
   carries them into every later call. They are applied after the operation's own
   parameters, in the order they were added.
 
+  With `client-shape` set to `path` or `interface`, a builder can create the next
+  builder of a chain (`client.Communities(key).Configuration()`). The new builder
+  starts with a copy of the modifiers added so far, through the constructor that
+  takes them, and what is added to it afterwards never reaches the first one. A
+  custom version of this template needs that constructor and the `Modifiers`
+  property for those shapes.
+
   Override via tspconfig.yaml:
     options:
       "@massivescale/tsp-flurl-client":
@@ -21,9 +28,11 @@
 
   Template variables:
 
-  (none — this template renders a fully static class body)
+  {{chains}}  — true when `client-shape` is `path` or `interface`, which adds the
+                constructor that takes inherited modifiers and the `Modifiers` property
 
-  Generated builders rely on the `Client` property and `ApplyModifiers` method.
+  Generated builders rely on the `Client` property and `ApplyModifiers` method, and
+  with {{chains}} on the inheriting constructor and the `Modifiers` property.
 
 --}}
 /// <summary>
@@ -45,10 +54,31 @@ public abstract class RequestBuilder<TBuilder>
         Client = client ?? throw new ArgumentNullException(nameof(client));
     }
 
+{{#if chains}}
+    /// <summary>
+    /// Initializes a new instance of <see cref="RequestBuilder{TBuilder}"/> that starts with what was added
+    /// to the builder it is created from.
+    /// </summary>
+    /// <param name="client">The Flurl client requests are sent through.</param>
+    /// <param name="inherited">The modifiers to start with, which are copied; <see langword="null"/> for none.</param>
+    private protected RequestBuilder(IFlurlClient client, IEnumerable<Action<IFlurlRequest>>? inherited)
+        : this(client)
+    {
+        if (inherited is not null) _modifiers.AddRange(inherited);
+    }
+
+{{/if}}
     /// <summary>
     /// Gets the Flurl client requests are sent through.
     /// </summary>
     private protected IFlurlClient Client { get; }
+{{#if chains}}
+
+    /// <summary>
+    /// Gets the modifiers added to this builder so far, in order, which a builder created from it starts with.
+    /// </summary>
+    private protected IEnumerable<Action<IFlurlRequest>> Modifiers => _modifiers;
+{{/if}}
 
     /// <summary>
     /// Sets a header on every request this builder sends, as Flurl's <c>WithHeader</c> does: it replaces

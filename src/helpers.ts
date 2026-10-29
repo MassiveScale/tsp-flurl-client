@@ -91,9 +91,14 @@ export function helperFolder(name: HelperName): string {
  *
  * @param name - The helper.
  * @param renderer - Handlebars renderer used to produce the file contents.
+ * @param chains - Whether request builders create one another (see {@link Renderer.renderRequestBuilderBase}).
  * @returns The rendered class source, without the file wrapper.
  */
-function renderHelperBody(name: HelperName, renderer: Renderer): string {
+function renderHelperBody(
+  name: HelperName,
+  renderer: Renderer,
+  chains: boolean,
+): string {
   switch (name) {
     case MERGE_PATCH_HELPER_NAME:
       return renderer.renderMergePatch();
@@ -102,7 +107,7 @@ function renderHelperBody(name: HelperName, renderer: Renderer): string {
     case CLIENT_RUNTIME_HELPER_NAME:
       return renderer.renderClientRuntime();
     case REQUEST_BUILDER_HELPER_NAME:
-      return renderer.renderRequestBuilderBase();
+      return renderer.renderRequestBuilderBase(chains);
   }
 }
 
@@ -115,6 +120,8 @@ function renderHelperBody(name: HelperName, renderer: Renderer): string {
  * @param csNs - C# namespace the helper is emitted into (the root model namespace).
  * @param renderer - Handlebars renderer used to produce the file contents.
  * @param additionalUsings - Extra `using` directives from the `additional-usings` option.
+ * @param chains - Whether request builders create one another, which the
+ *   `path` and `interface` client shapes need from the request builder base.
  * @returns The full C# source of the helper file.
  */
 export function buildHelper(
@@ -122,11 +129,12 @@ export function buildHelper(
   csNs: string,
   renderer: Renderer,
   additionalUsings: Set<string>,
+  chains = false,
 ): string {
   const fileView: FileView = {
     namespace: csNs,
     usings: sortUsings([...HELPER_USINGS[name], ...additionalUsings]),
-    body: renderHelperBody(name, renderer),
+    body: renderHelperBody(name, renderer, chains),
     fileName: `${name}.g.cs`,
   };
   return renderer.renderFile(fileView);

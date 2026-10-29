@@ -4,12 +4,12 @@
 
 ## Summary
 
-This emitter produces a C# project with a single client and a fluent, Flurl-backed request builder for each TypeSpec `interface`, covering every `GET`, `POST`, `PUT`, `PATCH`, and `DELETE` operation. Calls read like the Microsoft Graph .NET SDK: `client.Pets().ListAsync()`, `client.Pets(id).AppendHeader("X-Trace", trace).UpdateAsync(patch)`. The generated client contains everything needed to call your API — simply provide the base URI at runtime.
+This emitter produces a C# project with a single client and fluent, Flurl-backed request builders, covering every `GET`, `POST`, `PUT`, `PATCH`, and `DELETE` operation. By default there is one builder per TypeSpec `interface`: `client.Pets().ListAsync()`, `client.Pets(id).AppendHeader("X-Trace", trace).UpdateAsync(patch)`. With `client-shape: path`, calls follow the URL one segment at a time, as they do in the Microsoft Graph .NET SDK: `client.Stores(storeId).Pets(petId).GetAsync()`. The generated client contains everything needed to call your API — simply provide the base URI at runtime.
 
 It is built on Flurl.Http and follows Flurl's conventions, so anything Flurl can do to a request (events, handlers, settings) works here too.
 
 - **Extensible models.** Derive your own types from the generated models, send them to the API, and read responses back as them. If the API accepts extension properties, your extra properties travel with the request and come back in the response. See [Custom models](#custom-models).
-- **One client, fluent calls.** Register one client and start every call from it. Path parameters go to the endpoint group (`client.Pets(id)`), and headers, query parameters, cookies and any Flurl setting can be added to a single call. See [Inject and call](#3-inject-and-call).
+- **One client, fluent calls.** Register one client and start every call from it. Path parameters go to the endpoint group (`client.Pets(id)`), or to each URL segment with `client-shape: path` (`client.Stores(id).Pets(petId)`), and headers, query parameters, cookies and any Flurl setting can be added to a single call. See [Inject and call](#3-inject-and-call) and [Client shapes](#client-shapes).
 - **Version-aware.** Call any endpoint version from a single client.
 - **A Flurl client you can drop down to.** The client exposes its configured `IFlurlClient`, so anything the generated methods do not cover is one Flurl call away.
 
@@ -37,6 +37,7 @@ options:
 | ----------------------------- | ---------- | --------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `project-name`                | `string`   | TypeSpec namespace + `Client`                 | Full project name for the `.csproj` filename (e.g. `PetStoreClient` → `PetStoreClient.csproj`). Dots are valid; C# identifiers use only the final segment.                                                                                                                                                                                                                                                       |
 | `client-name`                 | `string`   | Derived from `project-name`                   | Display name for the client. Controls the client class and the DI extension class/method prefix (e.g. `PetStore` → `PetStoreExtensions.g.cs`, `AddPetStore(...)`). Also used as the default NuGet `<Title>` unless `nuget-title` is set.                                                                                                                                                                         |
+| `client-shape`                | `string`   | `flat`                                        | How calls are chained from the client: `flat` (one method per interface taking every path parameter), `path` (one step per URL segment, like the Microsoft Graph SDK) or `interface` (interfaces nested under the interface whose route theirs starts with). See [Client shapes](#client-shapes).                                                                                                                |
 | `root-namespace`              | `string`   | TypeSpec namespace + `.Client`                | Overrides the root C# namespace for all generated files.                                                                                                                                                                                                                                                                                                                                                         |
 | `additional-usings`           | `string[]` | —                                             | Extra `using` directives appended to every emitted C# file. Use this when the service references types declared outside its own TypeSpec namespace but emitted elsewhere — for example a sibling emitter's shared namespace — so the generated code still compiles. Each entry must be a dotted C# namespace such as `Acme.Shared.Models`; anything else is reported as `invalid-option` and nothing is emitted. |
 | `net-version`                 | `string`   | `net8.0`                                      | Target .NET version(s) written into the `.csproj`. Use a single TFM (e.g. `net8.0`) or a semicolon-separated list for multi-targeting (e.g. `net8.0;net9.0`). **.NET 8 or later is required** (see [Requirements](#requirements)): `net7.0`, `netstandard2.0` and the like are reported as `invalid-option`. A suffix such as `net8.0-windows` is allowed.                                                       |
@@ -283,6 +284,57 @@ await api.Items().ListAsync(skip: 20, take: 10, cancellationToken: ct);
 ```
 
 The client also exposes `FlurlClient`, the underlying `IFlurlClient`.
+
+### Client shapes
+
+The `client-shape` option picks how calls are chained from the client. The examples above use the default, `flat`. Given this TypeSpec:
+
+```typespec
+@route("/communities/{communityKey}/configuration")
+interface Community {
+  @get read(@path communityKey: string): CommunityConfig;
+  @patch update(@path communityKey: string, @body body: MergePatchUpdate<CommunityConfig>): void;
+}
+
+@route("/communities/{communityKey}/configuration/rewards")
+interface Rewards {
+  @get read(@path communityKey: string): RewardsConfig;
+  @patch update(@path communityKey: string, @body body: MergePatchUpdate<RewardsConfig>): void;
+}
+```
+
+each shape reads the rewards configuration like this:
+
+| `client-shape`   | Call                                                           |
+| ---------------- | -------------------------------------------------------------- |
+| `flat` (default) | `client.Rewards(key).ReadAsync()`                              |
+| `path`           | `client.Communities(key).Configuration().Rewards().GetAsync()` |
+| `interface`      | `client.Community(key).Rewards().GetAsync()`                   |
+
+**`path`** follows the URL, one step per segment, as the Microsoft Graph .NET SDK does:
+
+- A literal segment is a step named in PascalCase (`encoded-params` becomes `EncodedParams()`). The parameter segments right after it are that step's arguments: `communities/{key}` is `Communities(key)`, and `lookup/{kind}/{id}` is `Lookup(kind, id)`.
+- Interfaces whose routes share segments share steps, so `Community` and `Rewards` above both start at `client.Communities(key)`.
+- Parameters at the start of a route, before any literal segment, are an indexer on the client: `/{tenant}/settings` is `client[tenant].Settings()`.
+- A segment that mixes text and parameters (`{from}-{to}`), or that cannot be a C# name (`$count`, `2fa`), ends the chain. That operation's method takes the parameters from there on as arguments: `/reports/{from}-{to}` is `client.Reports().GetAsync(from, to)`.
+- A route with no step at all (`/`, or one that starts with a mixed segment) is reached by its interface's name: `client.Health().GetAsync()`.
+
+**`interface`** keeps the interface names of `flat`, but an interface hangs under the interface whose route its own routes start with, and takes only the path parameters that route does not hold. The longest such route wins, and the parameters the two share must have the same types. An interface with no such parent stays on the client as it is in `flat`.
+
+In both `path` and `interface`, an operation's method is named after its HTTP verb: `GetAsync`, `PostAsync`, `PutAsync`, `PatchAsync`, `DeleteAsync`, `HeadAsync`. When two or more operations on one builder share a verb (two `@sharedRoute` searches, or the many `GET`s of one `interface` builder), all of them keep their operation names instead. A name given with `@clientName` is always kept. A paging wrapper follows its method's name: `GetAllAsync`.
+
+A builder is named after the steps that lead to it (`CommunitiesItemConfigurationRewardsRequestBuilder`). A builder is `public` when anything sent from it or reached from it is, and an operation's method takes its interface's `@access`.
+
+What you add to a builder (see below) carries on to the builders created from it, and nothing added to the new builder reaches the old one:
+
+```csharp
+var store = api.Stores(storeId).AppendHeader("X-Tenant", tenantId);
+await store.Pets().GetAsync(ct);   // sends X-Tenant
+var pets = store.Pets().AppendHeader("X-Debug", "1");
+await store.GetAsync(ct);          // sends X-Tenant, not X-Debug
+```
+
+A custom `request-builder-base` template (the `templates` option) needs the constructor that takes the inherited modifiers, and the `Modifiers` property, for `path` and `interface`. The bundled template has both.
 
 ### Adding headers, query parameters, and cookies to a call
 
@@ -702,7 +754,7 @@ npm run matrix -- --update        # accept a change to the operations left out
 npm run matrix -- --skip=Shadowing  # leave out a group of cases while investigating
 ```
 
-The operations the emitter leaves out are recorded in `matrix/left-out.txt`, so a supported case that starts being left out fails the run. On a machine whose NuGet config includes a private feed that rejects the current credentials, set `MATRIX_RESTORE_SOURCES=https://api.nuget.org/v3/index.json`.
+The run is repeated for every `client-shape` (`npm run matrix -- --shape=path` runs one). The operations the emitter leaves out are recorded in `matrix/left-out.txt`, `matrix/left-out.path.txt` and `matrix/left-out.interface.txt`, so a supported case that starts being left out fails the run. On a machine whose NuGet config includes a private feed that rejects the current credentials, set `MATRIX_RESTORE_SOURCES=https://api.nuget.org/v3/index.json`.
 
 ### Lint & Format
 
@@ -752,7 +804,8 @@ V2_0.ApiClientExtensions.AddApiClient(services, http => ...);
 
 ## Examples
 
-- [`example/simple-api/`](example/simple-api/) — a small widget service.
+- [`example/simple-api/`](example/simple-api/) — a small widget service, emitted with `client-shape: interface`.
+- [`example/path-tree/`](example/path-tree/) — a store service emitted with `client-shape: path`: shared steps, a client indexer, a mixed segment, a route of `/`, shared verbs and paging. Its end-to-end tests prove each chain reaches the right URL and carries what was added to it.
 - [`example/custom-models/`](example/custom-models/) — exercises every place a custom model can be swapped in. It is the subject of the end-to-end tests.
 - [`example/all-versions/`](example/all-versions/) — a service whose versions differ in models, enums, subtypes, operations and parameters, emitted with `all-versions`. Its end-to-end tests prove each version has exactly its own shape.
 - [`example/versioned-api/`](example/versioned-api/) — a versioned Pet Store demonstrating multi-version route and model definitions. Run it with `./example/versioned-api/build.ps1`.

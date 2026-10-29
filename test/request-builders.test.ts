@@ -593,4 +593,769 @@ describe("the RequestBuilder helper", () => {
     ok(has(results, "v1/Endpoints/ARequestBuilders.g.cs"));
     ok(has(results, "v2/Endpoints/ARequestBuilders.g.cs"));
   });
+
+  it("has no inheriting constructor or Modifiers property in the flat shape", async () => {
+    const helper = fileContent(
+      await emit(`${PREAMBLE}
+        @route("/a") interface A { @get read(): void; }
+      `),
+      "Infrastructure/RequestBuilder.g.cs",
+    );
+
+    doesNotMatch(helper, /inherited/);
+    doesNotMatch(helper, /Modifiers =>/);
+  });
+
+  for (const shape of ["path", "interface"] as const) {
+    it(`lets a ${shape} builder start with the modifiers of the one it is created from`, async () => {
+      const helper = fileContent(
+        await emit(
+          `${PREAMBLE}
+          @route("/a") interface A { @get read(): void; }
+        `,
+          { "client-shape": shape },
+        ),
+        "Infrastructure/RequestBuilder.g.cs",
+      );
+
+      ok(
+        helper.includes(
+          "private protected RequestBuilder(IFlurlClient client, IEnumerable<Action<IFlurlRequest>>? inherited)\n        : this(client)\n    {\n        if (inherited is not null) _modifiers.AddRange(inherited);\n    }",
+        ),
+        helper,
+      );
+      ok(
+        helper.includes(
+          "private protected IEnumerable<Action<IFlurlRequest>> Modifiers => _modifiers;",
+        ),
+        helper,
+      );
+    });
+  }
+});
+
+/** {@link PREAMBLE} with this emitter's decorators (`@access`, `@clientName`) in scope. */
+const DECORATED = `
+  import "@typespec/http";
+  import "@massivescale/tsp-flurl-client";
+  using Http;
+  using MassiveScale.TspFlurlClient;
+
+  @service(#{ title: "Test API" })
+  namespace TestApi;
+`;
+
+const COMMUNITY = `${PREAMBLE}
+  model Config { name: string; }
+
+  /** The root configuration. */
+  @route("/communities/{communityKey}/configuration")
+  interface Community {
+    @get read(@path communityKey: string): Config;
+    @patch update(@path communityKey: string, @body body: Config): void;
+  }
+
+  @route("/communities/{communityKey}/configuration/rewards")
+  interface Rewards {
+    @get read(@path communityKey: string): Config;
+    @patch update(@path communityKey: string, @body body: Config): void;
+  }
+`;
+
+describe("the client-shape option", () => {
+  it("emits exactly the flat shape when it is left out", async () => {
+    deepStrictEqual(
+      await emit(COMMUNITY),
+      await emit(COMMUNITY, { "client-shape": "flat" }),
+    );
+  });
+
+  it("rejects a shape it does not know", async () => {
+    const [, diagnostics] = await emitWithDiagnostics(COMMUNITY, {
+      "client-shape": "tree" as "path",
+    });
+    ok(diagnostics.some((d) => d.code === "invalid-schema"));
+  });
+});
+
+describe("the path client shape", () => {
+  it("chains one builder per URL segment, each holding the path parameters so far", async () => {
+    const results = await emit(COMMUNITY, { "client-shape": "path" });
+    const source = fileContent(
+      results,
+      "Endpoints/CommunitiesRequestBuilders.g.cs",
+    );
+
+    deepStrictEqual(classNames(source), [
+      "CommunitiesItemRequestBuilder",
+      "CommunitiesItemConfigurationRequestBuilder",
+      "CommunitiesItemConfigurationRewardsRequestBuilder",
+    ]);
+    ok(
+      source.includes(
+        "/// Sends the requests to <c>/communities/{communityKey}</c>.\n/// </summary>\npublic sealed class CommunitiesItemRequestBuilder",
+      ),
+      source,
+    );
+    const communities = classBody(source, "CommunitiesItemRequestBuilder");
+    ok(
+      communities.includes(
+        "internal CommunitiesItemRequestBuilder(IFlurlClient flurlClient, IEnumerable<Action<IFlurlRequest>>? modifiers, string communityKey)\n        : base(flurlClient, modifiers)",
+      ),
+      communities,
+    );
+    ok(
+      communities.includes(
+        "public CommunitiesItemConfigurationRequestBuilder Configuration() =>\n        new CommunitiesItemConfigurationRequestBuilder(this.Client, this.Modifiers, this._communityKey);\n\n}",
+      ),
+      communities,
+    );
+    const rewards = classBody(
+      source,
+      "CommunitiesItemConfigurationRewardsRequestBuilder",
+    );
+    ok(rewards.includes("public Task<Config> GetAsync("), rewards);
+    ok(rewards.includes("public async Task PatchAsync(Config body"), rewards);
+    ok(
+      rewards.includes(
+        '.AppendPathSegment($"api/communities/{ClientRuntime.EscapePathSegment(this._communityKey)}/configuration/rewards")',
+      ),
+      rewards,
+    );
+    ok(
+      !has(results, "CommunityRequestBuilders.g.cs") &&
+        !has(results, "RewardsRequestBuilders.g.cs"),
+    );
+
+    const client = fileContent(results, "TestApiClientExtensions.g.cs");
+    ok(
+      client.includes(
+        "/// Starts a request to <c>/communities/{communityKey}</c>.",
+      ),
+      client,
+    );
+    ok(
+      client.includes(
+        "public CommunitiesItemRequestBuilder Communities(string communityKey) =>\n        new CommunitiesItemRequestBuilder(this.FlurlClient, null, communityKey);",
+      ),
+      client,
+    );
+  });
+
+  it("puts a step's methods and steps apart with one blank line", async () => {
+    const source = fileContent(
+      await emit(COMMUNITY, { "client-shape": "path" }),
+      "Endpoints/CommunitiesRequestBuilders.g.cs",
+    );
+    const configuration = classBody(
+      source,
+      "CommunitiesItemConfigurationRequestBuilder",
+    );
+
+    ok(
+      configuration.includes(
+        "this._communityKey);\n\n    /// <summary>\n    /// Sends the <c>GET</c>",
+      ),
+      configuration,
+    );
+    doesNotMatch(source, /\n\n\n/);
+  });
+
+  it("reaches the parameters before the first literal segment through a client indexer", async () => {
+    const results = await emit(
+      `${PREAMBLE}
+        @route("/{storeId}/pets") interface Pets { @get list(@path storeId: string): string[]; }
+      `,
+      { "client-shape": "path" },
+    );
+    const source = fileContent(results, "Endpoints/ItemRequestBuilders.g.cs");
+
+    deepStrictEqual(classNames(source), [
+      "ItemRequestBuilder",
+      "ItemPetsRequestBuilder",
+    ]);
+    ok(
+      fileContent(results, "TestApiClientExtensions.g.cs").includes(
+        "public ItemRequestBuilder this[string storeId] =>\n        new ItemRequestBuilder(this.FlurlClient, null, storeId);",
+      ),
+    );
+  });
+
+  it("names a method after its verb, unless another on its builder shares the verb", async () => {
+    const source = fileContent(
+      await emit(
+        `${PREAMBLE}
+          @route("/pets") interface Pets {
+            @sharedRoute @get list(): string[];
+            @get @route("{id}") read(@path id: string): string;
+            @delete @route("{id}") remove(@path id: string): void;
+          }
+          @route("/pets") interface Search {
+            @sharedRoute @get search(@query q: string): string[];
+          }
+        `,
+        { "client-shape": "path" },
+      ),
+      "Endpoints/PetsRequestBuilders.g.cs",
+    );
+
+    const collection = classBody(source, "PetsRequestBuilder");
+    ok(collection.includes(" ListAsync("), collection);
+    ok(collection.includes(" SearchAsync("), collection);
+    doesNotMatch(collection, / GetAsync\(/);
+    const item = classBody(source, "PetsItemRequestBuilder");
+    ok(item.includes(" GetAsync("), item);
+    ok(item.includes(" DeleteAsync("), item);
+  });
+
+  it("keeps a name given with @clientName, which does not count towards a shared verb", async () => {
+    const item = classBody(
+      fileContent(
+        await emit(
+          `${DECORATED}
+            @route("/pets/{id}") interface Pets {
+              @get read(@path id: string): string;
+              @get @clientName("fetch") @route("full") readFull(@path id: string): string;
+            }
+          `,
+          { "client-shape": "path" },
+        ),
+        "Endpoints/PetsRequestBuilders.g.cs",
+      ),
+      "PetsItemRequestBuilder",
+    );
+
+    ok(item.includes(" GetAsync("), item);
+  });
+
+  it("names a paging wrapper after the verb its raw method has", async () => {
+    const source = fileContent(
+      await emit(
+        `${PREAMBLE}
+          model Page { @pageItems items: string[]; @nextLink next?: url; }
+          @route("/pets") interface Pets { @list @get list(): Page; }
+        `,
+        { "client-shape": "path" },
+      ),
+      "Endpoints/PetsRequestBuilders.g.cs",
+    );
+
+    ok(source.includes("IAsyncEnumerable<string> GetAllAsync("), source);
+    ok(source.includes(" GetAsync("), source);
+  });
+
+  it("passes the parameters after a mixed segment to the method and fills the route from them", async () => {
+    const source = fileContent(
+      await emit(
+        `${PREAMBLE}
+          @route("/stores/{storeId}") interface Reports {
+            @route("{from}-{to}/report") @get report(@path storeId: string, @path from: string, @path to: int32): void;
+          }
+        `,
+        { "client-shape": "path" },
+      ),
+      "Endpoints/StoresRequestBuilders.g.cs",
+    );
+    const store = classBody(source, "StoresItemRequestBuilder");
+
+    ok(
+      store.includes(
+        "public async Task GetAsync(string from, int to, CancellationToken cancellationToken = default)",
+      ),
+      store,
+    );
+    ok(
+      store.includes(
+        '.AppendPathSegment($"api/stores/{ClientRuntime.EscapePathSegment(this._storeId)}/{ClientRuntime.EscapePathSegment(from)}-{ClientRuntime.EscapePathSegment(to)}/report")',
+      ),
+      store,
+    );
+  });
+
+  it("keeps the slashes of a reserved-expansion argument", async () => {
+    const source = fileContent(
+      await emit(
+        `${PREAMBLE}
+          @route("/docs") interface Docs {
+            @route("v{n}/{+rest}") @get read(@path n: int32, @path rest: string): void;
+          }
+        `,
+        { "client-shape": "path" },
+      ),
+      "Endpoints/DocsRequestBuilders.g.cs",
+    );
+
+    ok(
+      source.includes(
+        '.AppendPathSegment($"api/docs/v{ClientRuntime.EscapePathSegment(n)}/{ClientRuntime.EscapeReservedPath(rest)}")',
+      ),
+      source,
+    );
+  });
+
+  it("encodes a held path parameter the way the flat shape does", async () => {
+    const source = fileContent(
+      await emit(
+        `${PREAMBLE}
+          @route("/events/{at}") interface Events {
+            @get read(@path @encode(DateTimeKnownEncoding.unixTimestamp, int64) at: utcDateTime): void;
+          }
+        `,
+        { "client-shape": "path" },
+      ),
+      "Endpoints/EventsRequestBuilders.g.cs",
+    );
+
+    ok(source.includes("ClientRuntime.Encode(this._at,"), source);
+  });
+
+  it("reaches an operation whose route has no step by its interface's name", async () => {
+    const results = await emit(
+      `${PREAMBLE}
+        /** Whether the service is up. */
+        @route("/") interface Health { @get check(): void; }
+      `,
+      { "client-shape": "path" },
+    );
+    const source = fileContent(results, "Endpoints/HealthRequestBuilders.g.cs");
+
+    ok(source.includes("/// Whether the service is up."), source);
+    ok(source.includes('.AppendPathSegment($"api")'), source);
+    ok(
+      fileContent(results, "TestApiClientExtensions.g.cs").includes(
+        "/// Starts a request to the <c>Health</c> endpoint group.",
+      ),
+    );
+  });
+
+  it("numbers a field whose name an earlier builder of the chain holds", async () => {
+    const source = fileContent(
+      await emit(
+        `${PREAMBLE}
+          @route("/a") interface A {
+            @get @route("{id}") read(@path id: string): void;
+            @get @route("{x}/b/{id}") child(@path x: string, @path id: string): void;
+          }
+        `,
+        { "client-shape": "path" },
+      ),
+      "Endpoints/ARequestBuilders.g.cs",
+    );
+    const child = classBody(source, "AItemBItemRequestBuilder");
+
+    ok(
+      child.includes(
+        "internal AItemBItemRequestBuilder(IFlurlClient flurlClient, IEnumerable<Action<IFlurlRequest>>? modifiers, string id, string id2)",
+      ),
+      child,
+    );
+    ok(
+      child.includes(
+        "{ClientRuntime.EscapePathSegment(this._id)}/b/{ClientRuntime.EscapePathSegment(this._id2)}",
+      ),
+      child,
+    );
+    ok(
+      classBody(source, "AItemRequestBuilder").includes(
+        "public AItemBItemRequestBuilder B(string id) =>\n        new AItemBItemRequestBuilder(this.Client, this.Modifiers, this._id, id);",
+      ),
+    );
+  });
+
+  it("gives a method its interface's access, and a builder the widest access below it", async () => {
+    const source = fileContent(
+      await emit(
+        `${DECORATED}
+          @route("/a") interface Open { @get read(): void; }
+          @access(Access.internal) @route("/a") interface Hidden {
+            @post create(): void;
+            @get @route("secret") secret(): void;
+          }
+        `,
+        { "client-shape": "path" },
+      ),
+      "Endpoints/ARequestBuilders.g.cs",
+    );
+
+    const a = classBody(source, "ARequestBuilder");
+    ok(source.includes("public sealed class ARequestBuilder"), source);
+    ok(a.includes("public async Task GetAsync("), a);
+    ok(a.includes("internal async Task PostAsync("), a);
+    ok(a.includes("internal ASecretRequestBuilder Secret() =>"), a);
+    ok(source.includes("internal sealed class ASecretRequestBuilder"), source);
+  });
+
+  it("makes a client step internal when everything reached from it is", async () => {
+    const results = await emit(
+      `${DECORATED}
+        @access(Access.internal) @route("/a") interface Hidden { @get read(): void; }
+      `,
+      { "client-shape": "path" },
+    );
+
+    ok(
+      fileContent(results, "TestApiClientExtensions.g.cs").includes(
+        "internal ARequestBuilder A() =>",
+      ),
+    );
+  });
+
+  it("numbers the constructor's own parameters when a path parameter has their name", async () => {
+    const source = fileContent(
+      await emit(
+        `${PREAMBLE}
+          @route("/a/{modifiers}/{flurlClient}") interface A {
+            @get read(@path modifiers: string, @path flurlClient: string): void;
+          }
+        `,
+        { "client-shape": "path" },
+      ),
+      "Endpoints/ARequestBuilders.g.cs",
+    );
+
+    ok(
+      source.includes(
+        "internal AItemRequestBuilder(IFlurlClient flurlClient2, IEnumerable<Action<IFlurlRequest>>? modifiers2, string modifiers, string flurlClient)\n        : base(flurlClient2, modifiers2)",
+      ),
+      source,
+    );
+  });
+
+  it("leaves out a paging wrapper whose name another method of the builder has", async () => {
+    const [results, diagnostics] = await emitWithDiagnostics(
+      `${DECORATED}
+        model Page { @pageItems items: string[]; @nextLink next?: url; }
+        @route("/pets") interface Pets {
+          @list @get list(): Page;
+          @post @clientName("getAll") add(): void;
+        }
+      `,
+      { "client-shape": "path" },
+    );
+
+    ok(
+      messagesFor(diagnostics, "unsupported-paging-style").some((m) =>
+        m.includes("of the request builder"),
+      ),
+    );
+    const source = fileContent(results, "Endpoints/PetsRequestBuilders.g.cs");
+    doesNotMatch(source, /IAsyncEnumerable/);
+    ok(source.includes(" GetAllAsync("), source);
+  });
+
+  it("leaves out an operation whose path parameter was left out", async () => {
+    const [results, diagnostics] = await emitWithDiagnostics(
+      `${PREAMBLE}
+        @route("/a") interface A {
+          @get list(): void;
+          @get @route("{my-id}") read(@path \`my-id\`: string): void;
+        }
+      `,
+      { "client-shape": "path" },
+    );
+
+    ok(messagesFor(diagnostics, "invalid-name").length > 0);
+    deepStrictEqual(
+      classNames(fileContent(results, "Endpoints/ARequestBuilders.g.cs")),
+      ["ARequestBuilder"],
+    );
+  });
+
+  it("leaves out an operation whose name is not a C# name, or that cannot be sent", async () => {
+    const [results, diagnostics] = await emitWithDiagnostics(
+      `${PREAMBLE}
+        @route("/a") interface A {
+          @get read(): void;
+          @post \`bad-name\`(): void;
+          @put upload(@header contentType: "multipart/form-data", @multipartBody body: { name: HttpPart<string>, file: HttpPart<bytes> }): void;
+        }
+      `,
+      { "client-shape": "path" },
+    );
+
+    ok(
+      messagesFor(diagnostics, "invalid-name").some((m) =>
+        m.includes("bad-name"),
+      ),
+    );
+    strictEqual(messagesFor(diagnostics, "unsupported-feature").length, 1);
+    const a = classBody(
+      fileContent(results, "Endpoints/ARequestBuilders.g.cs"),
+      "ARequestBuilder",
+    );
+    ok(a.includes(" GetAsync("), a);
+    doesNotMatch(a, /PostAsync|PutAsync/);
+  });
+
+  it("documents a held path parameter with its own documentation", async () => {
+    const results = await emit(
+      `${PREAMBLE}
+        @route("/stores/{storeId}") interface Stores {
+          @get read(/** The store's key. */ @path storeId: string): void;
+        }
+      `,
+      { "client-shape": "path" },
+    );
+
+    ok(
+      fileContent(results, "Endpoints/StoresRequestBuilders.g.cs").includes(
+        '/// <param name="storeId">The store\'s key.</param>',
+      ),
+    );
+    ok(
+      fileContent(results, "TestApiClientExtensions.g.cs").includes(
+        '/// <param name="storeId">The store\'s key.</param>',
+      ),
+    );
+  });
+
+  it("leaves out an interface whose name is not a C# name", async () => {
+    const [results, diagnostics] = await emitWithDiagnostics(
+      `${PREAMBLE}
+        @route("/a") interface \`my-api\` { @get read(): void; }
+        @route("/b") interface B { @get read(): void; }
+      `,
+      { "client-shape": "path" },
+    );
+
+    ok(
+      messagesFor(diagnostics, "invalid-name").some((m) =>
+        m.includes("my-api"),
+      ),
+    );
+    ok(!has(results, "Endpoints/ARequestBuilders.g.cs"));
+    ok(has(results, "Endpoints/BRequestBuilders.g.cs"));
+  });
+
+  it("emits only the operations of the version being emitted", async () => {
+    const results = await emit(
+      `
+      import "@typespec/http";
+      import "@typespec/versioning";
+      using Http;
+      using Versioning;
+
+      @service(#{ title: "Test API" })
+      @versioned(Versions)
+      namespace TestApi;
+      enum Versions { v1, v2 }
+
+      @route("/a") interface A { @get read(): void; }
+      @added(Versions.v2) @route("/b") interface B { @get read(): void; }
+    `,
+      { "all-versions": true, "client-shape": "path" },
+    );
+
+    ok(has(results, "v1/Endpoints/ARequestBuilders.g.cs"));
+    ok(!has(results, "v1/Endpoints/BRequestBuilders.g.cs"));
+    ok(has(results, "v2/Endpoints/BRequestBuilders.g.cs"));
+  });
+
+  it("reports two services whose request builders would share a file", async () => {
+    const [, diagnostics] = await emitWithDiagnostics(
+      `
+      import "@typespec/http";
+      using Http;
+
+      @service(#{ title: "A" })
+      namespace A { @route("/items") interface One { @get list(): string[]; } }
+
+      @service(#{ title: "B" })
+      namespace B { @route("/items") interface Two { @get list(): string[]; } }
+    `,
+      { "client-shape": "path" },
+    );
+
+    ok(
+      messagesFor(diagnostics, "output-name-collision").some((m) =>
+        m.includes("client.Items"),
+      ),
+    );
+  });
+
+  it("reports a step named like a member every builder has, and leaves it out", async () => {
+    const [results, diagnostics] = await emitWithDiagnostics(
+      `${PREAMBLE}
+        @route("/a") interface A {
+          @get read(): void;
+          @get @route("append-header") append(): void;
+          @get @route("append-header/{id}") appendOne(@path id: string): void;
+        }
+      `,
+      { "client-shape": "path" },
+    );
+
+    ok(
+      messagesFor(diagnostics, "name-collision").some((m) =>
+        m.includes("AppendHeader"),
+      ),
+    );
+    const source = fileContent(results, "Endpoints/ARequestBuilders.g.cs");
+    deepStrictEqual(classNames(source), ["ARequestBuilder"]);
+  });
+
+  it("reports a client step named like a client member, and leaves it out", async () => {
+    const [results, diagnostics] = await emitWithDiagnostics(
+      `${PREAMBLE}
+        @route("/create") interface Make {
+          @get read(): void;
+          @get @route("{id}") one(@path id: string): void;
+        }
+        @route("/fine") interface Fine { @get read(): void; }
+      `,
+      { "client-shape": "path" },
+    );
+
+    ok(
+      messagesFor(diagnostics, "name-collision").some((m) =>
+        m.includes("Create"),
+      ),
+    );
+    ok(!has(results, "CreateRequestBuilders.g.cs"));
+    ok(has(results, "FineRequestBuilders.g.cs"));
+  });
+
+  it("reports a client step named Item beside the client's indexer", async () => {
+    const [results, diagnostics] = await emitWithDiagnostics(
+      `${PREAMBLE}
+        @route("/{tenant}/x") interface X { @get read(@path tenant: string): void; }
+        @route("/item") interface Items { @get read(): void; }
+      `,
+      { "client-shape": "path" },
+    );
+
+    ok(
+      messagesFor(diagnostics, "name-collision").some((m) =>
+        m.includes("indexer"),
+      ),
+    );
+    deepStrictEqual(
+      classNames(fileContent(results, "Endpoints/ItemRequestBuilders.g.cs")),
+      ["ItemRequestBuilder", "ItemXRequestBuilder"],
+    );
+  });
+
+  it("leaves out a builder whose class name another has, and a builder left with nothing", async () => {
+    const [results, diagnostics] = await emitWithDiagnostics(
+      `${PREAMBLE}
+        @route("/a-b") interface Joined { @get read(): void; }
+        @route("/a/b") interface Split { @get read(): void; }
+      `,
+      { "client-shape": "path" },
+    );
+
+    ok(
+      messagesFor(diagnostics, "output-name-collision").some((m) =>
+        m.includes("ABRequestBuilder"),
+      ),
+    );
+    ok(has(results, "ABRequestBuilders.g.cs"));
+    ok(!has(results, "Endpoints/ARequestBuilders.g.cs"));
+    doesNotMatch(
+      fileContent(results, "TestApiClientExtensions.g.cs"),
+      / A\(\)/,
+    );
+  });
+
+  it("reports the second of two methods with one name on a builder", async () => {
+    const [results, diagnostics] = await emitWithDiagnostics(
+      `${DECORATED}
+        @route("/a") interface A {
+          @sharedRoute @get @clientName("get") one(): void;
+          @sharedRoute @get two(): void;
+        }
+      `,
+      { "client-shape": "path" },
+    );
+
+    ok(
+      messagesFor(diagnostics, "name-collision").some((m) =>
+        m.includes("GetAsync"),
+      ),
+    );
+    const a = classBody(
+      fileContent(results, "Endpoints/ARequestBuilders.g.cs"),
+      "ARequestBuilder",
+    );
+    strictEqual(a.match(/Task GetAsync\(/g)?.length, 1);
+  });
+});
+
+describe("the interface client shape", () => {
+  it("nests an interface under the interface whose route its own starts with", async () => {
+    const results = await emit(COMMUNITY, { "client-shape": "interface" });
+    const source = fileContent(
+      results,
+      "Endpoints/CommunityRequestBuilders.g.cs",
+    );
+
+    deepStrictEqual(classNames(source), [
+      "CommunityItemRequestBuilder",
+      "CommunityItemRewardsRequestBuilder",
+    ]);
+    ok(source.includes("/// The root configuration."), source);
+    ok(
+      classBody(source, "CommunityItemRequestBuilder").includes(
+        "/// Starts a request to the <c>Rewards</c> endpoint group.\n    /// </summary>\n    /// <returns>A new builder that starts with what was added to this one; what is added to it afterwards applies only to the requests it sends.</returns>\n    public CommunityItemRewardsRequestBuilder Rewards() =>\n        new CommunityItemRewardsRequestBuilder(this.Client, this.Modifiers, this._communityKey);",
+      ),
+      source,
+    );
+    ok(
+      source.includes(
+        "/// Sends the requests of the <c>Rewards</c> endpoint group.\n/// </summary>\npublic sealed class CommunityItemRewardsRequestBuilder",
+      ),
+      source,
+    );
+    ok(!has(results, "RewardsRequestBuilders.g.cs"));
+    ok(
+      fileContent(results, "TestApiClientExtensions.g.cs").includes(
+        "public CommunityItemRequestBuilder Community(string communityKey) =>\n        new CommunityItemRequestBuilder(this.FlurlClient, null, communityKey);",
+      ),
+    );
+  });
+
+  it("keeps an interface with no parent on the client, named as in flat", async () => {
+    const results = await emit(
+      `${PREAMBLE}
+        @route("/pets") interface Pets {
+          @get list(): string[];
+          @get read(@path id: string): string;
+        }
+      `,
+      { "client-shape": "interface" },
+    );
+
+    deepStrictEqual(
+      classNames(fileContent(results, "Endpoints/PetsRequestBuilders.g.cs")),
+      ["PetsRequestBuilder", "PetsItemRequestBuilder"],
+    );
+    const client = fileContent(results, "TestApiClientExtensions.g.cs");
+    ok(client.includes("public PetsRequestBuilder Pets() =>"), client);
+    ok(
+      client.includes("public PetsItemRequestBuilder Pets(string id) =>"),
+      client,
+    );
+  });
+
+  it("holds the path parameters in route order, whatever order they are declared in", async () => {
+    const source = fileContent(
+      await emit(
+        `${PREAMBLE}
+          @route("/stores/{storeId}") interface Stores { @get read(@path storeId: string): void; }
+          @route("/stores/{storeId}/pets/{petId}") interface Pets {
+            @get read(@path petId: int32, @path storeId: string): void;
+          }
+        `,
+        { "client-shape": "interface" },
+      ),
+      "Endpoints/StoresRequestBuilders.g.cs",
+    );
+
+    ok(
+      source.includes(
+        "public StoresItemPetsItemRequestBuilder Pets(int petId) =>\n        new StoresItemPetsItemRequestBuilder(this.Client, this.Modifiers, this._storeId, petId);",
+      ),
+      source,
+    );
+  });
 });
