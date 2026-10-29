@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-10-29
+
+### Added
+
+- **Call chains that follow the URL.** The new `client-shape` option picks how calls are chained from the client. `flat`, the default, is unchanged. `path` makes every URL segment a step, as the Microsoft Graph .NET SDK does: `/communities/{communityKey}/configuration/rewards` is `client.Communities(key).Configuration().Rewards().GetAsync()`. Interfaces whose routes share segments share steps, parameters at the start of a route are a client indexer (`client[tenant]`), and a segment that mixes text and parameters ends the chain, its parameters becoming method arguments. `interface` keeps the interface names but nests an interface under the one whose route its own starts with: `client.Community(key).Rewards().GetAsync()`.
+- In the `path` and `interface` shapes, methods are named after their HTTP verb (`GetAsync`, `PatchAsync`) unless two on one builder share it, a builder starts with the headers, query parameters, cookies and callbacks added to the builder it was created from, and a method takes its own interface's `@access`. The `request-builder`, `request-builder-base` and `extensions` templates take new variables for them (`steps`, `inherits`, `chains`, `indexer`, `summary`); a custom `request-builder-base` keeps working with `flat`.
+
 ## [1.1.1] - 2026-10-28
 
 ### Changed

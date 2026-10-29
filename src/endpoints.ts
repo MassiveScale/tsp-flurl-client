@@ -45,7 +45,16 @@ import {
   FileView,
   PagingMethodView,
   PagingStrategy,
+  RequestBuilderView,
 } from "./renderer.js";
+import {
+  firstItem,
+  placeholderNames,
+  type InterfaceBuilder,
+  type StepParam,
+  type TreeNode,
+  type TypeRules,
+} from "./tree.js";
 import { getClientName, getAccess } from "./decorators.js";
 import { checkName, MemberScope } from "./names.js";
 import {
@@ -72,6 +81,7 @@ import {
   unwrapType,
   type TypeWrapper,
   escapeCsString,
+  escapeXml,
   sortUsings,
   soleVariant,
   isInVersion,
@@ -180,7 +190,7 @@ export interface EndpointBuild {
  * A path parameter of one operation. It becomes a field of the request builder the
  * operation is grouped into, and a parameter of the client method that creates it.
  */
-interface PathBinding {
+export interface PathBinding {
   /** The parameter's name in the route template. */
   name: string;
   /** C# type, nullable when the parameter is optional. */
@@ -196,13 +206,18 @@ interface PathBinding {
 }
 
 /** How an operation's route is filled in: its template and the path parameters that fill it. */
-interface PathShape {
+export interface PathShape {
   /** The route template, with the route prefix applied. */
   rawPath: string;
   /** The route-template names of the path parameters declared with `allowReserved`. */
   reserved: ReadonlySet<string>;
-  /** The path parameters, in declaration order. */
+  /** The path parameters the request builder holds, in declaration order. */
   params: PathBinding[];
+  /**
+   * The path parameters the method takes as arguments instead (see `buildMethodView`),
+   * by route-template name, each with the C# expression that supplies its value.
+   */
+  args: ReadonlyMap<string, string>;
 }
 
 /**
@@ -661,30 +676,11 @@ export function buildEndpoint(
     }
     return [{ op, ...result }];
   });
-  // Wrapper names are claimed only after every operation has its own, so adding
-  // pagination to `list` can never push out a separately declared `listAll`: the
-  // wrapper is the one left out.
-  const memberNames = new Set(built.map(({ view }) => view.methodName));
-  for (const { op, view } of built) {
-    if (!view.paging) continue;
-    if (memberNames.has(view.paging.methodName)) {
-      reportUnsupportedPaging(
-        program,
-        op.operation,
-        `a wrapper name, ${view.paging.methodName}, that another method of the interface already uses`,
-      );
-      view.paging = undefined;
-      continue;
-    }
-    memberNames.add(view.paging.methodName);
-  }
+  claimWrappers(program, built, "the interface");
 
   // Every type a path parameter maps to has been mapped by now, so every enum it
   // can name is known.
-  const valueTypes = csValueTypeNames();
-  for (const e of enums.values()) {
-    valueTypes.add(getClientName(program, e) ?? e.name);
-  }
+  const valueTypes = valueTypeNames(program, enums);
   let items = 0;
   const builderViews = groupByPathTypes(built, valueTypes).flatMap((group) => {
     const className = builderClassName(
@@ -778,6 +774,535 @@ export function buildEndpoint(
 export function builderClassName(groupName: string, item: number): string {
   const suffix = item === 0 ? "" : item === 1 ? "Item" : `Item${item}`;
   return `${groupName}${suffix}RequestBuilder`;
+}
+
+/**
+ * Leaves out the paging wrapper of every method whose wrapper name another method
+ * of the same builder already has. Wrapper names are claimed only after every
+ * operation has its own, so adding pagination to `list` can never push out a
+ * separately declared `listAll`: the wrapper is the one left out.
+ *
+ * @param program - The compiler program, used to report diagnostics.
+ * @param built - The operations of one builder, each with its method view.
+ * @param owner - What the methods belong to, for the message, e.g. `the interface`.
+ */
+function claimWrappers(
+  program: Program,
+  built: { op: HttpOperation; view: MethodView }[],
+  owner: string,
+): void {
+  const memberNames = new Set(built.map(({ view }) => view.methodName));
+  for (const { op, view } of built) {
+    if (!view.paging) continue;
+    if (memberNames.has(view.paging.methodName)) {
+      reportUnsupportedPaging(
+        program,
+        op.operation,
+        `a wrapper name, ${view.paging.methodName}, that another method of ${owner} already uses`,
+      );
+      view.paging = undefined;
+      continue;
+    }
+    memberNames.add(view.paging.methodName);
+  }
+}
+
+/**
+ * The value types the C# a path parameter maps to can name (see {@link clrIdentity}).
+ * Call it once every operation is built, so every enum a parameter names is known.
+ *
+ * @param program - The compiler program, for client names.
+ * @param enums - The enums referenced so far.
+ * @returns The value type names, as written.
+ */
+function valueTypeNames(
+  program: Program,
+  enums: Map<string, Enum>,
+): Set<string> {
+  const valueTypes = csValueTypeNames();
+  for (const e of enums.values()) {
+    valueTypes.add(getClientName(program, e) ?? e.name);
+  }
+  return valueTypes;
+}
+
+/**
+ * How the `path` and `interface` trees compare path parameter types: as the CLR
+ * sees them, so two spellings that would make one overload are one step, and
+ * with the spelling that allows null wherever either does.
+ *
+ * @param program - The compiler program, for client names.
+ * @param enums - The enums referenced so far; call it once every operation is built.
+ * @returns The rules.
+ */
+export function pathTypeRules(
+  program: Program,
+  enums: Map<string, Enum>,
+): TypeRules {
+  const valueTypes = valueTypeNames(program, enums);
+  return {
+    identity: (csType) => clrIdentity(csType, valueTypes),
+    union: unionNullability,
+  };
+}
+
+/** An operation of a `path` or `interface` client, built but not yet placed on a request builder. */
+export interface BuiltOperation {
+  /** The HTTP operation. */
+  op: HttpOperation;
+  /** Its method, whose `route` is filled in once its builder is known. */
+  view: MethodView;
+  /** How its route is filled in. */
+  path: PathShape;
+  /** C# access modifier of its method: its interface's, `"public"` or `"internal"`. */
+  access: string;
+}
+
+/**
+ * Builds the methods of a container's operations for a `path` or `interface`
+ * client, before they are placed on request builders. An operation whose name is
+ * not a valid C# identifier, or that uses something this emitter cannot send or
+ * read, is reported and left out.
+ *
+ * @param ops - The HTTP operations.
+ * @param access - C# access modifier of their methods (`public` / `internal`).
+ * @param program - The compiler program.
+ * @param models - Accumulator for referenced named models (see {@link mapType}).
+ * @param enums - Accumulator for referenced named enums (see {@link mapType}).
+ * @param usedHelpers - Accumulator for required helper classes (see {@link mapType}).
+ * @param version - The API version being emitted, or `undefined` when unversioned.
+ * @param requestTypes - Accumulator for synthesized request payload types.
+ * @param rawRoutePrefix - The unresolved `route-prefix` option value.
+ * @param argsOf - The route-template names of an operation's path parameters that
+ *   no builder holds, which its method takes as arguments.
+ * @returns The built operations, in declaration order.
+ */
+export function buildOperations(
+  ops: HttpOperation[],
+  access: string,
+  program: Program,
+  models: Map<string, Model>,
+  enums: Map<string, Enum>,
+  usedHelpers: UsedHelpers,
+  version: Version | undefined,
+  requestTypes: Map<string, RequestType>,
+  rawRoutePrefix: string,
+  argsOf: (op: HttpOperation) => ReadonlySet<string>,
+): BuiltOperation[] {
+  const routePrefix = resolveRoutePrefix(rawRoutePrefix, version);
+  return ops.flatMap((op) => {
+    const declaredName =
+      getClientName(program, op.operation) ?? op.operation.name;
+    if (!checkName(program, "operation", declaredName, op.operation)) return [];
+    const result = buildMethodView(
+      op,
+      program,
+      models,
+      enums,
+      usedHelpers,
+      version,
+      requestTypes,
+      routePrefix,
+      argsOf(op),
+    );
+    return result ? [{ op, ...result, access }] : [];
+  });
+}
+
+/**
+ * Puts the path parameters a builder holds in the order the route names them,
+ * which is the order a `path` or `interface` builder holds them in, since each
+ * builder of a chain adds the ones that come next.
+ *
+ * @param path - How the route is filled in.
+ * @returns The same, with {@link PathShape.params} in route order.
+ */
+export function inRouteOrder(path: PathShape): PathShape {
+  // Every path parameter has its expression in the route template.
+  const position = new Map(
+    placeholderNames(path.rawPath).map((name, i) => [name, i]),
+  );
+  return {
+    ...path,
+    params: [...path.params].sort(
+      (a, b) => position.get(a.name)! - position.get(b.name)!,
+    ),
+  };
+}
+
+/**
+ * The parameters of a builder, as {@link TreeNode.params} holds them.
+ *
+ * @param params - The path parameters, in route order.
+ * @returns The step parameters.
+ */
+export function stepParams(params: PathBinding[]): StepParam[] {
+  return params.map(({ name, csType, csParam, docName, doc }) => ({
+    name,
+    csType,
+    csParam,
+    docName,
+    doc,
+  }));
+}
+
+/**
+ * Groups the built operations of one interface into the builders `flat` would
+ * give it, with their parameters in route order, for {@link nestInterfaces}.
+ *
+ * @param group - The interface's name.
+ * @param built - Its built operations, in declaration order.
+ * @param program - The compiler program, for client names.
+ * @param enums - The enums referenced so far.
+ * @returns The interface's builders, fewest path parameters first.
+ */
+export function interfaceBuilders(
+  group: string,
+  built: BuiltOperation[],
+  program: Program,
+  enums: Map<string, Enum>,
+): InterfaceBuilder<BuiltOperation>[] {
+  const ordered = built.map((b) => ({ ...b, path: inRouteOrder(b.path) }));
+  return groupByPathTypes(ordered, valueTypeNames(program, enums)).map(
+    ({ types, members }) => ({
+      group,
+      params: stepParams(members[0].path.params).map((p, i) => ({
+        ...p,
+        csType: types[i],
+      })),
+      routes: members.map((m) => m.op.path),
+      items: members,
+    }),
+  );
+}
+
+/**
+ * Names the methods of one builder of a `path` or `interface` client after their
+ * HTTP verbs (`GetAsync`, `PatchAsync`). When two or more of them share a verb,
+ * all of those keep their operation names, so the result does not depend on
+ * declaration order. An operation given a name with `@clientName` keeps it, and
+ * does not count towards a shared verb.
+ *
+ * @param program - The compiler program, for client names.
+ * @param built - The builder's operations.
+ */
+function nameByVerb(program: Program, built: BuiltOperation[]): void {
+  const unnamed = built.filter(
+    ({ op }) => getClientName(program, op.operation) === undefined,
+  );
+  const verbs = new Map<string, number>();
+  for (const { op } of unnamed) {
+    verbs.set(op.verb, (verbs.get(op.verb) ?? 0) + 1);
+  }
+  for (const { op, view } of unnamed) {
+    if (verbs.get(op.verb) !== 1) continue;
+    view.methodName = toCsMethodName(op.verb);
+    if (view.paging) {
+      view.paging.methodName = toCsPagingMethodName(op.verb);
+      view.paging.rawMethodName = view.methodName;
+    }
+  }
+}
+
+/**
+ * The members every request builder has from {@link RequestBuilderView}'s base
+ * class and from `object`, which no method or step of a `path` or `interface`
+ * builder may take.
+ */
+const BUILDER_MEMBERS: readonly (readonly [string, string])[] = [
+  ...[
+    "AppendHeader",
+    "AppendQueryParameter",
+    "AppendCookie",
+    "ConfigureRequest",
+    "ApplyModifiers",
+    "Client",
+    "Modifiers",
+  ].map(
+    (member) => [member, `the ${member} member every builder has`] as const,
+  ),
+  ...[
+    "Equals",
+    "Finalize",
+    "GetHashCode",
+    "GetType",
+    "MemberwiseClone",
+    "ToString",
+  ].map(
+    (member) => [member, `the ${member} method every C# object has`] as const,
+  ),
+];
+
+/**
+ * Adds a builder's own path parameters to those of the builders before it, as the
+ * fields it holds. A name an earlier builder already uses (`/a/{id}/b/{id}` once
+ * two routes are merged) is numbered, `id2`.
+ *
+ * @param ancestors - The fields of the builder it is created from.
+ * @param params - Its own path parameters, in route order.
+ * @returns Every field, in route order.
+ */
+function addFields(
+  ancestors: BuilderParamView[],
+  params: StepParam[],
+): BuilderParamView[] {
+  const taken = new Set(ancestors.map((f) => f.docParam));
+  return [
+    ...ancestors,
+    ...params.map((p) => {
+      let docParam = p.docName;
+      let param = p.csParam;
+      for (let n = 2; taken.has(docParam); n++) {
+        docParam = `${p.docName}${n}`;
+        param = docParam;
+      }
+      taken.add(docParam);
+      return {
+        type: p.csType,
+        field: `_${docParam}`,
+        param,
+        docParam,
+        doc: describeParam(p),
+      };
+    }),
+  ];
+}
+
+/**
+ * The documentation of a path parameter, on one line.
+ *
+ * @param p - The parameter.
+ * @returns Its own documentation, or a generated sentence naming it.
+ */
+function describeParam(p: StepParam): string {
+  return p.doc
+    ? p.doc.split("\n").join(" ")
+    : `The <c>${p.docName}</c> path parameter.`;
+}
+
+/**
+ * The operation a diagnostic about a builder points at: the first one sent from
+ * it or reached from it. Every builder of a tree is there because some operation
+ * is reached through it.
+ *
+ * @param node - The builder.
+ * @returns The operation.
+ */
+export function treeOperation(node: TreeNode<BuiltOperation>): Operation {
+  return firstItem(node)!.op.operation;
+}
+
+/**
+ * The summary of the method that creates a builder: the route it stands for,
+ * or, for one named after an interface, that interface.
+ *
+ * @param node - The builder.
+ * @returns The summary (XML-safe).
+ */
+function stepSummary(node: TreeNode<BuiltOperation>): string {
+  return node.path !== undefined
+    ? `Starts a request to <c>${escapeXml(node.path)}</c>.`
+    : `Starts a request to the <c>${node.group}</c> endpoint group.`;
+}
+
+/**
+ * A name that is none of the given ones: `name`, then `name2`, `name3`, ...
+ *
+ * @param name - The preferred name.
+ * @param taken - The names in use.
+ * @returns The name.
+ */
+function freeName(name: string, taken: ReadonlySet<string>): string {
+  let result = name;
+  for (let n = 2; taken.has(result); n++) result = `${name}${n}`;
+  return result;
+}
+
+/**
+ * Renders the request builders of a `path` or `interface` client that one file
+ * holds: every builder reached from the given client steps, each before the ones
+ * reached from it. Each builder holds the path parameters of the steps that lead
+ * to it, which fill the routes of its operations, and its methods are named by
+ * verb (see {@link nameByVerb}). A builder whose class name, method name, or step
+ * name clashes with another is reported and left out with everything reached
+ * from it, and so is a builder left with nothing to send or reach. A builder is
+ * `public` when anything reached from it is, and `internal` otherwise.
+ *
+ * @param fileName - The file's base name, e.g. `CommunitiesRequestBuilders`.
+ * @param roots - The client's steps whose builders the file holds.
+ * @param csNs - C# namespace the file is emitted into.
+ * @param docOf - The documentation of a builder named after an interface (one
+ *   that stands for no single route), if the interface has any.
+ * @param program - The compiler program.
+ * @param renderer - Handlebars renderer used to produce the file contents.
+ * @param additionalUsings - Extra `using` directives from the `additional-usings` option.
+ * @param claimTypeName - Reserves a builder's class name among the generated types,
+ *   returning `false` (after reporting at the given operation) when another type
+ *   already has it.
+ * @returns The file source and the client's methods, or `undefined` when no
+ *   builder is left.
+ */
+export function buildTreeEndpoint(
+  fileName: string,
+  roots: TreeNode<BuiltOperation>[],
+  csNs: string,
+  docOf: (node: TreeNode<BuiltOperation>) => string | undefined,
+  program: Program,
+  renderer: Renderer,
+  additionalUsings: Set<string>,
+  claimTypeName: (name: string, target?: Operation) => boolean,
+): EndpointBuild | undefined {
+  const views: RequestBuilderView[] = [];
+
+  /**
+   * Renders one builder and everything reached from it into `views`.
+   *
+   * @param node - The builder.
+   * @param ancestors - The fields of the builder it is created from.
+   * @returns Its fields and access, or `undefined` when it is left out.
+   */
+  const render = (
+    node: TreeNode<BuiltOperation>,
+    ancestors: BuilderParamView[],
+  ): { fields: BuilderParamView[]; access: string } | undefined => {
+    if (!claimTypeName(node.className, treeOperation(node))) return undefined;
+    const fields = addFields(ancestors, node.params);
+    const view: RequestBuilderView = {
+      className: node.className,
+      groupName: node.group ?? node.step,
+      doc: node.path
+        ? `Sends the requests to <c>${escapeXml(node.path)}</c>.`
+        : docOf(node),
+      access: "public",
+      clientParam: "",
+      fields,
+      methods: [],
+      inherits: true,
+      steps: [],
+    };
+    views.push(view);
+
+    nameByVerb(program, node.items);
+    const members = new MemberScope(
+      program,
+      "method",
+      `request builder ${node.className}`,
+      [
+        [
+          node.className,
+          "the builder class itself, whose name a member cannot share",
+        ],
+        ...BUILDER_MEMBERS,
+      ],
+    );
+    const sent = node.items.filter(({ op, view: method }) =>
+      members.claim(
+        method.methodName,
+        `operation "${op.operation.name}"`,
+        op.operation,
+      ),
+    );
+    claimWrappers(program, sent, "the request builder");
+    for (const { view: method, path, access } of sent) {
+      const held = path.params;
+      const values = new Map<string, string>(path.args);
+      held.forEach((p, i) => {
+        const field = `this.${fields[i].field}`;
+        values.set(p.name, p.wire ? encodeExpression(field, p.wire) : field);
+      });
+      method.route = buildRouteExpression(path.rawPath, values, path.reserved);
+      method.access = access;
+      if (method.paging) method.paging.access = access;
+      view.methods.push(method);
+    }
+
+    const claimedSteps = new Map<string, boolean>();
+    for (const child of node.children) {
+      if (!claimedSteps.has(child.step)) {
+        claimedSteps.set(
+          child.step,
+          members.claim(
+            child.step,
+            `the step to ${child.className}`,
+            treeOperation(child),
+          ),
+        );
+      }
+      if (!claimedSteps.get(child.step)) continue;
+      const reached = render(child, fields);
+      if (!reached) continue;
+      const own = reached.fields.slice(fields.length);
+      view.steps!.push({
+        methodName: child.step,
+        className: child.className,
+        access: reached.access,
+        summary: stepSummary(child),
+        params: child.params.map((p, i) => ({
+          ...own[i],
+          param: p.csParam,
+          docParam: p.docName,
+          doc: describeParam(p),
+        })),
+        args: [
+          ...fields.map((f) => `this.${f.field}`),
+          ...child.params.map((p) => p.csParam),
+        ],
+      });
+    }
+
+    if (view.methods.length === 0 && view.steps!.length === 0) {
+      views.splice(views.indexOf(view), 1);
+      return undefined;
+    }
+    const taken = new Set(fields.map((f) => f.docParam));
+    view.clientParam = freeName("flurlClient", taken);
+    view.modifiersParam = freeName("modifiers", taken);
+    view.access =
+      view.methods.some((m) => m.access === "public") ||
+      view.steps!.some((s) => s.access === "public")
+        ? "public"
+        : "internal";
+    return { fields, access: view.access };
+  };
+
+  const builders: ClientBuilderEntry[] = [];
+  for (const root of roots) {
+    const reached = render(root, []);
+    if (!reached) continue;
+    builders.push({
+      groupName: root.group ?? root.step,
+      methodName: root.step,
+      className: root.className,
+      access: reached.access,
+      params: reached.fields,
+      inherits: true,
+      indexer: root.indexer,
+      summary: stepSummary(root),
+    });
+  }
+  if (views.length === 0) return undefined;
+
+  const paging = views.some((b) => b.methods.some((m) => m.paging));
+  const file: FileView = {
+    namespace: csNs,
+    usings: sortUsings([
+      ...new Set([
+        "Flurl",
+        "Flurl.Http",
+        "System",
+        "System.Collections.Generic",
+        "System.Net.Http",
+        "System.Text.Json",
+        "System.Threading",
+        "System.Threading.Tasks",
+        ...(paging ? ["System.Runtime.CompilerServices"] : []),
+        ...additionalUsings,
+      ]),
+    ]),
+    body: views.map((v) => renderer.renderRequestBuilder(v)).join("\n"),
+    fileName: `${fileName}.g.cs`,
+  };
+  return { source: renderer.renderFile(file), builders };
 }
 
 /**
@@ -876,8 +1401,9 @@ function isDateTime(type: Type): boolean {
  * holds a customizable model. Parameters are ordered required first, then optional,
  * then a trailing `CancellationToken`. Path parameters are not among them: they are
  * returned separately, since the request builder holds them and fills in the route
- * (see `buildEndpoint`). A write body whose model has hidden properties is swapped
- * for a synthesized request type, which is registered into `requestTypes`.
+ * (see `buildEndpoint`), unless they are named in `pathArgs`. A write body whose
+ * model has hidden properties is swapped for a synthesized request type, which is
+ * registered into `requestTypes`.
  *
  * @param op - The HTTP operation to render.
  * @param program - The compiler program.
@@ -887,6 +1413,8 @@ function isDateTime(type: Type): boolean {
  * @param version - The API version being emitted, or `undefined` when unversioned.
  * @param requestTypes - Accumulator for synthesized request payload types.
  * @param routePrefix - The already-resolved route prefix for this version.
+ * @param pathArgs - The route-template names of the path parameters no request
+ *   builder holds, which the method takes as ordinary arguments instead.
  * @returns The {@link MethodView} for the operation, whose `route` is filled in once
  *   the builder is known, with the path it takes; or `undefined` when the operation
  *   uses something this emitter cannot send or read correctly (it is reported, and
@@ -901,6 +1429,7 @@ function buildMethodView(
   version: Version | undefined,
   requestTypes: Map<string, RequestType>,
   routePrefix: string,
+  pathArgs: ReadonlySet<string> = new Set(),
 ): { view: MethodView; path: PathShape } | undefined {
   const unsupported = findUnsupportedPayload(op, program);
   if (unsupported) {
@@ -948,6 +1477,7 @@ function buildMethodView(
   const headerParams: HeaderParamView[] = [];
   const cookieParams: CookieParamView[] = [];
   const pathParams: PathBinding[] = [];
+  const pathArgValues = new Map<string, string>();
   const reservedPaths = new Set<string>();
 
   // Parameter names must be unique, and must not collide with the parameters every
@@ -1050,6 +1580,9 @@ function buildMethodView(
       headerParams.push({ name: param.name, variable: csParam, value, guard });
     } else if (param.type === "cookie") {
       cookieParams.push({ name: param.name, variable: csParam, value, guard });
+    } else if (param.type === "path" && pathArgs.has(param.name)) {
+      pathArgValues.set(param.name, value ?? csParam);
+      if (param.allowReserved) reservedPaths.add(param.name);
     } else if (param.type === "path") {
       // The request builder holds it, so it is not a parameter of the method.
       pathParams.push({
@@ -1248,7 +1781,12 @@ function buildMethodView(
   };
   return {
     view,
-    path: { rawPath, reserved: reservedPaths, params: pathParams },
+    path: {
+      rawPath,
+      reserved: reservedPaths,
+      params: pathParams,
+      args: pathArgValues,
+    },
   };
 }
 

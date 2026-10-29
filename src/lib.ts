@@ -8,11 +8,13 @@ import {
   type Program,
 } from "@typespec/compiler";
 import type { TemplateOverrides } from "./renderer.js";
+import type { ClientShape } from "./tree.js";
 
 /** Options accepted by the emitter, configured under the emitter's key in `tspconfig.yaml`. */
 export interface EmitterOptions {
   "project-name"?: string;
   "client-name"?: string;
+  "client-shape"?: ClientShape;
   "root-namespace"?: string;
   "additional-usings"?: string[];
   "net-version"?: string;
@@ -49,6 +51,13 @@ const EmitterOptionsSchema: JSONSchemaType<EmitterOptions> = {
       type: "string",
       description:
         "The client display name. Used as the client class name, the DI extension class/method prefix (e.g. 'PetStore' → 'AddPetStore(...)') and as the default NuGet <Title> when 'nuget-title' is not set.",
+      nullable: true,
+    },
+    "client-shape": {
+      type: "string",
+      enum: ["flat", "path", "interface"],
+      description:
+        "How calls are chained from the client. 'flat' (default): one method per interface taking every path parameter, e.g. client.Rewards(key).ReadAsync(). 'path': one step per URL segment, e.g. client.Communities(key).Configuration().Rewards().GetAsync(). 'interface': interfaces nested under the interface whose route theirs starts with, e.g. client.Community(key).Rewards().GetAsync(). With 'path' and 'interface', operation methods are named after their HTTP verb unless two on one builder share it.",
       nullable: true,
     },
     "root-namespace": {

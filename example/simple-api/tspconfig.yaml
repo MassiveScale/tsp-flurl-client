@@ -4,3 +4,4 @@ options:
   "@massivescale/tsp-flurl-client":
     emitter-output-dir: "{output-dir}"
     overwrite-project-file: true
+    client-shape: interface

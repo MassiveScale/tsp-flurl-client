@@ -295,6 +295,8 @@ export interface MethodView {
   bodyGeneric?: BodyGenericView;
   /** Present when this operation is `@list` and resolves to a supported paging strategy; drives the sibling `IAsyncEnumerable<T>` wrapper method. */
   paging?: PagingMethodView;
+  /** C# access modifier of the method and its overloads; `"public"` when absent. */
+  access?: string;
 }
 
 /**
@@ -401,6 +403,8 @@ export interface PagingMethodView {
   countVarName?: string;
   /** `offset` / `pageIndex` strategy only: the counter's own mapped C# type (e.g. `"ulong"`), used to cast the (always-`int`) per-page item count before adding it — C# has no built-in `+=` between an unrelated integer type and a non-constant `int`. */
   counterCsType?: string;
+  /** C# access modifier of the wrapper, the same as the raw method's; `"public"` when absent. */
+  access?: string;
 }
 
 /** A path parameter a request builder holds, and the client method that creates it takes. */
@@ -436,6 +440,34 @@ export interface RequestBuilderView {
   fields: BuilderParamView[];
   /** Ordered list of method view models; each may carry a paging wrapper. */
   methods: MethodView[];
+  /**
+   * Whether the builder starts with the modifiers of the builder it was created
+   * from, which its constructor then takes (the `path` and `interface` shapes).
+   */
+  inherits?: boolean;
+  /** Name of the constructor's inherited-modifiers parameter, distinct from every path parameter; set with {@link inherits}. */
+  modifiersParam?: string;
+  /** The methods that create the builders reached from this one, in order. */
+  steps?: StepView[];
+}
+
+/**
+ * A method of a request builder that creates the next builder of a chain, e.g.
+ * `Rewards()` on the builder `client.Communities(key).Configuration()` returns.
+ */
+export interface StepView {
+  /** Method name, e.g. `"Rewards"`. */
+  methodName: string;
+  /** The builder class it returns, e.g. `"CommunitiesItemConfigurationRewardsRequestBuilder"`. */
+  className: string;
+  /** C# access modifier: the builder's own, `"public"` or `"internal"`. */
+  access: string;
+  /** XML summary text (pre-escaped). */
+  summary: string;
+  /** The path parameters it takes, in order. */
+  params: BuilderParamView[];
+  /** The arguments passed to the new builder after the Flurl client and the modifiers: this builder's fields, then {@link params}. */
+  args: string[];
 }
 
 /** One client method that starts a request: it creates a request builder. */
@@ -450,6 +482,12 @@ export interface ClientBuilderEntry {
   access: string;
   /** The path parameters it takes, in order. */
   params: BuilderParamView[];
+  /** Whether the builder's constructor takes inherited modifiers, which the client passes as `null`. */
+  inherits?: boolean;
+  /** Whether the client creates the builder through an indexer (`client[storeId]`) rather than a method. */
+  indexer?: boolean;
+  /** XML summary text (pre-escaped); the template's own text about the endpoint group when absent. */
+  summary?: string;
 }
 
 /** View model passed to the `file` template — wraps any inner body with the file header. */
@@ -523,8 +561,13 @@ export interface Renderer {
   renderModelMap(): string;
   /** Renders the internal `ClientRuntime` helper class body. Takes no view model. */
   renderClientRuntime(): string;
-  /** Renders the `RequestBuilder<TBuilder>` base class body. Takes no view model. */
-  renderRequestBuilderBase(): string;
+  /**
+   * Renders the `RequestBuilder<TBuilder>` base class body.
+   *
+   * @param chains - Whether builders create one another (the `path` and
+   *   `interface` client shapes), which adds what they need for that.
+   */
+  renderRequestBuilderBase(chains?: boolean): string;
 }
 
 /**
@@ -844,8 +887,9 @@ function renderClientMethod(m: MethodView): string {
   const full = overloads[overloads.length - 1];
   const declared = (p: OverloadParameter): string =>
     p === "TResult" ? m.generic!.constraint : m.bodyGeneric!.constraint;
+  const access = m.access ?? "public";
   const members = overloads.slice(0, -1).map((parameters) => {
-    const signature = overloadSignature(m, parameters, "public ");
+    const signature = overloadSignature(m, parameters, `${access} `);
     const typeArguments = full.map((p) =>
       parameters.includes(p) ? p : declared(p),
     );
@@ -859,7 +903,7 @@ function renderClientMethod(m: MethodView): string {
   members.push(
     [
       ...docs(full),
-      ...overloadSignature(m, full, "public async "),
+      ...overloadSignature(m, full, `${access} async `),
       "    {",
       ...renderRequestBody(
         m,
@@ -1087,7 +1131,7 @@ function renderPagingClientMethod(m: PagingMethodView): string {
     .join(", ");
   const lines = [
     ...pagingDocLines(m),
-    `    public async ${fx("IAsyncEnumerable", "generic")}<${m.itemType}> ${m.methodName}(${params})`,
+    `    ${m.access ?? "public"} async ${fx("IAsyncEnumerable", "generic")}<${m.itemType}> ${m.methodName}(${params})`,
     "    {",
   ];
   switch (m.strategy) {
@@ -1183,6 +1227,9 @@ export function createRenderer(overrides: TemplateOverrides = {}): Renderer {
         access: view.access,
         clientParam: view.clientParam,
         fields: view.fields,
+        inherits: view.inherits ?? false,
+        modifiersParam: view.modifiersParam,
+        steps: view.steps ?? [],
         methodsBlock,
       });
     },
@@ -1207,8 +1254,8 @@ export function createRenderer(overrides: TemplateOverrides = {}): Renderer {
       return clientRuntimeTemplate({});
     },
 
-    renderRequestBuilderBase() {
-      return builderBaseTemplate({});
+    renderRequestBuilderBase(chains = false) {
+      return builderBaseTemplate({ chains });
     },
   };
 }

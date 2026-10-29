@@ -29,6 +29,11 @@
     .methodName       —   method name on the client, e.g. "Pets"
     .className        —   the builder it returns, e.g. "PetsItemRequestBuilder"
     .access           —   "public" or "internal"; the method's access modifier
+    .indexer          —   true when the client creates the builder through an
+                          indexer (`client[storeId]`) rather than a method
+    .inherits         —   true when the builder's constructor takes inherited
+                          modifiers (`path` and `interface` shapes), passed as null
+    .summary          —   XML summary text (pre-escaped), or falsy for the default
     .params           —   the path parameters it takes, in order. Each has:
       .type           —     C# type, e.g. "string"
       .param          —     parameter name as written in C#, e.g. "id" or "@await"
@@ -84,12 +89,12 @@ public class {{declaredName clientClassName}}
     }
 
 {{#each builders}}    /// <summary>
-    /// Starts a request to the <c>{{groupName}}</c> endpoint group.
+    /// {{#if summary}}{{summary}}{{else}}Starts a request to the <c>{{groupName}}</c> endpoint group.{{/if}}
     /// </summary>
 {{#each params}}    /// <param name="{{docParam}}">{{doc}}</param>
 {{/each}}    /// <returns>A new builder; what is added to it applies only to the requests it sends.</returns>
-    {{access}} {{className}} {{methodName}}({{#each params}}{{#unless @first}}, {{/unless}}{{type}} {{param}}{{/each}}) =>
-        new {{className}}(this.FlurlClient{{#each params}}, {{param}}{{/each}});
+    {{access}} {{className}} {{#if indexer}}this[{{else}}{{methodName}}({{/if}}{{#each params}}{{#unless @first}}, {{/unless}}{{type}} {{param}}{{/each}}{{#if indexer}}]{{else}}){{/if}} =>
+        new {{className}}(this.FlurlClient{{#if inherits}}, null{{/if}}{{#each params}}, {{param}}{{/each}});
 
 {{/each}}
     /// <summary>

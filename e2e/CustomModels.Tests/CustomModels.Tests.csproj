@@ -15,6 +15,7 @@
     <ProjectReference Include="../../example/custom-models/tsp-output/MassiveScale.CustomModelsClient.csproj" />
     <ProjectReference Include="../../example/all-versions/tsp-output/MassiveScale.AllVersionsClient.csproj" />
     <ProjectReference Include="../../example/kitchen-sink/tsp-output/MassiveScale.KitchenSinkClient.csproj" />
+    <ProjectReference Include="../../example/path-tree/tsp-output/MassiveScale.PathTreeClient.csproj" />
   </ItemGroup>
 
 </Project>
