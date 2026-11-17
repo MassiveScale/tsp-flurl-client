@@ -521,7 +521,7 @@ export interface CsprojView {
   /** C# root namespace. */
   rootNamespace: string;
   /**
-   * Target framework moniker(s). Single: `"net8.0"`. Multi-target: `"net8.0;net9.0"`.
+   * Target framework moniker(s). Single: `"net10.0"`. Multi-target: `"net10.0;net11.0"`.
    * Use together with {@link isMultiTarget} to choose the correct MSBuild element.
    */
   netVersion: string;

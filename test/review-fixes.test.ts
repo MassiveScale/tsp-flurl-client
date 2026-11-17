@@ -193,7 +193,7 @@ describe("project file escaping", () => {
   it("escapes the target framework", () => {
     const csproj = buildCsproj(
       "Acme",
-      "net8.0&x",
+      "net10.0&x",
       false,
       "1.0.0",
       "d",
@@ -202,7 +202,7 @@ describe("project file escaping", () => {
       createRenderer(),
     );
 
-    ok(csproj.includes("<TargetFramework>net8.0&amp;x</TargetFramework>"));
+    ok(csproj.includes("<TargetFramework>net10.0&amp;x</TargetFramework>"));
   });
 });
 

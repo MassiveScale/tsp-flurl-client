@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-11-17
+
+### Changed
+
+- **Breaking: .NET 10 or later.** .NET 8 and .NET 9 are out of support, so `net-version` now defaults to `net10.0` and anything older (`net8.0`, `net9.0`) is reported as `invalid-option`. The generated project references `Microsoft.Extensions.Http` 10.x instead of 8.x.
+
 ## [1.2.0] - 2026-10-29
 
 ### Added

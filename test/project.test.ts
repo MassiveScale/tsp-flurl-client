@@ -26,8 +26,14 @@ describe("project", () => {
       "Expected Flurl.Http reference",
     );
     ok(
-      content.includes("<TargetFramework>net8.0</TargetFramework>"),
+      content.includes("<TargetFramework>net10.0</TargetFramework>"),
       "Expected singular TargetFramework for default",
+    );
+    ok(
+      content.includes(
+        '<PackageReference Include="Microsoft.Extensions.Http" Version="10.*" />',
+      ),
+      "Expected Microsoft.Extensions.Http to match the .NET 10 floor",
     );
   });
 
@@ -45,14 +51,14 @@ describe("project", () => {
         @get list(): string[];
       }
     `,
-      { "net-version": "net8.0;net9.0" },
+      { "net-version": "net10.0;net11.0" },
     );
 
     const csproj = Object.keys(results).find((k) => k.endsWith(".csproj"));
     ok(csproj, "Expected .csproj file");
     const content = results[csproj];
     ok(
-      content.includes("<TargetFrameworks>net8.0;net9.0</TargetFrameworks>"),
+      content.includes("<TargetFrameworks>net10.0;net11.0</TargetFrameworks>"),
       "Expected plural TargetFrameworks for multi-target",
     );
     ok(
@@ -75,14 +81,14 @@ describe("project", () => {
         @get list(): string[];
       }
     `,
-      { "net-version": "net8.0 ; net9.0" },
+      { "net-version": "net10.0 ; net11.0" },
     );
 
     const csproj = Object.keys(results).find((k) => k.endsWith(".csproj"));
     ok(csproj, "Expected .csproj file");
     ok(
       results[csproj].includes(
-        "<TargetFrameworks>net8.0;net9.0</TargetFrameworks>",
+        "<TargetFrameworks>net10.0;net11.0</TargetFrameworks>",
       ),
       "Expected whitespace trimmed from TFMs",
     );
