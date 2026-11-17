@@ -55,13 +55,13 @@ describe("line breaks in C# string literals", () => {
 
 describe("target framework suffixes", () => {
   for (const bad of [
-    "net8.0-.",
-    "net8.0-..",
-    "net8.0-windows.",
-    "net8.0-windows10.",
-    "net8.0-windows10..0",
-    "net8.0-1",
-    "net8.0-",
+    "net10.0-.",
+    "net10.0-..",
+    "net10.0-windows.",
+    "net10.0-windows10.",
+    "net10.0-windows10..0",
+    "net10.0-1",
+    "net10.0-",
   ]) {
     it(`rejects ${JSON.stringify(bad)}`, async () => {
       const [, diagnostics] = await emitWithDiagnostics(SPEC, {
@@ -77,10 +77,10 @@ describe("target framework suffixes", () => {
   }
 
   for (const good of [
-    "net8.0-windows",
-    "net8.0-windows10.0.19041",
-    "net9.0-ios18.0",
-    "net8.0-android",
+    "net10.0-windows",
+    "net10.0-windows10.0.19041",
+    "net11.0-ios26.0",
+    "net10.0-android",
     "net10.0-maccatalyst",
   ]) {
     it(`accepts ${JSON.stringify(good)}`, async () => {

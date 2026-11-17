@@ -40,7 +40,7 @@ options:
 | `client-shape`                | `string`   | `flat`                                        | How calls are chained from the client: `flat` (one method per interface taking every path parameter), `path` (one step per URL segment, like the Microsoft Graph SDK) or `interface` (interfaces nested under the interface whose route theirs starts with). See [Client shapes](#client-shapes).                                                                                                                |
 | `root-namespace`              | `string`   | TypeSpec namespace + `.Client`                | Overrides the root C# namespace for all generated files.                                                                                                                                                                                                                                                                                                                                                         |
 | `additional-usings`           | `string[]` | —                                             | Extra `using` directives appended to every emitted C# file. Use this when the service references types declared outside its own TypeSpec namespace but emitted elsewhere — for example a sibling emitter's shared namespace — so the generated code still compiles. Each entry must be a dotted C# namespace such as `Acme.Shared.Models`; anything else is reported as `invalid-option` and nothing is emitted. |
-| `net-version`                 | `string`   | `net8.0`                                      | Target .NET version(s) written into the `.csproj`. Use a single TFM (e.g. `net8.0`) or a semicolon-separated list for multi-targeting (e.g. `net8.0;net9.0`). **.NET 8 or later is required** (see [Requirements](#requirements)): `net7.0`, `netstandard2.0` and the like are reported as `invalid-option`. A suffix such as `net8.0-windows` is allowed.                                                       |
+| `net-version`                 | `string`   | `net10.0`                                     | Target .NET version(s) written into the `.csproj`. Use a single TFM (e.g. `net10.0`) or a semicolon-separated list for multi-targeting (e.g. `net10.0;net11.0`). **.NET 10 or later is required** (see [Requirements](#requirements)): `net8.0`, `net9.0`, `netstandard2.0` and the like are reported as `invalid-option`. A suffix such as `net10.0-windows` is allowed.                                        |
 | `target-version`              | `string`   | Latest declared version                       | Emit only this API version. Ignored when `all-versions` is `true`.                                                                                                                                                                                                                                                                                                                                               |
 | `all-versions`                | `boolean`  | `false`                                       | When `true`, generate every declared API version, each in its own subfolder and `V<version>` namespace with its own models. See [Multiple API versions](#multiple-api-versions).                                                                                                                                                                                                                                 |
 | `version-in-namespace`        | `boolean`  | `false`                                       | When `true`, append the sanitized API version to the C# namespace in single-version mode. Has no effect when `all-versions` is `true`.                                                                                                                                                                                                                                                                           |
@@ -504,7 +504,7 @@ List<MyDog> dogs = await api.Pets().ListAsync<MyDog>();
 
 ## Requirements
 
-- **.NET 8 or later.** The serializer customization that powers custom models uses `System.Text.Json` contract customization (`TypeInfoResolver`), which first shipped in .NET 7, and the project is tested on .NET 8. Multi-targeting older frameworks is not supported.
+- **.NET 10 or later.** .NET 8 and .NET 9 are out of support, so the generated project targets `net10.0` and references `Microsoft.Extensions.Http` 10.x. Multi-targeting older frameworks is not supported.
 - Flurl.Http 4.x (referenced by the generated project).
 
 ## How requests are sent
@@ -737,8 +737,7 @@ The end-to-end tests compile the `custom-models` example, then run the **generat
 
 ```powershell
 cd example/custom-models; npm install; npx tsp compile .
-dotnet run --project ../../e2e/CustomModels.Tests -f net8.0
-dotnet run --project ../../e2e/CustomModels.Tests -f net10.0
+dotnet run --project ../../e2e/CustomModels.Tests
 ```
 
 They also write and read back every model and enum of every example client with the client's own serializer settings, so a contract System.Text.Json rejects fails a test rather than the first request.

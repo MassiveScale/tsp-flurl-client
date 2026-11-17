@@ -57,9 +57,7 @@ jobs:
       - name: Set up .NET
         uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: |
-            8.0.x
-            10.0.x
+          dotnet-version: 10.0.x
 
       - name: Install dependencies
         run: npm ci
@@ -76,12 +74,8 @@ jobs:
           done
           (cd example/versioned-api && npm install && npx tsp compile . --config tspconfig.yaml && dotnet build tsp-output/defaults -warnaserror)
 
-      # The supported floor is .NET 8, so the generated C# is exercised on both runtimes.
-      - name: Run the end-to-end tests on .NET 8
-        run: dotnet run --project e2e/CustomModels.Tests -f net8.0
-
-      - name: Run the end-to-end tests on .NET 10
-        run: dotnet run --project e2e/CustomModels.Tests -f net10.0
+      - name: Run the end-to-end tests
+        run: dotnet run --project e2e/CustomModels.Tests
 
       # Every type shape, position, encoding, media type, and awkward name TypeSpec
       # accepts: the emitter must report each one or generate C# that builds with

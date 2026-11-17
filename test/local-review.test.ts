@@ -647,13 +647,16 @@ describe("net-version validation", () => {
   `;
 
   for (const bad of [
+    "net9.0",
+    "net8.0",
     "net7.0",
     "net6.0",
     "netstandard2.0",
     "netcoreapp3.1",
-    "net8",
-    "net8.0&x",
-    "net8.0;net7.0",
+    "net10",
+    "net10.0&x",
+    "net10.0;net8.0",
+    "net8.0-windows",
   ]) {
     it(`rejects ${JSON.stringify(bad)}`, async () => {
       const [results, diagnostics] = await emitWithDiagnostics(spec, {
@@ -663,7 +666,7 @@ describe("net-version validation", () => {
       const messages = codes(diagnostics, "invalid-option");
       strictEqual(messages.length, 1, messages.join(", "));
       ok(messages[0].includes("net-version"));
-      ok(messages[0].includes(".NET 8"));
+      ok(messages[0].includes(".NET 10"));
       strictEqual(Object.keys(results).length, 0, "Nothing is written");
     });
   }
@@ -679,11 +682,10 @@ describe("net-version validation", () => {
   });
 
   for (const good of [
-    "net8.0",
-    "net9.0",
     "net10.0",
-    "net8.0;net10.0",
-    "net8.0-windows",
+    "net11.0",
+    "net10.0;net11.0",
+    "net10.0-windows",
   ]) {
     it(`accepts ${JSON.stringify(good)}`, async () => {
       const results = await emit(spec, { "net-version": good });

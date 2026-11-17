@@ -101,7 +101,7 @@ This is the feature that distinguishes this emitter. Four mechanisms cooperate, 
 3. **Reading, per call.** Every operation whose response contains a named model (`findModelSlot` in `src/utils.ts`) gets a generic overload `Task<TResult> OpAsync<TResult>(...) where TResult : Model`. The declared overload forwards to it. `Widget[]` becomes `List<TResult>`, `Record<Widget>` becomes `Dictionary<string, TResult>`.
 4. **Reading, everywhere.** `ModelMap` (`src/templates/model-map.hbs`) is a registry of `TModel → TCustom` substitutions that `ClientRuntime` (`src/templates/client-runtime.hbs`) applies to the Flurl client's `System.Text.Json` serializer, so it also governs raw Flurl calls on the exposed `IFlurlClient`. Models outside a `@discriminator` hierarchy use a `JsonConverterFactory`. Models inside one cannot (System.Text.Json owns derived-type resolution there), so the map rewrites the base type's derived-type list, and a custom subtype used on its own registers itself so its discriminator is still written. Every generated type below a discriminated base inherits its polymorphism (`InheritPolymorphism`, with mapped models swapped in), so a property declared as a subtype or grouping model keeps its discriminator.
 
-The behaviour of (4) was validated against real .NET before it was built; do not change the serializer logic from reasoning alone. The known limits (a custom subtype nested under a discriminated base must be in the map; a discriminated base cannot itself be mapped; `net8.0` or later is required) are documented in the README. Keep that table accurate.
+The behaviour of (4) was validated against real .NET before it was built; do not change the serializer logic from reasoning alone. The known limits (a custom subtype nested under a discriminated base must be in the map; a discriminated base cannot itself be mapped; `net10.0` or later is required) are documented in the README. Keep that table accurate.
 
 ### Test Infrastructure
 
@@ -117,8 +117,7 @@ Tests use Node.js native test runner (`node:test` / `node:assert`) — no extern
 
 ```powershell
 cd example/custom-models; npm install; npx tsp compile .
-dotnet run --project ../../e2e/CustomModels.Tests -f net8.0
-dotnet run --project ../../e2e/CustomModels.Tests -f net10.0
+dotnet run --project ../../e2e/CustomModels.Tests
 ```
 
 On a machine whose NuGet config includes a private feed that rejects the current credentials, add `-p:RestoreSources=https://api.nuget.org/v3/index.json` to the restore.
@@ -200,8 +199,7 @@ After making any change to the codebase:
 3. **Run the end-to-end tests** (after compiling `example/custom-models`, `example/all-versions`, `example/kitchen-sink` and `example/path-tree`):
 
    ```powershell
-   dotnet run --project e2e/CustomModels.Tests -f net8.0
-   dotnet run --project e2e/CustomModels.Tests -f net10.0
+   dotnet run --project e2e/CustomModels.Tests
    ```
 
 4. **Run the compile matrix**, which generates every combination TypeSpec accepts and requires each to be reported or to build and round-trip:
